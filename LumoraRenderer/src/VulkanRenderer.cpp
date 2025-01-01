@@ -1,14 +1,21 @@
-#include "VulkanRenderer.h"
-
 #include <cstring>
 #include <fstream>
 #include <iostream>
 #include <stdexcept>
+#include <unordered_map>
+#include <vector>
+#include <vulkan/vulkan.hpp>
 
-#define GLM_FORCE_RADIANS
-#define GLM_FORCE_DEPTH_ZERO_TO_ONE
-#include <glm/glm.hpp>
-#include <glm/gtc/matrix_transform.hpp>
+#ifdef _WIN32
+#include <Windows.h>
+#include <vulkan/vulkan_win32.h>
+#endif
+
+#define VMA_IMPLEMENTATION
+#include <vk_mem_alloc.h>
+
+#include "../include/IRenderer.h"
+#include "VulkanRenderer.h"
 
 namespace Lumora {
 
@@ -350,6 +357,20 @@ BufferHandle VulkanRenderer::CreateBuffer(const BufferDesc& desc) {
         usage |= vk::BufferUsageFlagBits::eTransferDst;
     bci.usage = usage;
 
+    // 메모리 사용 정책
+    VmaAllocationCreateInfo vmaAllocCI = {};
+    switch (desc.memory_usage) {
+        case BufferDesc::MemoryUsage::GpuOnly:
+            vmaAllocCI.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
+            break;
+        case BufferDesc::MemoryUsage::CpuToGpu:
+            vmaAllocCI.usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST;
+            break;
+        default:
+            vmaAllocCI.usage = VMA_MEMORY_USAGE_AUTO;
+            break;
+    }
+
     VulkanBuffer vb;
     vb.size_in_bytes = desc.size_in_bytes;
 
@@ -446,9 +467,21 @@ TextureHandle VulkanRenderer::CreateTexture(const TextureDesc& desc, const void*
     ici.extent.width = desc.width;
     ici.extent.height = desc.height;
     ici.extent.depth = 1;
-    ici.mipLevels = 1;
-    ici.arrayLayers = 1;
-    ici.format = vk::Format::eR8G8B8A8Unorm;
+    ici.mipLevels = desc.mip_levels;
+    ici.arrayLayers = desc.array_layers;
+
+    // format 매핑
+    vk::Format vkformat = vk::Format::eR8G8B8A8Unorm;
+    switch (desc.format) {
+        case TextureDesc::Format::RGBA8_SRGB:
+            vkformat = vk::Format::eR8G8B8A8Srgb;
+            break;
+        default:
+            vkformat = vk::Format::eR8G8B8A8Unorm;
+            break;
+    }
+    ici.format = vkformat;
+
     ici.usage = vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eTransferDst;
 
     VulkanTexture vt;
@@ -496,8 +529,32 @@ void VulkanRenderer::BindTexture(TextureHandle handle, uint32_t bind_point) {
 // 샘플러
 SamplerHandle VulkanRenderer::CreateSampler(const SamplerDesc& desc) {
     vk::SamplerCreateInfo sci;
-    sci.magFilter = vk::Filter::eLinear;
-    sci.minFilter = vk::Filter::eLinear;
+    // filter
+    auto toVkFilter = [](SamplerDesc::Filter f) -> vk::Filter {
+        return (f == SamplerDesc::Filter::Nearest) ? vk::Filter::eNearest : vk::Filter::eLinear;
+    };
+    sci.minFilter = toVkFilter(desc.filter_min);
+    sci.magFilter = toVkFilter(desc.filter_mag);
+
+    // address mode
+    auto toVkAddress = [](SamplerDesc::AddressMode am) -> vk::SamplerAddressMode {
+        switch (am) {
+            case SamplerDesc::AddressMode::ClampToEdge:
+                return vk::SamplerAddressMode::eClampToEdge;
+            default:
+                return vk::SamplerAddressMode::eRepeat;
+        }
+    };
+    sci.addressModeU = toVkAddress(desc.address_mode_u);
+    sci.addressModeV = toVkAddress(desc.address_mode_v);
+    sci.addressModeW = toVkAddress(desc.address_mode_w);
+
+    // mip lod
+    sci.mipLodBias = desc.mip_lod_bias;
+    sci.minLod = desc.min_lod;
+    sci.maxLod = desc.max_lod;
+    sci.anisotropyEnable = desc.enable_anisotropy;
+    sci.maxAnisotropy = desc.max_anisotropy;
 
     VulkanSampler vs;
     vs.sampler = device_.createSampler(sci);
@@ -587,10 +644,42 @@ PipelineHandle VulkanRenderer::CreatePipeline(const PipelineDesc& desc) {
     vp.scissorCount = 1;
     vp.pScissors = &scissor;
 
+    // raster
     vk::PipelineRasterizationStateCreateInfo rs;
-    rs.polygonMode = vk::PolygonMode::eFill;
-    rs.cullMode = vk::CullModeFlagBits::eBack;
-    rs.frontFace = vk::FrontFace::eCounterClockwise;
+    switch (desc.polygon_mode) {
+        case PipelineDesc::PolygonMode::Line:
+            rs.polygonMode = vk::PolygonMode::eLine;
+            break;
+        case PipelineDesc::PolygonMode::Point:
+            rs.polygonMode = vk::PolygonMode::ePoint;
+            break;
+        default:
+            rs.polygonMode = vk::PolygonMode::eFill;
+            break;
+    }
+    switch (desc.cull_mode) {
+        case PipelineDesc::CullMode::None:
+            rs.cullMode = vk::CullModeFlagBits::eNone;
+            break;
+        case PipelineDesc::CullMode::Front:
+            rs.cullMode = vk::CullModeFlagBits::eFront;
+            break;
+        case PipelineDesc::CullMode::Back:
+            rs.cullMode = vk::CullModeFlagBits::eBack;
+            break;
+        default:
+            rs.cullMode = vk::CullModeFlagBits::eFrontAndBack;
+            break;
+    }
+    rs.frontFace =
+        (desc.front_face == PipelineDesc::FrontFace::CW) ? vk::FrontFace::eClockwise : vk::FrontFace::eCounterClockwise;
+
+    // depth/stencil
+    vk::PipelineDepthStencilStateCreateInfo ds;
+    ds.depthTestEnable = desc.enable_depth_test;
+    ds.depthWriteEnable = desc.enable_depth_write;
+    ds.depthCompareOp = vk::CompareOp::eLess;
+    // stencil 생략
 
     vk::PipelineMultisampleStateCreateInfo ms;
     ms.rasterizationSamples = vk::SampleCountFlagBits::e1;
@@ -598,7 +687,7 @@ PipelineHandle VulkanRenderer::CreatePipeline(const PipelineDesc& desc) {
     vk::PipelineColorBlendAttachmentState cbAttach;
     cbAttach.colorWriteMask = vk::ColorComponentFlagBits::eR | vk::ColorComponentFlagBits::eG |
                               vk::ColorComponentFlagBits::eB | vk::ColorComponentFlagBits::eA;
-    cbAttach.blendEnable = false;
+    cbAttach.blendEnable = desc.blend_enable;
 
     vk::PipelineColorBlendStateCreateInfo cb;
     cb.attachmentCount = 1;
@@ -623,6 +712,7 @@ PipelineHandle VulkanRenderer::CreatePipeline(const PipelineDesc& desc) {
     gpci.pViewportState = &vp;
     gpci.pRasterizationState = &rs;
     gpci.pMultisampleState = &ms;
+    gpci.pDepthStencilState = &ds;
     gpci.pColorBlendState = &cb;
     gpci.layout = pipeline_layout;
     gpci.renderPass = rp;
@@ -737,7 +827,7 @@ void VulkanRenderer::RecordCommandBuffer(vk::CommandBuffer cmd, uint32_t image_i
     vk::RenderPassBeginInfo rpbi;
     rpbi.renderPass = sc.render_pass;
     rpbi.framebuffer = sc.framebuffers[image_index];
-    rpbi.renderArea.offset = {0, 0};
+    rpbi.renderArea.offset = vk::Offset2D{0, 0};
     rpbi.renderArea.extent = sc.extent;
     vk::ClearValue clear_col = vk::ClearColorValue(std::array<float, 4>{0.2f, 0.3f, 0.4f, 1.f});
     rpbi.clearValueCount = 1;

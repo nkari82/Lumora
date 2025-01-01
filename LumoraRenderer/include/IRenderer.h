@@ -1,5 +1,4 @@
-#ifndef LUMORA_IRENDERER_H_
-#define LUMORA_IRENDERER_H_
+#pragma once
 
 #include <cstdint>
 #include <memory>
@@ -23,7 +22,7 @@ struct SwapChainDesc {
     bool vsync = true;
 };
 
-// 버퍼 생성 파라미터
+// 버퍼 생성 파라미터에 메모리 사용 정책(예: GPU_ONLY/CPU_TO_GPU 등)을 담을 수 있도록 확장
 struct BufferDesc {
     size_t size_in_bytes = 0;
     bool usage_uniform_buffer = false;
@@ -31,19 +30,51 @@ struct BufferDesc {
     bool usage_index_buffer = false;
     bool usage_transfer_src = false;
     bool usage_transfer_dst = false;
-    // VMA 힌트(예: GPU_ONLY, CPU_TO_GPU 등)를 여기에 추가해도 좋음
+    // 새로 추가: VMA 할당 정책 등 Vulkan 세부 옵션
+    enum class MemoryUsage {
+        Auto,      // VMA_MEMORY_USAGE_AUTO
+        GpuOnly,   // VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE
+        CpuToGpu,  // VMA_MEMORY_USAGE_AUTO_PREFER_HOST
+                   // ...
+    } memory_usage = MemoryUsage::Auto;
 };
 
 // 텍스처 생성 파라미터
 struct TextureDesc {
     uint32_t width = 0;
     uint32_t height = 0;
-    // 포맷, mipLevels, 레이아웃 등 필요시 확장
+    uint32_t mip_levels = 1;
+    uint32_t array_layers = 1;
+    // Vulkan 포맷
+    // (실제 enum이 아닌 추상 enum으로 해도 되지만 여기선 간단화)
+    enum class Format {
+        RGBA8_Unorm,  // vk::Format::eR8G8B8A8Unorm
+        RGBA8_SRGB,
+        // ...
+    } format = Format::RGBA8_Unorm;
 };
 
 // 샘플러 생성 파라미터
 struct SamplerDesc {
-    // 필터링, 어드레스 모드 등
+    enum class Filter {
+        Nearest,
+        Linear,
+    } filter_min = Filter::Linear,
+      filter_mag = Filter::Linear;
+
+    // 주소 모드
+    enum class AddressMode {
+        Repeat,
+        ClampToEdge,
+        // ...
+    } address_mode_u = AddressMode::Repeat,
+      address_mode_v = AddressMode::Repeat, address_mode_w = AddressMode::Repeat;
+
+    float mip_lod_bias = 0.0f;
+    float min_lod = 0.0f;
+    float max_lod = 1000.0f;
+    bool enable_anisotropy = false;
+    float max_anisotropy = 1.0f;
 };
 
 // 셰이더 생성 파라미터
@@ -53,9 +84,21 @@ struct ShaderDesc {
 
 // 파이프라인 생성 파라미터
 struct PipelineDesc {
-    ShaderHandle vertex_shader = 0;
-    ShaderHandle fragment_shader = 0;
+    ShaderHandle vertex_shader;
+    ShaderHandle fragment_shader;
     // Depth, MSAA, Blend, etc. 확장 가능
+
+    bool enable_depth_test = false;
+    bool enable_depth_write = false;
+
+    enum class CullMode { None, Front, Back, FrontAndBack } cull_mode = CullMode::Back;
+
+    enum class FrontFace { CCW, CW } front_face = FrontFace::CCW;
+
+    enum class PolygonMode { Fill, Line, Point } polygon_mode = PolygonMode::Fill;
+
+    bool blend_enable = false;
+    // etc. (srcColorBlendFactor, dstColorBlendFactor, blendOp 등도 확장 가능)
 };
 
 // 렌더러 인터페이스
@@ -99,5 +142,3 @@ class IRenderer {
 };
 
 }  // namespace Lumora
-
-#endif  // LUMORA_IRENDERER_H_

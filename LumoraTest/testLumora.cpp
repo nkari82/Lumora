@@ -1,7 +1,14 @@
-#include <Lumora/IRenderer.h>
 #include <Windows.h>
 
 #include <iostream>
+#include <vector>
+
+#define GLM_FORCE_RADIANS
+#define GLM_FORCE_DEPTH_ZERO_TO_ONE
+#include <glm/glm.hpp>
+#include <glm/gtc/matrix_transform.hpp>
+
+#include "../LumoraRenderer/include/IRenderer.h"
 
 #pragma comment(lib, "user32.lib")
 #pragma comment(lib, "gdi32.lib")

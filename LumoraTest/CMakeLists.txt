@@ -9,6 +9,8 @@ set_target_properties(LumoraTest PROPERTIES
     WIN32_EXECUTABLE ON
 )
 
+target_include_directories(LumoraTest PRIVATE ../external/glm)
+
 # LumoraRenderer 라이브러리 연결
 target_link_libraries(LumoraTest
     PRIVATE

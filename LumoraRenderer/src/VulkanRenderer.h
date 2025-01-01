@@ -1,18 +1,5 @@
 #pragma once
 
-#include <Lumora/IRenderer.h>
-
-#ifdef VK_USE_PLATFORM_WIN32_KHR
-#include <Windows.h>
-#include <vulkan/vulkan_win32.h>
-#endif
-
-#include <vk_mem_alloc.h>  // VMA
-
-#include <unordered_map>
-#include <vector>
-#include <vulkan/vulkan.hpp>
-
 namespace Lumora {
 
 class VulkanRenderer : public IRenderer {
@@ -58,6 +45,9 @@ class VulkanRenderer : public IRenderer {
         vk::Buffer buffer;
         VmaAllocation allocation = nullptr;
         size_t size_in_bytes = 0;
+
+        // 새로 추가: MemoryUsage(추상) -> 실제 VMA allocationFlag
+        // (실제로는 VulkanRenderer.cpp에서 desc.memory_usage에 따라 VmaAllocationCreateInfo 설정)
     };
 
     struct VulkanTexture {
@@ -66,6 +56,8 @@ class VulkanRenderer : public IRenderer {
         VmaAllocation allocation = nullptr;
         uint32_t width = 0;
         uint32_t height = 0;
+        // 새로 추가: mip_levels, array_layers, format
+        // (마찬가지로 VulkanRenderer.cpp에서 desc 사용 시 처리)
     };
 
     struct VulkanSampler {
@@ -79,6 +71,10 @@ class VulkanRenderer : public IRenderer {
     struct VulkanPipeline {
         vk::Pipeline pipeline;
         vk::PipelineLayout pipeline_layout;
+
+        bool depth_test_enable = false;
+        bool depth_write_enable = false;
+        // etc.
     };
 
     // 리소스 배열

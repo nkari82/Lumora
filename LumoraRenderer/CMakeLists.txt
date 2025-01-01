@@ -27,7 +27,6 @@ target_include_directories(LumoraRenderer
         ${CMAKE_CURRENT_SOURCE_DIR}/src      # VulkanRenderer.h는 내부에서만 사용
 		../external/VulkanMemoryAllocator/include 
 		../external/Vulkan-Hpp/include 
-		external/glm
 )
 
 # Vulkan
