@@ -1,0 +1,424 @@
+c++20으로 플랫폼 독립적인 크로스 플랫폼 랜더러이고 첫번째로 vma와 vulkan hpp를 이용한 VulkanRenderer만 일단 다음과 같은 특징으로 객체지향으로 구현한다.
+1. CreateXXX시 플랫폼 독립적인 XXXDesc매개변수를 사용하며 필요하거나 부족하면 플랫폼 독립적으로 확장.
+2. Vulkan의 거의 모든 옵션을 XXXDesc에 맵핑한다.
+3. CreateXXX, UpdateXXX, BindXXX 인터페이스 형식를 사용하고 
+4. 모든 리소스는 핸들로 관리한다.
+6 모든 리소스는 해지는  ReleaseResource하나만 사용하게 한다.
+7. IRenderer내의 static Create함수로 VulakanRenderer를 인스턴스화.
+8. 플랫폼 독립적인 IRenderer는 vulkan 관련 의존성이 없다.
+9. 모든 코드는 Lumora 네임스페이스를 사용한다.
+10. 파일은 IRenderer.h, VulkanRenderer.h, VulkanRenderer.cpp 3개 파일이 전부다.
+
+초기목표는 플랫폼 독립적인 IRenderer만 사용하여 유니폼버퍼를 사용하고 텍스쳐링된 인덱스된 삼각형을 그리는 테스트 코드를 목표로한다. 
+"Lumora": 빛(Lumen)과 오라(Aura)의 조합으로, 렌더링의 시각적 아름다움과 혁신을 상징합니다.
+
+
+ToDo
+여러개의 버텍스 버퍼 테스트
+Render RenderPass FrameBuffer 사용자가 편하게 사용하는 방법
+디스크립터셋 스왑체인에서..
+TextueDesc에 휘발성 멤버변수 추가
+TextureDesc에 wrap동작 방식 추가
+내부적으로 sampler는 캐싱해서 재사용.
+
+
+0. 내부적으로 VulkanXXX 리소스는 VulkanResource를 상속받고 VulkanResouce 인터페이스 메소드인 리소스 타입을 알 수 있는GetType을 구현한다.
+1. VulkanXXX는 하나의 std::unordered_map 으로 관리한다.
+2. VulkanXXX는 std::shared_ptr을 사용하지 않는다..
+Handle의 id 좀더 나은 할당.
+
+struct Reference
+
+캐싱이 필요한 리소스는 map으로 관리
+캐싱이 필요하지 않은 리소스는 vector
+
+SwapChain
+RenderPassHandle
+TextureHandle
+
+
+--swapChain.refCount == 0
+    ReleaseResource(renderPassHandle)
+    ReleaseResource(textureHandle)
+
+
+
+
+IRenderer 플랫폼 독립적임을 유지하고 텍스쳐링된 삼각형 테스트를 위해 계속 구현
+
+IRenderer로 추상화하고 다양한 그래픽스 api를 상속하여 구현한 플랫폼 독립적인 하이레벨 Renderer라이브러리이다.  이 렌더러의 이름은 Lumora이고 네임스페이스로 활용한다.
+Vulkan hpp, vma를 사용하여 Vulkan부터 1.2스펙에 맞춰서 차례대로  c++20을 사용하고 리소스는 struct XXXHandle 타입의 안전하고 빠르고 충돌없는 핸들관리 방법을 사용 구현해줘. 
+
+특징
+내부적으로 descriptorset을 관리하고 Draw시 자동으로 bindDescriptorSet을 한다.
+
+플랫폼독립인 enum class TextureFormat 구현
+Render(SwapChainHandle swapChain, const RenderCallback& callback), //스왑체인을 이용한.
+DrawIndexed, DispatchCompute,
+BindTextue(slot, handle),
+BindBuffer(usage, slot, handle), BeginRenderPass(renderpassHandle, framebufferHandle), EndRenderPass, CreateBuffer,  CreateRenderPass, CreateSwapChain, ResizeSwapChain, CreateFrameBuffer, CreatePipeline, CreateTexture, UpdateTexture, UpdateBuffer
+
+struct ResourceHandle { uint64_t id = 0; bool IsValid() const { return id != 0; } };
+using SwapChainHandle = ResourceHandle; using BufferHandle = ResourceHandle; using TextureHandle = ResourceHandle; 
+using RenderPassHandle = ResourceHandle; 
+using FrameBufferHandle = ResourceHandle; 
+using PipelineHandle = ResourceHandle;
+using ShaderHandle = ResourceHandle;
+using VertexLayoutHandle = ResouceHandle;
+
+struct BufferDesc { 
+enum class Usage { Vertex, Index, Uniform, Storage };
+    uint8_t* data;
+    size_t size; 
+    bool isDynamic;
+    Usage usage;
+};
+
+struct FrameBufferDesc { 
+    uint32_t width; 
+    uint32_t height; 
+    RenderPassHandle renderPass; 
+    std::vector<TextureHandle> colorAttachments;
+    TextureHandle depthAttachment;
+};
+
+struct TextureDesc {
+    ....
+    uint32_t mipLevels = 1; 
+    uint32_t arrayLayers = 1;
+    bool isRenderTarget;
+};
+
+struct PipelineDesc {
+    ShaderHandle vertexShader;       // 버텍스 셰이더
+    ShaderHandle fragmentShader;     // 프래그먼트 셰이더
+    ShaderHandle computeShader;      // 컴퓨트 셰이더 (옵션)
+    VertexLayoutHandle vertexLayout; // 플랫폼 독립적 버텍스 레이아웃
+   
+    RenderPassHandle renderPassHandle;
+
+    struct DescriptorBindingDesc {
+        uint32_t binding; // UniformBuffer, 
+        DescriptorType descriptorType; 
+        ShaderStageFlags stageFlags; 
+        uint32_t descriptorCount = 1; 
+    };
+    struct DescriptorSetLayoutDesc {         std::vector<DescriptorBindingDesc> bindings;
+    }; 
+struct PushConstantRangeDesc { 
+    ShaderStageFlags stageFlags; 
+    uint32_t offset; uint32_t size;
+}; 
+    std::vector<DescriptorSetLayoutDesc> descriptorSetLayouts;     std::vector<PushConstantRangeDesc> pushConstantRanges;
+
+    struct ViewportDesc {
+        float x = 0.0f;
+        float y = 0.0f;
+        float width = 0.0f;
+        float height = 0.0f;
+        float minDepth = 0.0f;
+        float maxDepth = 1.0f;
+    } viewport;
+
+    struct ScissorDesc {
+    int32_t offsetX = 0;
+    int32_t offsetY = 0;
+    uint32_t width = 0;
+    uint32_t height = 0;
+    } scissor;
+
+    struct RasterizationState {
+        bool depthClampEnable = false;
+        bool rasterizerDiscardEnable = false;
+        PolygonMode polygonMode = PolygonMode::Fill;
+        CullMode cullMode = CullMode::Back;
+        FrontFace frontFace = FrontFace::Clockwise;
+    } rasterizationState;
+
+    struct ColorBlendState {
+        bool blendEnable = false;
+        BlendFactor srcColorBlendFactor = BlendFactor::One;
+        BlendFactor dstColorBlendFactor = BlendFactor::Zero;
+        BlendOp colorBlendOp = BlendOp::Add;
+        BlendFactor srcAlphaBlendFactor = BlendFactor::One;
+        BlendFactor dstAlphaBlendFactor = BlendFactor::Zero;
+        BlendOp alphaBlendOp = BlendOp::Add;
+    };
+
+    std::vector<ColorBlendState> colorBlendStates; // 각 출력 컬러에 대한 블렌드 상태
+
+    struct DepthStencilState {
+        bool depthTestEnable = true;
+        bool depthWriteEnable = true;
+        CompareOp depthCompareOp = CompareOp::Less;
+        bool stencilTestEnable = false;
+    } depthStencilState;
+
+    struct MultisampleState {
+        int sampleCount = 1; // 멀티샘플링 지원
+    } multisampleState;
+
+    enum class PrimitiveTopology {
+        TriangleList, TriangleStrip, LineList
+    } topology = PrimitiveTopology::TriangleList;
+};
+
+struct SwapChainDesc { // 플랫폼에 따라 달라지는 윈도우 핸들 void* windowHandle; 
+uint32 t width; 
+uint32_t height; 
+uint32_t bufferCount = 2; 
+TextureFormat format = TextureFormat::RGBA8;
+};
+struct RenderPassDesc { 
+ std::vector<TextureFormat> colorAttachments; TextureFormat depthStencilFormat = TextureFormat:: UNKNOWN
+}
+....
+
+CreateXXX시 플랫폼 독립적인 XXXDesc매개변수를 사용하며 필요하거나 부족하면 플랫폼 독립적으로 확장.
+CreateXXX, UpdateXXX, BindXXX 인터페이스 형식를 사용.
+
+모든 리소스는 해지는  ReleaseResource하나만 사용하게 한다.
+
+내부에서 텍스쳐 배리어 자동으로 추적 관리.
+
+struct VulkanTexture {
+    vk::Image image;
+    vk::DeviceMemory memory;
+    vk::ImageView imageView;
+    vk::Sampler sampler;
+    vk::ImageLayout layout;
+    ....
+};
+struct VulkanBuffer {
+    vk::BufferUsageFlagBits usage;
+    vk::Buffer buffer;
+    vk::DeviceMemory memory;
+    size_t size;
+    ....
+};
+struct VulkanSwapChain {
+    vk::SwapchainKHR swapChain;
+    vk::Format imageFormat;
+    vk::Extent2D extent;
+    std::vector<vk::Semaphore> imageAvailableSemaphores;
+    std::vector<vk::Semaphore> renderFinishedSemaphores; 
+    std::vector<vk::Fence> inFlightFences;
+    uint32_t currentImageIndex = 0;
+    uint32_t currentFrame = 0;
+};
+std::shared_ptr<VulkanXXX>
+
+스왑체인별 디스크립터셋을 관리함.
+
+플랫폼 독립적인 include 부분 IRenderer파일과 source 부분 VulkanRenderer.h VulkanRenderer.cpp로 나눠서 구성해줘
+
+초기목표는 플랫폼 독립적인 IRenderer만 사용하여 유니폼버퍼를 사용하고 텍스쳐링된 인덱스된 삼각형을 그리는 테스트 코드를 목표로한다. 
+
+
+"Lumora": 빛(Lumen)과 오라(Aura)의 조합으로, 렌더링의 시각적 아름다움과 혁신을 상징합니다.
+
+
+ToDo
+여러개의 버텍스 버퍼 테스트
+Render RenderPass FrameBuffer 사용자가 편하게 사용하는 방법
+디스크립터셋 스왑체인에서..
+TextueDesc에 휘발성 멤버변수 추가
+TextureDesc에 wrap동작 방식 추가
+내부적으로 sampler는 캐싱해서 재사용.
+
+
+0. 내부적으로 VulkanXXX 리소스는 VulkanResource를 상속받고 VulkanResouce 인터페이스 메소드인 리소스 타입을 알 수 있는GetType을 구현한다.
+1. VulkanXXX는 하나의 std::unordered_map 으로 관리한다.
+2. VulkanXXX는 std::shared_ptr을 사용하지 않는다..
+Handle의 id 좀더 나은 할당.
+
+struct Reference
+
+캐싱이 필요한 리소스는 map으로 관리
+캐싱이 필요하지 않은 리소스는 vector
+
+SwapChain
+RenderPassHandle
+TextureHandle
+
+
+--swapChain.refCount == 0
+    ReleaseResource(renderPassHandle)
+    ReleaseResource(textureHandle)
+
+
+
+
+IRenderer 플랫폼 독립적임을 유지하고 텍스쳐링된 삼각형 테스트를 위해 계속 구현
+
+IRenderer로 추상화하고 다양한 그래픽스 api를 상속하여 구현한 플랫폼 독립적인 하이레벨 Renderer라이브러리이다.  이 렌더러의 이름은 Lumora이고 네임스페이스로 활용한다.
+Vulkan hpp, vma를 사용하여 Vulkan부터 1.2스펙에 맞춰서 차례대로  c++20을 사용하고 리소스는 struct XXXHandle 타입의 안전하고 빠르고 충돌없는 핸들관리 방법을 사용 구현해줘. 
+
+특징
+내부적으로 descriptorset을 관리하고 Draw시 자동으로 bindDescriptorSet을 한다.
+
+플랫폼독립인 enum class TextureFormat 구현
+Render(SwapChainHandle swapChain, const RenderCallback& callback), //스왑체인을 이용한.
+DrawIndexed, DispatchCompute,
+BindTextue(slot, handle),
+BindBuffer(usage, slot, handle), BeginRenderPass(renderpassHandle, framebufferHandle), EndRenderPass, CreateBuffer,  CreateRenderPass, CreateSwapChain, ResizeSwapChain, CreateFrameBuffer, CreatePipeline, CreateTexture, UpdateTexture, UpdateBuffer
+
+struct ResourceHandle { uint64_t id = 0; bool IsValid() const { return id != 0; } };
+using SwapChainHandle = ResourceHandle; using BufferHandle = ResourceHandle; using TextureHandle = ResourceHandle; 
+using RenderPassHandle = ResourceHandle; 
+using FrameBufferHandle = ResourceHandle; 
+using PipelineHandle = ResourceHandle;
+using ShaderHandle = ResourceHandle;
+using VertexLayoutHandle = ResouceHandle;
+
+struct BufferDesc { 
+enum class Usage { Vertex, Index, Uniform, Storage };
+    uint8_t* data;
+    size_t size; 
+    bool isDynamic;
+    Usage usage;
+};
+
+struct FrameBufferDesc { 
+    uint32_t width; 
+    uint32_t height; 
+    RenderPassHandle renderPass; 
+    std::vector<TextureHandle> colorAttachments;
+    TextureHandle depthAttachment;
+};
+
+struct TextureDesc {
+    ....
+    uint32_t mipLevels = 1; 
+    uint32_t arrayLayers = 1;
+    bool isRenderTarget;
+};
+
+struct PipelineDesc {
+    ShaderHandle vertexShader;       // 버텍스 셰이더
+    ShaderHandle fragmentShader;     // 프래그먼트 셰이더
+    ShaderHandle computeShader;      // 컴퓨트 셰이더 (옵션)
+    VertexLayoutHandle vertexLayout; // 플랫폼 독립적 버텍스 레이아웃
+   
+    RenderPassHandle renderPassHandle;
+
+    struct DescriptorBindingDesc {
+        uint32_t binding; // UniformBuffer, 
+        DescriptorType descriptorType; 
+        ShaderStageFlags stageFlags; 
+        uint32_t descriptorCount = 1; 
+    };
+    struct DescriptorSetLayoutDesc {         std::vector<DescriptorBindingDesc> bindings;
+    }; 
+struct PushConstantRangeDesc { 
+    ShaderStageFlags stageFlags; 
+    uint32_t offset; uint32_t size;
+}; 
+    std::vector<DescriptorSetLayoutDesc> descriptorSetLayouts;     std::vector<PushConstantRangeDesc> pushConstantRanges;
+
+    struct ViewportDesc {
+        float x = 0.0f;
+        float y = 0.0f;
+        float width = 0.0f;
+        float height = 0.0f;
+        float minDepth = 0.0f;
+        float maxDepth = 1.0f;
+    } viewport;
+
+    struct ScissorDesc {
+    int32_t offsetX = 0;
+    int32_t offsetY = 0;
+    uint32_t width = 0;
+    uint32_t height = 0;
+    } scissor;
+
+    struct RasterizationState {
+        bool depthClampEnable = false;
+        bool rasterizerDiscardEnable = false;
+        PolygonMode polygonMode = PolygonMode::Fill;
+        CullMode cullMode = CullMode::Back;
+        FrontFace frontFace = FrontFace::Clockwise;
+    } rasterizationState;
+
+    struct ColorBlendState {
+        bool blendEnable = false;
+        BlendFactor srcColorBlendFactor = BlendFactor::One;
+        BlendFactor dstColorBlendFactor = BlendFactor::Zero;
+        BlendOp colorBlendOp = BlendOp::Add;
+        BlendFactor srcAlphaBlendFactor = BlendFactor::One;
+        BlendFactor dstAlphaBlendFactor = BlendFactor::Zero;
+        BlendOp alphaBlendOp = BlendOp::Add;
+    };
+
+    std::vector<ColorBlendState> colorBlendStates; // 각 출력 컬러에 대한 블렌드 상태
+
+    struct DepthStencilState {
+        bool depthTestEnable = true;
+        bool depthWriteEnable = true;
+        CompareOp depthCompareOp = CompareOp::Less;
+        bool stencilTestEnable = false;
+    } depthStencilState;
+
+    struct MultisampleState {
+        int sampleCount = 1; // 멀티샘플링 지원
+    } multisampleState;
+
+    enum class PrimitiveTopology {
+        TriangleList, TriangleStrip, LineList
+    } topology = PrimitiveTopology::TriangleList;
+};
+
+struct SwapChainDesc { // 플랫폼에 따라 달라지는 윈도우 핸들 void* windowHandle; 
+uint32 t width; 
+uint32_t height; 
+uint32_t bufferCount = 2; 
+TextureFormat format = TextureFormat::RGBA8;
+};
+struct RenderPassDesc { 
+ std::vector<TextureFormat> colorAttachments; TextureFormat depthStencilFormat = TextureFormat:: UNKNOWN
+}
+....
+
+CreateXXX시 플랫폼 독립적인 XXXDesc매개변수를 사용하며 필요하거나 부족하면 플랫폼 독립적으로 확장.
+CreateXXX, UpdateXXX, BindXXX 인터페이스 형식를 사용.
+
+모든 리소스는 ReleaseResource하나만 사용하게 한다.
+
+내부에서 텍스쳐 배리어 자동으로 추적 관리.
+
+struct VulkanTexture {
+    vk::Image image;
+    vk::DeviceMemory memory;
+    vk::ImageView imageView;
+    vk::Sampler sampler;
+    vk::ImageLayout layout;
+    ....
+};
+struct VulkanBuffer {
+    vk::BufferUsageFlagBits usage;
+    vk::Buffer buffer;
+    vk::DeviceMemory memory;
+    size_t size;
+    ....
+};
+struct VulkanSwapChain {
+    vk::SwapchainKHR swapChain;
+    vk::Format imageFormat;
+    vk::Extent2D extent;
+    std::vector<vk::Semaphore> imageAvailableSemaphores;
+    std::vector<vk::Semaphore> renderFinishedSemaphores; 
+    std::vector<vk::Fence> inFlightFences;
+    uint32_t currentImageIndex = 0;
+    uint32_t currentFrame = 0;
+};
+std::shared_ptr<VulkanXXX>
+
+스왑체인별 디스크립터셋을 관리함.
+
+플랫폼 독립적인 include 부분 IRenderer파일과 source 부분 VulkanRenderer.h VulkanRenderer.cpp로 나눠서 구성해줘
+
+초기목표는 플랫폼 독립적인 IRenderer만 사용하여 유니폼버퍼를 사용하고 텍스쳐링된 인덱스된 삼각형을 그리는 테스트 코드를 목표로한다. 
+
+
+"Lumora": 빛(Lumen)과 오라(Aura)의 조합으로, 렌더링의 시각적 아름다움과 혁신을 상징합니다.
+

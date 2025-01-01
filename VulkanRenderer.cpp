@@ -1,11 +1,12 @@
 #include "VulkanRenderer.h"
 
-#include <stdexcept>
 #include <iostream>
+#include <stdexcept>
 
 namespace Lumora
 {
-    // 스테틱 함수 구현 (IRenderer.h에 선언됨)
+
+    // 스태틱 함수 구현
     std::unique_ptr<IRenderer> IRenderer::Create()
     {
         return std::make_unique<VulkanRenderer>();
@@ -23,285 +24,281 @@ namespace Lumora
 
     void VulkanRenderer::InitVulkan()
     {
-        // 여기에 vk::Instance, vk::Device, vk::PhysicalDevice,
-        // VMA Allocator 초기화, 그래픽스 큐 획득 등 구현
-        // 간단 예시
+        // vk::Instance 생성
+        vk::ApplicationInfo app_info;
+        app_info.pApplicationName = "Lumora App";
+        app_info.applicationVersion = 1;
+        app_info.pEngineName = "Lumora Engine";
+        app_info.engineVersion = 1;
+        app_info.apiVersion = VK_API_VERSION_1_2;
 
-        vk::ApplicationInfo appInfo;
-        appInfo.pApplicationName = "Lumora App";
-        appInfo.applicationVersion = 1;
-        appInfo.pEngineName = "Lumora Engine";
-        appInfo.engineVersion = 1;
-        appInfo.apiVersion = VK_API_VERSION_1_2;
+        vk::InstanceCreateInfo instance_create_info;
+        instance_create_info.pApplicationInfo = &app_info;
 
-        vk::InstanceCreateInfo createInfo;
-        createInfo.pApplicationInfo = &appInfo;
+        instance_ = vk::createInstance(instance_create_info);
 
-        m_instance = vk::createInstance(createInfo);
-
-        auto physicalDevices = m_instance.enumeratePhysicalDevices();
-        if (physicalDevices.empty())
+        // 물리 디바이스 선택
+        std::vector<vk::PhysicalDevice> physical_devices =
+            instance_.enumeratePhysicalDevices();
+        if (physical_devices.empty())
         {
-            throw std::runtime_error("Vulkan physical device not found!");
+            throw std::runtime_error("No Vulkan physical device found!");
         }
-        m_physicalDevice = physicalDevices[0];
+        physical_device_ = physical_devices[0];
 
-        // 큐 패밀리 인덱스 찾기 (그래픽스 지원)
-        auto queueFamilies = m_physicalDevice.getQueueFamilyProperties();
-        for (uint32_t i = 0; i < queueFamilies.size(); i++)
+        // 그래픽스 큐를 지원하는 큐 패밀리 인덱스 찾기
+        std::vector<vk::QueueFamilyProperties> queue_families =
+            physical_device_.getQueueFamilyProperties();
+        for (uint32_t i = 0; i < queue_families.size(); ++i)
         {
-            if (queueFamilies[i].queueFlags & vk::QueueFlagBits::eGraphics)
+            if (queue_families[i].queueFlags & vk::QueueFlagBits::eGraphics)
             {
-                m_graphicsQueueIndex = i;
+                graphics_queue_index_ = i;
                 break;
             }
         }
 
-        float queuePriority = 1.0f;
-        vk::DeviceQueueCreateInfo queueCreateInfo = {};
-        queueCreateInfo.queueFamilyIndex = m_graphicsQueueIndex;
-        queueCreateInfo.queueCount = 1;
-        queueCreateInfo.pQueuePriorities = &queuePriority;
+        float queue_priority = 1.0f;
+        vk::DeviceQueueCreateInfo queue_create_info;
+        queue_create_info.queueFamilyIndex = graphics_queue_index_;
+        queue_create_info.queueCount = 1;
+        queue_create_info.pQueuePriorities = &queue_priority;
 
-        vk::DeviceCreateInfo deviceCreateInfo = {};
-        deviceCreateInfo.queueCreateInfoCount = 1;
-        deviceCreateInfo.pQueueCreateInfos = &queueCreateInfo;
+        vk::DeviceCreateInfo device_create_info;
+        device_create_info.queueCreateInfoCount = 1;
+        device_create_info.pQueueCreateInfos = &queue_create_info;
 
-        m_device = m_physicalDevice.createDevice(deviceCreateInfo);
-        m_graphicsQueue = m_device.getQueue(m_graphicsQueueIndex, 0);
+        device_ = physical_device_.createDevice(device_create_info);
+        graphics_queue_ = device_.getQueue(graphics_queue_index_, 0);
 
-        // VMA Allocator 생성 로직 등
-        // VmaAllocatorCreateInfo allocatorInfo = {};
-        // allocatorInfo.physicalDevice = m_physicalDevice;
-        // allocatorInfo.device = m_device;
-        // allocatorInfo.instance = m_instance;
-        // vmaCreateAllocator(&allocatorInfo, &m_allocator);
+        // VMA Allocator 생성 (생략)
+        // VmaAllocatorCreateInfo allocator_info = {};
+        // allocator_info.physicalDevice = physical_device_;
+        // allocator_info.device = device_;
+        // allocator_info.instance = instance_;
+        // vmaCreateAllocator(&allocator_info, &allocator_);
     }
 
     void VulkanRenderer::CleanupVulkan()
     {
-        // 모든 리소스가 ReleaseResource로 해제되었다고 가정
-        // 남은 Vulkan 객체 해제
-        // if (m_allocator) { vmaDestroyAllocator(m_allocator); }
-
-        if (m_device)
+        // 리소스가 모두 ReleaseResource로 해제되었다고 가정
+        // 남은 Vulkan 객체들 해제
+        if (device_)
         {
-            m_device.waitIdle();
-            m_device.destroy();
+            device_.waitIdle();
+            device_.destroy();
         }
-        if (m_instance)
+        if (instance_)
         {
-            m_instance.destroy();
+            instance_.destroy();
         }
     }
 
-    // 내부 헬퍼
     BufferHandle VulkanRenderer::CreateBufferInternal(const BufferDesc &desc)
     {
-        // vk::BufferCreateInfo 설정
-        vk::BufferCreateInfo bufferInfo;
-        bufferInfo.size = desc.sizeInBytes;
+        // vk::BufferCreateInfo
+        vk::BufferCreateInfo buffer_info;
+        buffer_info.size = desc.size_in_bytes;
 
-        // 사용 용도 매핑
-        vk::BufferUsageFlags usage;
-        if (desc.usageUniformBuffer)
-            usage |= vk::BufferUsageFlagBits::eUniformBuffer;
-        if (desc.usageVertexBuffer)
-            usage |= vk::BufferUsageFlagBits::eVertexBuffer;
-        if (desc.usageIndexBuffer)
-            usage |= vk::BufferUsageFlagBits::eIndexBuffer;
-        if (desc.usageTransferSrc)
-            usage |= vk::BufferUsageFlagBits::eTransferSrc;
-        if (desc.usageTransferDst)
-            usage |= vk::BufferUsageFlagBits::eTransferDst;
-        bufferInfo.usage = usage;
+        vk::BufferUsageFlags usage_flags;
+        if (desc.usage_uniform_buffer)
+        {
+            usage_flags |= vk::BufferUsageFlagBits::eUniformBuffer;
+        }
+        if (desc.usage_vertex_buffer)
+        {
+            usage_flags |= vk::BufferUsageFlagBits::eVertexBuffer;
+        }
+        if (desc.usage_index_buffer)
+        {
+            usage_flags |= vk::BufferUsageFlagBits::eIndexBuffer;
+        }
+        if (desc.usage_transfer_src)
+        {
+            usage_flags |= vk::BufferUsageFlagBits::eTransferSrc;
+        }
+        if (desc.usage_transfer_dst)
+        {
+            usage_flags |= vk::BufferUsageFlagBits::eTransferDst;
+        }
+        buffer_info.usage = usage_flags;
 
-        // 실제 버퍼 생성
-        VulkanBuffer vulkanBuffer;
-        vulkanBuffer.buffer = m_device.createBuffer(bufferInfo);
-        vulkanBuffer.sizeInBytes = desc.sizeInBytes;
+        VulkanBuffer vulkan_buffer;
+        vulkan_buffer.buffer = device_.createBuffer(buffer_info);
+        vulkan_buffer.size_in_bytes = desc.size_in_bytes;
 
-        // VMA 할당 로직 (예시)
-        // VmaAllocationCreateInfo allocCreateInfo = {};
-        // allocCreateInfo.usage = VMA_MEMORY_USAGE_AUTO;
-        // vmaAllocateMemoryForBuffer(m_allocator, vulkanBuffer.buffer, &allocCreateInfo, &vulkanBuffer.allocation, &vulkanBuffer.allocInfo);
-        // vmaBindBufferMemory(m_allocator, vulkanBuffer.allocation, vulkanBuffer.buffer);
+        // VMA 할당 예시 (생략)
+        // VmaAllocationCreateInfo alloc_info = {};
+        // alloc_info.usage = VMA_MEMORY_USAGE_AUTO;
+        // vmaAllocateMemoryForBuffer(allocator_, vulkan_buffer.buffer, &alloc_info,
+        //                            &vulkan_buffer.allocation, &vulkan_buffer.alloc_info);
+        // vmaBindBufferMemory(allocator_, vulkan_buffer.allocation, vulkan_buffer.buffer);
 
         // 핸들 발급
-        BufferHandle handle = m_nextBufferHandle++;
-        if (handle > m_buffers.size())
+        BufferHandle handle = next_buffer_handle_++;
+        if (handle >= buffers_.size())
         {
-            m_buffers.resize(handle + 1);
+            buffers_.resize(handle + 1);
         }
-        m_buffers[handle] = vulkanBuffer;
+        buffers_[handle] = vulkan_buffer;
 
         return handle;
     }
-
-    // IRenderer 구현부
 
     BufferHandle VulkanRenderer::CreateBuffer(const BufferDesc &desc)
     {
         return CreateBufferInternal(desc);
     }
 
-    void VulkanRenderer::UpdateBuffer(BufferHandle handle, const void *data, size_t size)
+    void VulkanRenderer::UpdateBuffer(BufferHandle handle, const void *data,
+                                      size_t size)
     {
-        if (handle == 0 || handle >= m_buffers.size())
+        if (handle == 0 || handle >= buffers_.size())
         {
-            throw std::runtime_error("Invalid buffer handle in UpdateBuffer");
+            throw std::runtime_error("Invalid buffer handle in UpdateBuffer.");
         }
-        VulkanBuffer &buf = m_buffers[handle];
-
-        // VMA 사용 시
-        // void* mappedData = nullptr;
-        // vmaMapMemory(m_allocator, buf.allocation, &mappedData);
-        // std::memcpy(mappedData, data, size);
-        // vmaUnmapMemory(m_allocator, buf.allocation);
-
-        // 여기서는 단순 예시
-        // 실제 Vulkan 메모리 매핑 로직 필요
+        // VMA 사용 시 매핑 후 memcpy
+        // VulkanBuffer& buf = buffers_[handle];
+        // void* mapped_data = nullptr;
+        // vmaMapMemory(allocator_, buf.allocation, &mapped_data);
+        // std::memcpy(mapped_data, data, size);
+        // vmaUnmapMemory(allocator_, buf.allocation);
     }
 
-    void VulkanRenderer::BindBuffer(BufferHandle handle, uint32_t bindPoint)
+    void VulkanRenderer::BindBuffer(BufferHandle handle, uint32_t bind_point)
     {
-        // 실제 Vulkan 커맨드 버퍼에 바인딩하기 위한 로직
-        // 예: vkCmdBindVertexBuffers / vkCmdBindIndexBuffer / Descriptor 셋 업데이트 등
+        // 실제 vkCmdBindVertexBuffers / vkCmdBindIndexBuffer / DescriptorSet 업데이트 등
     }
 
-    TextureHandle VulkanRenderer::CreateTexture(const TextureDesc &desc, const void *initialData)
+    TextureHandle VulkanRenderer::CreateTexture(const TextureDesc &desc,
+                                                const void *initial_data)
     {
-        // vk::ImageCreateInfo 작성
-        vk::ImageCreateInfo imageInfo;
-        imageInfo.imageType = vk::ImageType::e2D;
-        imageInfo.extent.width = desc.width;
-        imageInfo.extent.height = desc.height;
-        imageInfo.extent.depth = 1;
-        imageInfo.mipLevels = 1;
-        imageInfo.arrayLayers = 1;
-        imageInfo.format = vk::Format::eR8G8B8A8Unorm; // 예시
-        imageInfo.usage = vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eTransferDst;
+        vk::ImageCreateInfo image_info;
+        image_info.imageType = vk::ImageType::e2D;
+        image_info.extent.width = desc.width;
+        image_info.extent.height = desc.height;
+        image_info.extent.depth = 1;
+        image_info.mipLevels = 1;
+        image_info.arrayLayers = 1;
+        image_info.format = vk::Format::eR8G8B8A8Unorm;
+        image_info.usage =
+            vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eTransferDst;
 
-        // 이미지 생성 + VMA 할당
-        VulkanTexture tex;
-        tex.image = m_device.createImage(imageInfo);
-        tex.width = desc.width;
-        tex.height = desc.height;
+        VulkanTexture vulkan_texture;
+        vulkan_texture.image = device_.createImage(image_info);
+        vulkan_texture.width = desc.width;
+        vulkan_texture.height = desc.height;
 
-        // VMA 할당 및 Bind
-        // VmaAllocationCreateInfo allocInfo = {};
-        // allocInfo.usage = VMA_MEMORY_USAGE_AUTO;
-        // vmaAllocateMemoryForImage(m_allocator, tex.image, &allocInfo, &tex.allocation, nullptr);
-        // vmaBindImageMemory(m_allocator, tex.allocation, tex.image);
+        // VMA 할당 & 바인딩 (생략)
+        // vmaAllocateMemoryForImage(allocator_, vulkan_texture.image, &alloc_info,
+        //                           &vulkan_texture.allocation, nullptr);
+        // vmaBindImageMemory(allocator_, vulkan_texture.allocation, vulkan_texture.image);
 
-        // ImageView 생성
-        vk::ImageViewCreateInfo viewInfo;
-        viewInfo.image = tex.image;
-        viewInfo.viewType = vk::ImageViewType::e2D;
-        viewInfo.format = imageInfo.format;
-        viewInfo.subresourceRange.aspectMask = vk::ImageAspectFlagBits::eColor;
-        viewInfo.subresourceRange.levelCount = 1;
-        viewInfo.subresourceRange.layerCount = 1;
-        tex.imageView = m_device.createImageView(viewInfo);
+        vk::ImageViewCreateInfo view_info;
+        view_info.image = vulkan_texture.image;
+        view_info.viewType = vk::ImageViewType::e2D;
+        view_info.format = image_info.format;
+        view_info.subresourceRange.aspectMask = vk::ImageAspectFlagBits::eColor;
+        view_info.subresourceRange.levelCount = 1;
+        view_info.subresourceRange.layerCount = 1;
 
-        // 초기 데이터 업로드, 레이아웃 전환, 커맨드 버퍼 등 필요
+        vulkan_texture.image_view = device_.createImageView(view_info);
 
-        // 핸들 발급
-        TextureHandle handle = m_nextTextureHandle++;
-        if (handle > m_textures.size())
+        // initial_data 업로드 작업 / 레이아웃 전환 등 필요
+
+        TextureHandle handle = next_texture_handle_++;
+        if (handle >= textures_.size())
         {
-            m_textures.resize(handle + 1);
+            textures_.resize(handle + 1);
         }
-        m_textures[handle] = tex;
+        textures_[handle] = vulkan_texture;
         return handle;
     }
 
-    void VulkanRenderer::BindTexture(TextureHandle handle, uint32_t bindPoint)
+    void VulkanRenderer::BindTexture(TextureHandle handle, uint32_t bind_point)
     {
-        // DescriptorSet 업데이트 등
+        // DescriptorSet에 vkUpdateDescriptorSets 등
     }
 
     SamplerHandle VulkanRenderer::CreateSampler(const SamplerDesc &desc)
     {
-        // vk::SamplerCreateInfo를 desc 기반으로 채우기
-        vk::SamplerCreateInfo samplerInfo;
-        samplerInfo.magFilter = vk::Filter::eLinear;
-        samplerInfo.minFilter = vk::Filter::eLinear;
-        samplerInfo.addressModeU = vk::SamplerAddressMode::eRepeat;
-        samplerInfo.addressModeV = vk::SamplerAddressMode::eRepeat;
-        samplerInfo.addressModeW = vk::SamplerAddressMode::eRepeat;
+        vk::SamplerCreateInfo sampler_info;
+        sampler_info.magFilter = vk::Filter::eLinear;
+        sampler_info.minFilter = vk::Filter::eLinear;
+        sampler_info.addressModeU = vk::SamplerAddressMode::eRepeat;
+        sampler_info.addressModeV = vk::SamplerAddressMode::eRepeat;
+        sampler_info.addressModeW = vk::SamplerAddressMode::eRepeat;
 
-        VulkanSampler sampler;
-        sampler.sampler = m_device.createSampler(samplerInfo);
+        VulkanSampler vulkan_sampler;
+        vulkan_sampler.sampler = device_.createSampler(sampler_info);
 
-        SamplerHandle handle = m_nextSamplerHandle++;
-        if (handle > m_samplers.size())
+        SamplerHandle handle = next_sampler_handle_++;
+        if (handle >= samplers_.size())
         {
-            m_samplers.resize(handle + 1);
+            samplers_.resize(handle + 1);
         }
-        m_samplers[handle] = sampler;
-
+        samplers_[handle] = vulkan_sampler;
         return handle;
     }
 
-    void VulkanRenderer::BindSampler(SamplerHandle handle, uint32_t bindPoint)
+    void VulkanRenderer::BindSampler(SamplerHandle handle, uint32_t bind_point)
     {
-        // DescriptorSet 업데이트 등
+        // DescriptorSet에 vkUpdateDescriptorSets 등
     }
 
     PipelineHandle VulkanRenderer::CreatePipeline(const PipelineDesc &desc)
     {
-        // vk::GraphicsPipelineCreateInfo 등 구성
-        // 셰이더 로드, Input Assembly, Viewport, Rasterizer, ColorBlend 등등
+        // 실제 vk::GraphicsPipelineCreateInfo 구성
+        // 셰이더 스테이지, Input Assembly, Viewport, Rasterizer, DepthStencil 등
+        // 다양한 생성 정보가 필요
 
-        vk::Pipeline dummyPipeline; // 실제 구현 시 생성
+        // 예시로 Dummy
         VulkanPipeline pipeline;
-        pipeline.pipeline = dummyPipeline;
+        pipeline.pipeline = vk::Pipeline();
 
-        PipelineHandle handle = m_nextPipelineHandle++;
-        if (handle > m_pipelines.size())
+        PipelineHandle handle = next_pipeline_handle_++;
+        if (handle >= pipelines_.size())
         {
-            m_pipelines.resize(handle + 1);
+            pipelines_.resize(handle + 1);
         }
-        m_pipelines[handle] = pipeline;
-
+        pipelines_[handle] = pipeline;
         return handle;
     }
 
     void VulkanRenderer::BindPipeline(PipelineHandle handle)
     {
-        // 실제 vkCmdBindPipeline 호출
+        // vkCmdBindPipeline 호출 등
     }
 
     void VulkanRenderer::ReleaseResource(uint64_t handle)
     {
-        // 버퍼, 텍스처, 샘플러, 파이프라인 중 하나인지 구분하여 해제
-        // 간단히 “버퍼 범위인지, 텍스처 범위인지” 등으로 판별
-        if (handle < m_buffers.size() && m_buffers[handle].buffer)
+        // 어떤 타입의 리소스인지 구분
+        // (버퍼, 텍스처, 샘플러, 파이프라인)
+        if (handle < buffers_.size() && buffers_[handle].buffer)
         {
-            // VMA 사용 시 vmaDestroyBuffer(...)
-            m_device.destroyBuffer(m_buffers[handle].buffer);
-            m_buffers[handle].buffer = nullptr;
+            device_.destroyBuffer(buffers_[handle].buffer);
+            buffers_[handle].buffer = nullptr;
             return;
         }
-        if (handle < m_textures.size() && m_textures[handle].image)
+        if (handle < textures_.size() && textures_[handle].image)
         {
-            m_device.destroyImageView(m_textures[handle].imageView);
-            m_device.destroyImage(m_textures[handle].image);
-            m_textures[handle].image = nullptr;
+            device_.destroyImageView(textures_[handle].image_view);
+            device_.destroyImage(textures_[handle].image);
+            textures_[handle].image = nullptr;
             return;
         }
-        if (handle < m_samplers.size() && m_samplers[handle].sampler)
+        if (handle < samplers_.size() && samplers_[handle].sampler)
         {
-            m_device.destroySampler(m_samplers[handle].sampler);
-            m_samplers[handle].sampler = nullptr;
+            device_.destroySampler(samplers_[handle].sampler);
+            samplers_[handle].sampler = nullptr;
             return;
         }
-        if (handle < m_pipelines.size() && m_pipelines[handle].pipeline)
+        if (handle < pipelines_.size() && pipelines_[handle].pipeline)
         {
-            m_device.destroyPipeline(m_pipelines[handle].pipeline);
-            m_pipelines[handle].pipeline = nullptr;
+            device_.destroyPipeline(pipelines_[handle].pipeline);
+            pipelines_[handle].pipeline = nullptr;
             return;
         }
     }
-}
+
+} // namespace Lumora
