@@ -92,6 +92,36 @@ void VulkanRenderer::InitVulkan() {
         fci.flags = vk::FenceCreateFlagBits::eSignaled;
         in_flight_fence_ = device_.createFence(fci);
     }
+
+    // 디스크립터 풀, 레이아웃 생성 (UBO + CombinedSampler)
+    {
+        // 디스크립터 풀
+        std::vector<vk::DescriptorPoolSize> pool_sizes = {
+            {vk::DescriptorType::eUniformBuffer, 100},
+            {vk::DescriptorType::eCombinedImageSampler, 100},
+        };
+        vk::DescriptorPoolCreateInfo dpci;
+        dpci.poolSizeCount = (uint32_t)pool_sizes.size();
+        dpci.pPoolSizes = pool_sizes.data();
+        dpci.maxSets = 100;
+        descriptor_pool_ = device_.createDescriptorPool(dpci);
+        // 레이아웃 binding=0 -> UBO, binding=1 -> sampler2D
+        vk::DescriptorSetLayoutBinding ubo_bind;
+        ubo_bind.binding = 0;
+        ubo_bind.descriptorType = vk::DescriptorType::eUniformBuffer;
+        ubo_bind.descriptorCount = 1;
+        ubo_bind.stageFlags = vk::ShaderStageFlagBits::eVertex;
+        vk::DescriptorSetLayoutBinding samp_bind;
+        samp_bind.binding = 1;
+        samp_bind.descriptorType = vk::DescriptorType::eCombinedImageSampler;
+        samp_bind.descriptorCount = 1;
+        samp_bind.stageFlags = vk::ShaderStageFlagBits::eFragment;
+        std::vector<vk::DescriptorSetLayoutBinding> bindings = {ubo_bind, samp_bind};
+        vk::DescriptorSetLayoutCreateInfo dsci;
+        dsci.bindingCount = (uint32_t)bindings.size();
+        dsci.pBindings = bindings.data();
+        descriptor_set_layout_ = device_.createDescriptorSetLayout(dsci);
+    }
 }
 
 void VulkanRenderer::InitVMA() {
@@ -575,6 +605,9 @@ PipelineHandle VulkanRenderer::CreatePipeline(const PipelineDesc& desc) {
     cb.pAttachments = &cbAttach;
 
     vk::PipelineLayoutCreateInfo plci;
+    plci.setLayoutCount = 1;
+    plci.pSetLayouts = &descriptor_set_layout_;
+
     auto pipeline_layout = device_.createPipelineLayout(plci);
 
     if (swapchains_.size() <= 1) {
@@ -696,8 +729,82 @@ void VulkanRenderer::EndFrame() {
 }
 
 void VulkanRenderer::RecordCommandBuffer(vk::CommandBuffer cmd, uint32_t image_index) {
-    // 실제로는 삼각형 그리기 위해 vkCmdBindPipeline, vkCmdBindVertexBuffers, IndexBuffer, Draw
-    // (생략)
+    // 예시: swapchains_[1] 사용
+    if (swapchains_.size() <= 1)
+        return;
+    auto& sc = swapchains_[1];
+    cmd.begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
+    vk::RenderPassBeginInfo rpbi;
+    rpbi.renderPass = sc.render_pass;
+    rpbi.framebuffer = sc.framebuffers[image_index];
+    rpbi.renderArea.offset = {0, 0};
+    rpbi.renderArea.extent = sc.extent;
+    vk::ClearValue clear_col = vk::ClearColorValue(std::array<float, 4>{0.2f, 0.3f, 0.4f, 1.f});
+    rpbi.clearValueCount = 1;
+    rpbi.pClearValues = &clear_col;
+    cmd.beginRenderPass(rpbi, vk::SubpassContents::eInline);
+    // 파이프라인 바인딩 (가정: pipelines_[1] 존재)
+    if (pipelines_.size() > 1 && pipelines_[1].pipeline) {
+        cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, pipelines_[1].pipeline);
+        // descriptor set 바인딩 (가정: descriptor_sets_[0] 유효)
+        if (!descriptor_sets_.empty()) {
+            cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, pipelines_[1].pipeline_layout, 0,
+                                   descriptor_sets_[0], {});
+        }
+    }
+    // 정점 버퍼
+    if (vbo_handle_ < buffers_.size() && buffers_[vbo_handle_].buffer) {
+        vk::Buffer vb = buffers_[vbo_handle_].buffer;
+        vk::DeviceSize off = 0;
+        cmd.bindVertexBuffers(0, vb, off);
+    }
+    // 인덱스 버퍼
+    if (ibo_handle_ < buffers_.size() && buffers_[ibo_handle_].buffer) {
+        cmd.bindIndexBuffer(buffers_[ibo_handle_].buffer, 0, vk::IndexType::eUint16);
+    }
+    // drawIndexed
+    cmd.drawIndexed(index_count_, 1, 0, 0, 0);
+
+    cmd.endRenderPass();
+    cmd.end();
+}
+
+// 4) 테스트용: descriptor set 할당/업데이트 (UBO + sampler)
+//  (이 로직은 스왑체인 생성 직후나, UBO/텍스처 생성 뒤에 호출)
+//  여기서는 예시로 descriptor_sets_.resize(1)하고, UBO/Texture를 연결
+//  (실제 코드에서는 좀 더 동적으로 구성)
+void VulkanRenderer::CreateTestDescriptorSet(BufferHandle ubo, TextureHandle tex, SamplerHandle samp) {
+    // descriptor set alloc
+    vk::DescriptorSetAllocateInfo dsai;
+    dsai.descriptorPool = descriptor_pool_;
+    dsai.descriptorSetCount = 1;
+    dsai.pSetLayouts = &descriptor_set_layout_;
+    auto sets = device_.allocateDescriptorSets(dsai);
+    descriptor_sets_ = sets;  // 하나만
+    // UBO binding=0
+    vk::DescriptorBufferInfo dbi;
+    dbi.buffer = buffers_[ubo].buffer;
+    dbi.offset = 0;
+    dbi.range = buffers_[ubo].size_in_bytes;  // or sizeof(UBO struct)
+    vk::WriteDescriptorSet wds_ubo;
+    wds_ubo.dstSet = descriptor_sets_[0];
+    wds_ubo.dstBinding = 0;
+    wds_ubo.descriptorCount = 1;
+    wds_ubo.descriptorType = vk::DescriptorType::eUniformBuffer;
+    wds_ubo.pBufferInfo = &dbi;
+    // Texture + Sampler binding=1
+    vk::DescriptorImageInfo dii;
+    dii.imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
+    dii.imageView = textures_[tex].image_view;
+    dii.sampler = samplers_[samp].sampler;
+    vk::WriteDescriptorSet wds_tex;
+    wds_tex.dstSet = descriptor_sets_[0];
+    wds_tex.dstBinding = 1;
+    wds_tex.descriptorCount = 1;
+    wds_tex.descriptorType = vk::DescriptorType::eCombinedImageSampler;
+    wds_tex.pImageInfo = &dii;
+    std::vector<vk::WriteDescriptorSet> writes = {wds_ubo, wds_tex};
+    device_.updateDescriptorSets(writes, {});
 }
 
 }  // namespace Lumora

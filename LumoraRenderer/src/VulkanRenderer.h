@@ -115,6 +115,16 @@ class VulkanRenderer : public IRenderer {
     vk::Semaphore render_finished_;
     vk::Fence in_flight_fence_;
 
+    // 추가: descriptor 관련 멤버 (필요 없다면 스킵)
+    vk::DescriptorPool descriptor_pool_;
+    vk::DescriptorSetLayout descriptor_set_layout_;
+    std::vector<vk::DescriptorSet> descriptor_sets_;
+
+    BufferHandle ubo_handle_ = 0;
+    BufferHandle vbo_handle_ = 0;
+    BufferHandle ibo_handle_ = 0;
+    uint32_t index_count_ = 0;
+
     bool initialized_ = false;
 
    private:
@@ -127,6 +137,8 @@ class VulkanRenderer : public IRenderer {
     // 버퍼 업데이트 시 스테이징 복사 예시
     void UploadDataToBuffer(const void* data, size_t size, vk::Buffer dst_buffer);
 
+    // test
+    void CreateTestDescriptorSet(BufferHandle ubo, TextureHandle tex, SamplerHandle samp);
     vk::ShaderModule CreateShaderModule(const std::vector<char>& code);
     std::vector<char> ReadFile(const std::string& filename);
 
