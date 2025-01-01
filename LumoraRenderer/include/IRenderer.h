@@ -5,11 +5,9 @@
 #include <memory>
 #include <string>
 
-// 이 헤더는 vulkan, vma 등 어떤 의존성도 드러내지 않음
-
 namespace Lumora {
 
-// 리소스 핸들
+// 리소스 핸들 정의
 using SwapChainHandle = uint64_t;
 using BufferHandle = uint64_t;
 using TextureHandle = uint64_t;
@@ -17,7 +15,7 @@ using SamplerHandle = uint64_t;
 using PipelineHandle = uint64_t;
 using ShaderHandle = uint64_t;
 
-// 스왑체인
+// 스왑체인 생성 파라미터
 struct SwapChainDesc {
     void* window_handle = nullptr;  // Win32: HWND
     int width = 1280;
@@ -25,7 +23,7 @@ struct SwapChainDesc {
     bool vsync = true;
 };
 
-// 버퍼
+// 버퍼 생성 파라미터
 struct BufferDesc {
     size_t size_in_bytes = 0;
     bool usage_uniform_buffer = false;
@@ -33,36 +31,34 @@ struct BufferDesc {
     bool usage_index_buffer = false;
     bool usage_transfer_src = false;
     bool usage_transfer_dst = false;
+    // VMA 힌트(예: GPU_ONLY, CPU_TO_GPU 등)를 여기에 추가해도 좋음
 };
 
-// 텍스처
+// 텍스처 생성 파라미터
 struct TextureDesc {
     uint32_t width = 0;
     uint32_t height = 0;
-    bool is_cube_map = false;  // 앞으로의 과제 (큐브맵)
-    bool is_3d = false;        // 3D 텍스처
-                               // mipLevels, arrayLayers, format, etc. 확장 가능
+    // 포맷, mipLevels, 레이아웃 등 필요시 확장
 };
 
-// 샘플러
+// 샘플러 생성 파라미터
 struct SamplerDesc {
-    // 필터링, 어드레스 모드, mipmap 모드 등
+    // 필터링, 어드레스 모드 등
 };
 
-// 셰이더
+// 셰이더 생성 파라미터
 struct ShaderDesc {
-    std::string file_path;
-    // shader stage, entry point, etc.
+    std::string file_path;  // SPIR-V 바이너리
 };
 
-// 파이프라인 (그래픽스 / 컴퓨트 구분 가능)
+// 파이프라인 생성 파라미터
 struct PipelineDesc {
     ShaderHandle vertex_shader = 0;
     ShaderHandle fragment_shader = 0;
-    // 앞으로의 과제: compute_shader, geometry_shader 등
+    // Depth, MSAA, Blend, etc. 확장 가능
 };
 
-// IRenderer
+// 렌더러 인터페이스
 class IRenderer {
    public:
     virtual ~IRenderer() = default;
@@ -98,7 +94,7 @@ class IRenderer {
     virtual void BeginFrame() = 0;
     virtual void EndFrame() = 0;
 
-    // 스태틱 함수
+    // 정적 생성 함수
     static std::unique_ptr<IRenderer> Create();
 };
 

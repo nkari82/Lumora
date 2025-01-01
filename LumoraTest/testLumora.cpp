@@ -1,8 +1,7 @@
+#include <Lumora/IRenderer.h>
 #include <Windows.h>
 
 #include <iostream>
-
-#include "../LumoraRenderer/include/IRenderer.h"
 
 #pragma comment(lib, "user32.lib")
 #pragma comment(lib, "gdi32.lib")
@@ -28,18 +27,18 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int) {
     wc.lpszClassName = TEXT("LumoraWinClass");
     RegisterClassEx(&wc);
 
-    HWND hwnd = CreateWindowEx(0, wc.lpszClassName, TEXT("Lumora Test"), WS_OVERLAPPEDWINDOW, CW_USEDEFAULT,
+    HWND hwnd = CreateWindowEx(0, wc.lpszClassName, TEXT("Lumora Test Window"), WS_OVERLAPPEDWINDOW, CW_USEDEFAULT,
                                CW_USEDEFAULT, 1280, 720, nullptr, nullptr, hInstance, nullptr);
     ShowWindow(hwnd, SW_SHOW);
 
-    // 2. IRenderer
+    // 2. Renderer
     std::unique_ptr<Lumora::IRenderer> renderer = Lumora::IRenderer::Create();
     if (!renderer) {
-        MessageBox(nullptr, TEXT("Failed to create renderer"), TEXT("Error"), MB_OK);
+        MessageBox(nullptr, TEXT("Failed to create Lumora Renderer"), TEXT("Error"), MB_OK);
         return 1;
     }
 
-    // 3. 스왑체인
+    // 3. SwapChain
     Lumora::SwapChainDesc sc_desc;
     sc_desc.window_handle = hwnd;
     sc_desc.width = 1280;
@@ -47,18 +46,20 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int) {
     sc_desc.vsync = true;
     auto sc_handle = renderer->CreateSwapChain(sc_desc);
 
-    // 4. 셰이더
+    // 4. 예시로 버퍼/셰이더/파이프라인 생성
     Lumora::ShaderDesc vs_desc{"vert.spv"};
     Lumora::ShaderDesc fs_desc{"frag.spv"};
     auto vs_handle = renderer->CreateShader(vs_desc);
     auto fs_handle = renderer->CreateShader(fs_desc);
 
-    // 5. 파이프라인
     Lumora::PipelineDesc pdesc;
     pdesc.vertex_shader = vs_handle;
     pdesc.fragment_shader = fs_handle;
     auto pipeline_handle = renderer->CreatePipeline(pdesc);
 
+    // TODO: 유니폼 버퍼, 텍스처, 정점/인덱스 버퍼 생성 -> UpdateBuffer -> 등등
+
+    // 메시지 루프
     MSG msg = {};
     bool running = true;
     while (running) {
@@ -73,11 +74,11 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int) {
 
         // 프레임
         renderer->BeginFrame();
-        // Draw call (RecordCommandBuffer에서 이미 삼각형 그려짐)
+        // draw call
         renderer->EndFrame();
     }
 
-    // Release
+    // 리소스 해제
     renderer->ReleaseResource(pipeline_handle);
     renderer->ReleaseShader(vs_handle);
     renderer->ReleaseShader(fs_handle);

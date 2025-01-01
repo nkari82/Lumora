@@ -1,20 +1,17 @@
 #pragma once
 
-#include "../include/IRenderer.h"
+#include <Lumora/IRenderer.h>
 
-#ifdef _WIN32
+#ifdef VK_USE_PLATFORM_WIN32_KHR
 #include <Windows.h>
+#include <vulkan/vulkan_win32.h>
 #endif
+
+#include <vk_mem_alloc.h>  // VMA
 
 #include <unordered_map>
 #include <vector>
 #include <vulkan/vulkan.hpp>
-
-// VMA 사용 시
-// #include <vk_mem_alloc.h>
-
-#include <unordered_map>
-#include <vector>
 
 namespace Lumora {
 
@@ -24,34 +21,25 @@ class VulkanRenderer : public IRenderer {
     ~VulkanRenderer() override;
 
     // IRenderer 구현
-    // 스왑체인
     SwapChainHandle CreateSwapChain(const SwapChainDesc& desc) override;
-
-    // 버퍼
     BufferHandle CreateBuffer(const BufferDesc& desc) override;
     void UpdateBuffer(BufferHandle handle, const void* data, size_t size) override;
     void BindBuffer(BufferHandle handle, uint32_t bind_point) override;
 
-    // 텍스처
     TextureHandle CreateTexture(const TextureDesc& desc, const void* initial_data) override;
     void BindTexture(TextureHandle handle, uint32_t bind_point) override;
 
-    // 샘플러
     SamplerHandle CreateSampler(const SamplerDesc& desc) override;
     void BindSampler(SamplerHandle handle, uint32_t bind_point) override;
 
-    // 셰이더
     ShaderHandle CreateShader(const ShaderDesc& desc) override;
     void ReleaseShader(ShaderHandle handle) override;
 
-    // 파이프라인
     PipelineHandle CreatePipeline(const PipelineDesc& desc) override;
     void BindPipeline(PipelineHandle handle) override;
 
-    // 리소스 해제
     void ReleaseResource(uint64_t handle) override;
 
-    // 프레임
     void BeginFrame() override;
     void EndFrame() override;
 
@@ -68,16 +56,16 @@ class VulkanRenderer : public IRenderer {
 
     struct VulkanBuffer {
         vk::Buffer buffer;
+        VmaAllocation allocation = nullptr;
         size_t size_in_bytes = 0;
-        // VmaAllocation allocation;
     };
 
     struct VulkanTexture {
         vk::Image image;
         vk::ImageView image_view;
+        VmaAllocation allocation = nullptr;
         uint32_t width = 0;
         uint32_t height = 0;
-        // VmaAllocation allocation;
     };
 
     struct VulkanSampler {
@@ -91,22 +79,9 @@ class VulkanRenderer : public IRenderer {
     struct VulkanPipeline {
         vk::Pipeline pipeline;
         vk::PipelineLayout pipeline_layout;
-        // DescriptorSetLayout, etc.
     };
 
-    // DescriptorSetLayout, DescriptorPool (UBO + Texture)
-    vk::DescriptorSetLayout descriptor_set_layout_;
-    vk::DescriptorPool descriptor_pool_;
-    // 테스트용 descriptor set (1개)
-    std::vector<vk::DescriptorSet> descriptor_sets_;
-
-    // 유니폼 / 정점 / 인덱스 버퍼 핸들
-    BufferHandle ubo_handle_ = 0;
-    BufferHandle vbo_handle_ = 0;
-    BufferHandle ibo_handle_ = 0;
-    uint32_t index_count_ = 0;  // 인덱스 개수
-
-    // 리소스 컨테이너
+    // 리소스 배열
     std::vector<VulkanSwapChain> swapchains_;
     std::vector<VulkanBuffer> buffers_;
     std::vector<VulkanTexture> textures_;
@@ -121,18 +96,21 @@ class VulkanRenderer : public IRenderer {
     PipelineHandle next_pipeline_handle_ = 1;
     ShaderHandle next_shader_handle_ = 1;
 
-    // Vulkan Core
+    // Vulkan
     vk::Instance instance_;
     vk::PhysicalDevice physical_device_;
     vk::Device device_;
     vk::Queue graphics_queue_;
     uint32_t graphics_queue_index_ = 0;
 
-    // Command Pool, Command Buffer
+    // VMA
+    VmaAllocator allocator_ = nullptr;
+
+    // Command Pool + 커맨드 버퍼 (간단화)
     vk::CommandPool command_pool_;
     std::vector<vk::CommandBuffer> command_buffers_;
 
-    // 현재 간단 동기화
+    // 동기화 (한 프레임)
     vk::Semaphore image_available_;
     vk::Semaphore render_finished_;
     vk::Fence in_flight_fence_;
@@ -142,21 +120,18 @@ class VulkanRenderer : public IRenderer {
    private:
     void InitVulkan();
     void CleanupVulkan();
+    void InitVMA();
 
     SwapChainHandle CreateSwapChainInternal(const SwapChainDesc& desc);
 
-    // descriptor pool/layout 관련
-    void CreateDescriptorPoolAndLayout();
-    void UpdateTestDescriptorSet();  // ubo + texture
-
-    // 테스트용 삼각형 생성
-    void CreateTestTriangleResources();
-
-    // 커맨드버퍼 기록
-    void RecordCommandBuffer(vk::CommandBuffer cmd, uint32_t image_index);
+    // 버퍼 업데이트 시 스테이징 복사 예시
+    void UploadDataToBuffer(const void* data, size_t size, vk::Buffer dst_buffer);
 
     vk::ShaderModule CreateShaderModule(const std::vector<char>& code);
     std::vector<char> ReadFile(const std::string& filename);
+
+    // 테스트용 삼각형 예시
+    void RecordCommandBuffer(vk::CommandBuffer cmd, uint32_t image_index);
 };
 
 }  // namespace Lumora

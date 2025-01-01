@@ -1,14 +1,14 @@
 #include "VulkanRenderer.h"
 
-#include <cstring>  // memcpy
+#include <cstring>
 #include <fstream>
 #include <iostream>
 #include <stdexcept>
 
-#ifdef _WIN32
-#include <Windows.h>
-#include <vulkan/vulkan_win32.h>  // for vkCreateWin32SurfaceKHR
-#endif
+#define GLM_FORCE_RADIANS
+#define GLM_FORCE_DEPTH_ZERO_TO_ONE
+#include <glm/glm.hpp>
+#include <glm/gtc/matrix_transform.hpp>
 
 namespace Lumora {
 
@@ -43,10 +43,10 @@ void VulkanRenderer::InitVulkan() {
 
     instance_ = vk::createInstance(ici);
 
-    // 2) 물리 디바이스
+    // 2) 물리 디바이스 선택
     auto pdevs = instance_.enumeratePhysicalDevices();
     if (pdevs.empty()) {
-        throw std::runtime_error("No physical device found");
+        throw std::runtime_error("No Vulkan physical device found");
     }
     physical_device_ = pdevs[0];
 
@@ -69,19 +69,20 @@ void VulkanRenderer::InitVulkan() {
     vk::DeviceCreateInfo dci;
     dci.queueCreateInfoCount = 1;
     dci.pQueueCreateInfos = &dqci;
-
     device_ = physical_device_.createDevice(dci);
+
     graphics_queue_ = device_.getQueue(graphics_queue_index_, 0);
 
     // 5) Command Pool
-    {
-        vk::CommandPoolCreateInfo cpci;
-        cpci.queueFamilyIndex = graphics_queue_index_;
-        cpci.flags = vk::CommandPoolCreateFlagBits::eResetCommandBuffer;
-        command_pool_ = device_.createCommandPool(cpci);
-    }
+    vk::CommandPoolCreateInfo cpci;
+    cpci.queueFamilyIndex = graphics_queue_index_;
+    cpci.flags = vk::CommandPoolCreateFlagBits::eResetCommandBuffer;
+    command_pool_ = device_.createCommandPool(cpci);
 
-    // 6) 동기화
+    // 6) VMA Init
+    InitVMA();
+
+    // 7) 동기화
     {
         vk::SemaphoreCreateInfo sci;
         image_available_ = device_.createSemaphore(sci);
@@ -91,11 +92,14 @@ void VulkanRenderer::InitVulkan() {
         fci.flags = vk::FenceCreateFlagBits::eSignaled;
         in_flight_fence_ = device_.createFence(fci);
     }
+}
 
-    // DescriptorPool/SetLayout
-    CreateDescriptorPoolAndLayout();
-
-    // (아래에서 실제 삼각형 리소스/버퍼 생성)
+void VulkanRenderer::InitVMA() {
+    VmaAllocatorCreateInfo alloc_info = {};
+    alloc_info.physicalDevice = physical_device_;
+    alloc_info.device = device_;
+    alloc_info.instance = instance_;
+    vmaCreateAllocator(&alloc_info, &allocator_);
 }
 
 void VulkanRenderer::CleanupVulkan() {
@@ -103,39 +107,45 @@ void VulkanRenderer::CleanupVulkan() {
         return;
     device_.waitIdle();
 
-    // 리소스 해제
+    // destroy pipelines
     for (size_t i = 1; i < pipelines_.size(); ++i) {
-        auto& p = pipelines_[i];
-        if (p.pipeline) {
-            device_.destroyPipeline(p.pipeline);
+        if (pipelines_[i].pipeline) {
+            device_.destroyPipeline(pipelines_[i].pipeline);
         }
-        if (p.pipeline_layout) {
-            device_.destroyPipelineLayout(p.pipeline_layout);
+        if (pipelines_[i].pipeline_layout) {
+            device_.destroyPipelineLayout(pipelines_[i].pipeline_layout);
         }
     }
+    // buffers
     for (size_t i = 1; i < buffers_.size(); ++i) {
         if (buffers_[i].buffer) {
-            device_.destroyBuffer(buffers_[i].buffer);
+            vmaDestroyBuffer(allocator_, (VkBuffer)buffers_[i].buffer, buffers_[i].allocation);
         }
     }
+    // textures
     for (size_t i = 1; i < textures_.size(); ++i) {
         if (textures_[i].image_view) {
             device_.destroyImageView(textures_[i].image_view);
         }
         if (textures_[i].image) {
-            device_.destroyImage(textures_[i].image);
+            vmaDestroyImage(allocator_, (VkImage)textures_[i].image, textures_[i].allocation);
         }
     }
+    // samplers
     for (size_t i = 1; i < samplers_.size(); ++i) {
         if (samplers_[i].sampler) {
             device_.destroySampler(samplers_[i].sampler);
         }
     }
+    // shaders
     for (auto& kv : shaders_) {
-        device_.destroyShaderModule(kv.second.shader_module);
+        if (kv.second.shader_module) {
+            device_.destroyShaderModule(kv.second.shader_module);
+        }
     }
     shaders_.clear();
 
+    // swapchains
     for (size_t i = 1; i < swapchains_.size(); ++i) {
         auto& sc = swapchains_[i];
         for (auto fb : sc.framebuffers) {
@@ -152,16 +162,7 @@ void VulkanRenderer::CleanupVulkan() {
         }
     }
 
-    if (descriptor_pool_) {
-        device_.destroyDescriptorPool(descriptor_pool_);
-    }
-    if (descriptor_set_layout_) {
-        device_.destroyDescriptorSetLayout(descriptor_set_layout_);
-    }
-
-    if (command_pool_) {
-        device_.destroyCommandPool(command_pool_);
-    }
+    // sync
     if (in_flight_fence_) {
         device_.destroyFence(in_flight_fence_);
     }
@@ -171,16 +172,29 @@ void VulkanRenderer::CleanupVulkan() {
     if (render_finished_) {
         device_.destroySemaphore(render_finished_);
     }
+
+    // command pool
+    if (command_pool_) {
+        device_.destroyCommandPool(command_pool_);
+    }
+
+    // vma
+    if (allocator_) {
+        vmaDestroyAllocator(allocator_);
+        allocator_ = nullptr;
+    }
+
+    // device
     if (device_) {
         device_.destroy();
     }
+    // instance
     if (instance_) {
         instance_.destroy();
     }
     initialized_ = false;
 }
 
-// 스왑체인
 SwapChainHandle VulkanRenderer::CreateSwapChain(const SwapChainDesc& desc) {
     if (!initialized_) {
         InitVulkan();
@@ -220,6 +234,7 @@ SwapChainHandle VulkanRenderer::CreateSwapChainInternal(const SwapChainDesc& des
         ivci.subresourceRange.aspectMask = vk::ImageAspectFlagBits::eColor;
         ivci.subresourceRange.levelCount = 1;
         ivci.subresourceRange.layerCount = 1;
+
         sc.image_views[i] = device_.createImageView(ivci);
     }
 
@@ -250,7 +265,6 @@ SwapChainHandle VulkanRenderer::CreateSwapChainInternal(const SwapChainDesc& des
 
         sc.render_pass = device_.createRenderPass(rpci);
     }
-
     // Framebuffer
     sc.framebuffers.resize(sc.images.size());
     for (size_t i = 0; i < sc.images.size(); ++i) {
@@ -262,7 +276,6 @@ SwapChainHandle VulkanRenderer::CreateSwapChainInternal(const SwapChainDesc& des
         fci.width = sc.extent.width;
         fci.height = sc.extent.height;
         fci.layers = 1;
-
         sc.framebuffers[i] = device_.createFramebuffer(fci);
     }
 
@@ -272,15 +285,12 @@ SwapChainHandle VulkanRenderer::CreateSwapChainInternal(const SwapChainDesc& des
     }
     swapchains_[handle] = sc;
 
-    // 커맨드 버퍼 할당 (2프레임이라 가정)
+    // Command buffer (이미 1개만 쓸 것이라 가정)
     vk::CommandBufferAllocateInfo cbai;
     cbai.commandPool = command_pool_;
     cbai.level = vk::CommandBufferLevel::ePrimary;
-    cbai.commandBufferCount = static_cast<uint32_t>(sc.images.size());
+    cbai.commandBufferCount = 1;
     command_buffers_ = device_.allocateCommandBuffers(cbai);
-
-    // 테스트 삼각형 리소스 생성 (UBO, VBO, IBO 등)
-    CreateTestTriangleResources();
 
     return handle;
 #else
@@ -293,6 +303,7 @@ BufferHandle VulkanRenderer::CreateBuffer(const BufferDesc& desc) {
     if (!initialized_) {
         InitVulkan();
     }
+
     vk::BufferCreateInfo bci;
     bci.size = desc.size_in_bytes;
 
@@ -307,12 +318,24 @@ BufferHandle VulkanRenderer::CreateBuffer(const BufferDesc& desc) {
         usage |= vk::BufferUsageFlagBits::eTransferSrc;
     if (desc.usage_transfer_dst)
         usage |= vk::BufferUsageFlagBits::eTransferDst;
-
     bci.usage = usage;
 
     VulkanBuffer vb;
-    vb.buffer = device_.createBuffer(bci);
     vb.size_in_bytes = desc.size_in_bytes;
+
+    // VMA 할당
+    VmaAllocationCreateInfo aci = {};
+    // 예: GPU_ONLY
+    aci.usage = VMA_MEMORY_USAGE_AUTO;  // AUTO는 GPU_ONLY 선호
+    // 필요 시 CPU_TO_GPU 매핑 가능
+    VkBuffer raw_buf;
+    VmaAllocation alloc;
+    auto result = vmaCreateBuffer(allocator_, (VkBufferCreateInfo*)&bci, &aci, &raw_buf, &alloc, nullptr);
+    if (result != VK_SUCCESS) {
+        throw std::runtime_error("Failed to create buffer with VMA");
+    }
+    vb.buffer = raw_buf;
+    vb.allocation = alloc;
 
     BufferHandle handle = next_buffer_handle_++;
     if (handle >= buffers_.size()) {
@@ -322,22 +345,72 @@ BufferHandle VulkanRenderer::CreateBuffer(const BufferDesc& desc) {
     return handle;
 }
 
+void VulkanRenderer::UploadDataToBuffer(const void* data, size_t size, vk::Buffer dst_buffer) {
+    // 1) staging buffer
+    vk::BufferCreateInfo staging_info;
+    staging_info.size = size;
+    staging_info.usage = vk::BufferUsageFlagBits::eTransferSrc;
+
+    VmaAllocationCreateInfo aci = {};
+    aci.usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST;  // CPU visible
+    VkBuffer staging_buf;
+    VmaAllocation staging_alloc;
+    vmaCreateBuffer(allocator_, (VkBufferCreateInfo*)&staging_info, &aci, &staging_buf, &staging_alloc, nullptr);
+
+    // 2) map & memcpy
+    void* mapped = nullptr;
+    vmaMapMemory(allocator_, staging_alloc, &mapped);
+    std::memcpy(mapped, data, size);
+    vmaUnmapMemory(allocator_, staging_alloc);
+
+    // 3) 커맨드 버퍼로 copy
+    auto cmd = command_buffers_[0];
+    cmd.reset();
+    vk::CommandBufferBeginInfo begin_info;
+    begin_info.flags = vk::CommandBufferUsageFlagBits::eOneTimeSubmit;
+    cmd.begin(begin_info);
+
+    vk::BufferCopy bc(0, 0, size);
+    cmd.copyBuffer(staging_buf, dst_buffer, bc);
+
+    cmd.end();
+
+    // 4) submit & wait
+    vk::SubmitInfo si;
+    si.commandBufferCount = 1;
+    si.pCommandBuffers = &cmd;
+    graphics_queue_.submit(si);
+    graphics_queue_.waitIdle();
+
+    // 5) 스테이징 버퍼 해제
+    device_.freeCommandBuffers(command_pool_, cmd);
+    vmaDestroyBuffer(allocator_, staging_buf, staging_alloc);
+
+    // 재할당 command buffer (1개)
+    vk::CommandBufferAllocateInfo cbai;
+    cbai.commandPool = command_pool_;
+    cbai.level = vk::CommandBufferLevel::ePrimary;
+    cbai.commandBufferCount = 1;
+    auto cbs = device_.allocateCommandBuffers(cbai);
+    command_buffers_ = cbs;
+}
+
 void VulkanRenderer::UpdateBuffer(BufferHandle handle, const void* data, size_t size) {
-    // 실제로는 VMA로 매핑하거나, staging 버퍼 -> GPU 전송 로직 필요
-    // 여기는 간단히 “memcpy”라 가정
-    // (Demo이므로 생략)
+    if (handle == 0 || handle >= buffers_.size()) {
+        throw std::runtime_error("Invalid buffer handle");
+    }
+    auto& vb = buffers_[handle];
+    // GPU_ONLY -> staging copy
+    UploadDataToBuffer(data, size, vb.buffer);
 }
 
 void VulkanRenderer::BindBuffer(BufferHandle handle, uint32_t bind_point) {
-    // bind_point=0 => vertex buffer
-    // bind_point=1 => index buffer
-    // bind_point=2 => uniform buffer? (descriptor set update)
-
-    // 여기서는 RecordCommandBuffer()에서 실제 binding
+    // RecordCommandBuffer()에서 실제 vkCmdBindVertexBuffers/IndexBuffer
 }
 
 // 텍스처
 TextureHandle VulkanRenderer::CreateTexture(const TextureDesc& desc, const void* initial_data) {
+    // image create
     vk::ImageCreateInfo ici;
     ici.imageType = vk::ImageType::e2D;
     ici.extent.width = desc.width;
@@ -349,10 +422,23 @@ TextureHandle VulkanRenderer::CreateTexture(const TextureDesc& desc, const void*
     ici.usage = vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eTransferDst;
 
     VulkanTexture vt;
-    vt.image = device_.createImage(ici);
     vt.width = desc.width;
     vt.height = desc.height;
 
+    // VMA alloc
+    VmaAllocationCreateInfo aci = {};
+    aci.usage = VMA_MEMORY_USAGE_AUTO;  // GPU_ONLY
+
+    VkImage raw_img;
+    VmaAllocation alloc;
+    auto result = vmaCreateImage(allocator_, (VkImageCreateInfo*)&ici, &aci, &raw_img, &alloc, nullptr);
+    if (result != VK_SUCCESS) {
+        throw std::runtime_error("Failed to create image with VMA");
+    }
+    vt.image = raw_img;
+    vt.allocation = alloc;
+
+    // ImageView
     vk::ImageViewCreateInfo ivci;
     ivci.image = vt.image;
     ivci.viewType = vk::ImageViewType::e2D;
@@ -363,7 +449,7 @@ TextureHandle VulkanRenderer::CreateTexture(const TextureDesc& desc, const void*
 
     vt.image_view = device_.createImageView(ivci);
 
-    // initial_data -> staging copy + layout transition
+    // initial_data -> staging copy + layout transition (생략)
 
     TextureHandle handle = next_texture_handle_++;
     if (handle >= textures_.size()) {
@@ -419,9 +505,28 @@ void VulkanRenderer::ReleaseShader(ShaderHandle handle) {
     }
 }
 
+vk::ShaderModule VulkanRenderer::CreateShaderModule(const std::vector<char>& code) {
+    vk::ShaderModuleCreateInfo smci;
+    smci.codeSize = code.size();
+    smci.pCode = reinterpret_cast<const uint32_t*>(code.data());
+    return device_.createShaderModule(smci);
+}
+
+std::vector<char> VulkanRenderer::ReadFile(const std::string& filename) {
+    std::ifstream file(filename, std::ios::ate | std::ios::binary);
+    if (!file.is_open()) {
+        throw std::runtime_error("Failed to open file: " + filename);
+    }
+    size_t file_size = static_cast<size_t>(file.tellg());
+    std::vector<char> buffer(file_size);
+    file.seekg(0);
+    file.read(buffer.data(), file_size);
+    file.close();
+    return buffer;
+}
+
 // 파이프라인
 PipelineHandle VulkanRenderer::CreatePipeline(const PipelineDesc& desc) {
-    // vertex / fragment
     auto vsh_it = shaders_.find(desc.vertex_shader);
     auto fsh_it = shaders_.find(desc.fragment_shader);
     if (vsh_it == shaders_.end() || fsh_it == shaders_.end()) {
@@ -440,12 +545,11 @@ PipelineHandle VulkanRenderer::CreatePipeline(const PipelineDesc& desc) {
 
     vk::PipelineShaderStageCreateInfo stages[] = {vert_stage, frag_stage};
 
-    // 고정 기능
     vk::PipelineVertexInputStateCreateInfo vi;
     vk::PipelineInputAssemblyStateCreateInfo ia;
     ia.topology = vk::PrimitiveTopology::eTriangleList;
 
-    vk::Viewport viewport(0, 0, 1280, 720, 0.f, 1.f);
+    vk::Viewport viewport(0.0f, 0.0f, 1280.0f, 720.0f, 0.f, 1.f);
     vk::Rect2D scissor({0, 0}, vk::Extent2D{1280, 720});
     vk::PipelineViewportStateCreateInfo vp;
     vp.viewportCount = 1;
@@ -457,7 +561,6 @@ PipelineHandle VulkanRenderer::CreatePipeline(const PipelineDesc& desc) {
     rs.polygonMode = vk::PolygonMode::eFill;
     rs.cullMode = vk::CullModeFlagBits::eBack;
     rs.frontFace = vk::FrontFace::eCounterClockwise;
-    rs.lineWidth = 1.0f;
 
     vk::PipelineMultisampleStateCreateInfo ms;
     ms.rasterizationSamples = vk::SampleCountFlagBits::e1;
@@ -465,22 +568,17 @@ PipelineHandle VulkanRenderer::CreatePipeline(const PipelineDesc& desc) {
     vk::PipelineColorBlendAttachmentState cbAttach;
     cbAttach.colorWriteMask = vk::ColorComponentFlagBits::eR | vk::ColorComponentFlagBits::eG |
                               vk::ColorComponentFlagBits::eB | vk::ColorComponentFlagBits::eA;
-    cbAttach.blendEnable = VK_FALSE;
+    cbAttach.blendEnable = false;
 
     vk::PipelineColorBlendStateCreateInfo cb;
     cb.attachmentCount = 1;
     cb.pAttachments = &cbAttach;
 
-    // pipelineLayout은 descriptorSetLayout 1개 사용
     vk::PipelineLayoutCreateInfo plci;
-    plci.setLayoutCount = 1;
-    plci.pSetLayouts = &descriptor_set_layout_;
-
     auto pipeline_layout = device_.createPipelineLayout(plci);
 
-    // swapchains_[1]이라고 가정 (실제로는 Handle 구분 필요)
     if (swapchains_.size() <= 1) {
-        throw std::runtime_error("No valid swapchain");
+        throw std::runtime_error("No valid swapchain to create pipeline");
     }
     auto rp = swapchains_[1].render_pass;
 
@@ -514,7 +612,7 @@ PipelineHandle VulkanRenderer::CreatePipeline(const PipelineDesc& desc) {
 }
 
 void VulkanRenderer::BindPipeline(PipelineHandle handle) {
-    // RecordCommandBuffer()에서 사용
+    // RecordCommandBuffer()에서 실제 bind
 }
 
 // 리소스 해제
@@ -537,14 +635,14 @@ void VulkanRenderer::ReleaseResource(uint64_t handle) {
     }
     // buffer
     if (handle < buffers_.size() && buffers_[handle].buffer) {
-        device_.destroyBuffer(buffers_[handle].buffer);
+        vmaDestroyBuffer(allocator_, (VkBuffer)buffers_[handle].buffer, buffers_[handle].allocation);
         buffers_[handle].buffer = nullptr;
         return;
     }
     // texture
     if (handle < textures_.size() && textures_[handle].image) {
         device_.destroyImageView(textures_[handle].image_view);
-        device_.destroyImage(textures_[handle].image);
+        vmaDestroyImage(allocator_, (VkImage)textures_[handle].image, textures_[handle].allocation);
         textures_[handle].image = nullptr;
         return;
     }
@@ -570,227 +668,36 @@ void VulkanRenderer::ReleaseResource(uint64_t handle) {
     }
 }
 
-// 프레임
 void VulkanRenderer::BeginFrame() {
     device_.waitForFences(in_flight_fence_, VK_TRUE, UINT64_MAX);
     device_.resetFences(in_flight_fence_);
-
-    // acquire (간단화)
-    // image_index=0 이라 가정
+    // acquire image_index=0 (단순화)
 }
 
 void VulkanRenderer::EndFrame() {
-    // submit
+    // submit command_buffers_[0]
     vk::SubmitInfo si;
     vk::Semaphore wait_sems[] = {image_available_};
     vk::PipelineStageFlags wait_stages[] = {vk::PipelineStageFlagBits::eColorAttachmentOutput};
     si.waitSemaphoreCount = 1;
     si.pWaitSemaphores = wait_sems;
     si.pWaitDstStageMask = wait_stages;
+
     si.commandBufferCount = 1;
     si.pCommandBuffers = &command_buffers_[0];
+
     vk::Semaphore signal_sems[] = {render_finished_};
     si.signalSemaphoreCount = 1;
     si.pSignalSemaphores = signal_sems;
 
     graphics_queue_.submit(si, in_flight_fence_);
 
-    // present (간단화)
-}
-
-// ------------------ 아래 추가 구현들 ------------------
-
-// descriptor pool / set layout
-void VulkanRenderer::CreateDescriptorPoolAndLayout() {
-    // UBO + CombinedSampler
-    std::vector<vk::DescriptorPoolSize> pool_sizes = {
-        {vk::DescriptorType::eUniformBuffer, 100},
-        {vk::DescriptorType::eCombinedImageSampler, 100},
-    };
-    vk::DescriptorPoolCreateInfo dpci;
-    dpci.maxSets = 100;
-    dpci.poolSizeCount = static_cast<uint32_t>(pool_sizes.size());
-    dpci.pPoolSizes = pool_sizes.data();
-    descriptor_pool_ = device_.createDescriptorPool(dpci);
-
-    vk::DescriptorSetLayoutBinding ubo_bind;
-    ubo_bind.binding = 0;
-    ubo_bind.descriptorType = vk::DescriptorType::eUniformBuffer;
-    ubo_bind.descriptorCount = 1;
-    ubo_bind.stageFlags = vk::ShaderStageFlagBits::eVertex;
-
-    vk::DescriptorSetLayoutBinding sampler_bind;
-    sampler_bind.binding = 1;
-    sampler_bind.descriptorType = vk::DescriptorType::eCombinedImageSampler;
-    sampler_bind.descriptorCount = 1;
-    sampler_bind.stageFlags = vk::ShaderStageFlagBits::eFragment;
-
-    std::vector<vk::DescriptorSetLayoutBinding> binds = {ubo_bind, sampler_bind};
-    vk::DescriptorSetLayoutCreateInfo dsci;
-    dsci.bindingCount = (uint32_t)binds.size();
-    dsci.pBindings = binds.data();
-
-    descriptor_set_layout_ = device_.createDescriptorSetLayout(dsci);
-}
-
-// 테스트용 삼각형 리소스
-struct Vertex {
-    float px, py;
-    float uvx, uvy;
-};
-
-#include <glm/glm.hpp>
-#include <glm/gtc/matrix_transform.hpp>
-
-void VulkanRenderer::CreateTestTriangleResources() {
-    // 정점
-    std::vector<Vertex> vertices = {
-        {-0.5f, -0.5f, 0.0f, 1.0f},
-        {0.0f, 0.5f, 0.5f, 0.0f},
-        {0.5f, -0.5f, 1.0f, 1.0f},
-    };
-    // 인덱스
-    std::vector<uint16_t> indices = {0, 1, 2};
-    index_count_ = (uint32_t)indices.size();
-
-    // 1) VBO
-    {
-        BufferDesc bd;
-        bd.size_in_bytes = sizeof(Vertex) * vertices.size();
-        bd.usage_vertex_buffer = true;
-        bd.usage_transfer_dst = true;
-        vbo_handle_ = CreateBuffer(bd);
-
-        UpdateBuffer(vbo_handle_, vertices.data(), bd.size_in_bytes);
-    }
-    // 2) IBO
-    {
-        BufferDesc bd;
-        bd.size_in_bytes = sizeof(uint16_t) * indices.size();
-        bd.usage_index_buffer = true;
-        bd.usage_transfer_dst = true;
-        ibo_handle_ = CreateBuffer(bd);
-
-        UpdateBuffer(ibo_handle_, indices.data(), bd.size_in_bytes);
-    }
-    // 3) UBO (MVP)
-    {
-        BufferDesc bd;
-        bd.size_in_bytes = sizeof(glm::mat4);
-        bd.usage_uniform_buffer = true;
-        bd.usage_transfer_dst = true;
-        ubo_handle_ = CreateBuffer(bd);
-
-        glm::mat4 model = glm::mat4(1.0f);
-        glm::mat4 view = glm::lookAt(glm::vec3(0.f, 0.f, 2.f), glm::vec3(0.f, 0.f, 0.f), glm::vec3(0.f, 1.f, 0.f));
-        glm::mat4 proj = glm::perspective(glm::radians(45.f), 1.77f, 0.1f, 10.f);
-        proj[1][1] *= -1.f;  // Vulkan
-        glm::mat4 mvp = proj * view * model;
-
-        UpdateBuffer(ubo_handle_, &mvp, sizeof(mvp));
-    }
-    // 4) DescriptorSet 할당
-    {
-        vk::DescriptorSetAllocateInfo dsai;
-        dsai.descriptorPool = descriptor_pool_;
-        dsai.descriptorSetCount = 1;
-        dsai.pSetLayouts = &descriptor_set_layout_;
-        descriptor_sets_ = device_.allocateDescriptorSets(dsai);
-
-        // UBO binding=0
-        vk::DescriptorBufferInfo dbi;
-        dbi.buffer = buffers_[ubo_handle_].buffer;
-        dbi.offset = 0;
-        dbi.range = sizeof(glm::mat4);
-
-        vk::WriteDescriptorSet wds_ubo;
-        wds_ubo.dstSet = descriptor_sets_[0];
-        wds_ubo.dstBinding = 0;
-        wds_ubo.descriptorCount = 1;
-        wds_ubo.descriptorType = vk::DescriptorType::eUniformBuffer;
-        wds_ubo.pBufferInfo = &dbi;
-
-        // 샘플러 (dummy texture)
-        vk::DescriptorImageInfo dii;
-        dii.imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
-        dii.imageView = VK_NULL_HANDLE;  // 실제 텍스처가 없으니
-        dii.sampler = VK_NULL_HANDLE;    // 샘플러도 없음
-
-        vk::WriteDescriptorSet wds_sampler;
-        wds_sampler.dstSet = descriptor_sets_[0];
-        wds_sampler.dstBinding = 1;
-        wds_sampler.descriptorCount = 1;
-        wds_sampler.descriptorType = vk::DescriptorType::eCombinedImageSampler;
-        wds_sampler.pImageInfo = &dii;
-
-        std::vector<vk::WriteDescriptorSet> writes = {wds_ubo, wds_sampler};
-        device_.updateDescriptorSets(writes, {});
-    }
-
-    // cmd buffer 기록
-    RecordCommandBuffer(command_buffers_[0], 0);
+    // present (dummy)
 }
 
 void VulkanRenderer::RecordCommandBuffer(vk::CommandBuffer cmd, uint32_t image_index) {
-    vk::CommandBufferBeginInfo begin_info;
-    cmd.begin(begin_info);
-
-    // renderpass 시작
-    auto& sc = swapchains_[1];  // handle=1이라 가정
-    vk::RenderPassBeginInfo rpbi;
-    rpbi.renderPass = sc.render_pass;
-    rpbi.framebuffer = sc.framebuffers[image_index];
-    rpbi.renderArea.offset = vk::Offset2D{0, 0};
-    rpbi.renderArea.extent = sc.extent;
-
-    vk::ClearValue clear_color = vk::ClearColorValue(std::array<float, 4>{0.2f, 0.3f, 0.4f, 1.f});
-    rpbi.clearValueCount = 1;
-    rpbi.pClearValues = &clear_color;
-
-    cmd.beginRenderPass(rpbi, vk::SubpassContents::eInline);
-
-    // 파이프라인 바인딩
-    if (pipelines_.size() > 1 && pipelines_[1].pipeline) {
-        cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, pipelines_[1].pipeline);
-        // descriptor set 바인딩
-        cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, pipelines_[1].pipeline_layout, 0, descriptor_sets_[0],
-                               {});
-    }
-
-    // 정점/인덱스 버퍼 바인딩
-    if (vbo_handle_ < buffers_.size()) {
-        vk::Buffer vb = buffers_[vbo_handle_].buffer;
-        vk::DeviceSize offset = 0;
-        cmd.bindVertexBuffers(0, vb, offset);
-    }
-    if (ibo_handle_ < buffers_.size()) {
-        cmd.bindIndexBuffer(buffers_[ibo_handle_].buffer, 0, vk::IndexType::eUint16);
-    }
-
-    cmd.drawIndexed(index_count_, 1, 0, 0, 0);
-
-    cmd.endRenderPass();
-    cmd.end();
-}
-
-vk::ShaderModule VulkanRenderer::CreateShaderModule(const std::vector<char>& code) {
-    vk::ShaderModuleCreateInfo smci;
-    smci.codeSize = code.size();
-    smci.pCode = reinterpret_cast<const uint32_t*>(code.data());
-    return device_.createShaderModule(smci);
-}
-
-std::vector<char> VulkanRenderer::ReadFile(const std::string& filename) {
-    std::ifstream file(filename, std::ios::ate | std::ios::binary);
-    if (!file.is_open()) {
-        throw std::runtime_error("Failed to open file: " + filename);
-    }
-    size_t file_size = (size_t)file.tellg();
-    std::vector<char> buffer(file_size);
-    file.seekg(0);
-    file.read(buffer.data(), file_size);
-    file.close();
-    return buffer;
+    // 실제로는 삼각형 그리기 위해 vkCmdBindPipeline, vkCmdBindVertexBuffers, IndexBuffer, Draw
+    // (생략)
 }
 
 }  // namespace Lumora
