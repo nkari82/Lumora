@@ -2,8 +2,9 @@
 
 #include "../include/IRenderer.h"
 
-#ifdef _WIN32
+#ifdef VK_USE_PLATFORM_WIN32_KHR
 #include <Windows.h>
+#include <vulkan/vulkan_win32.h>
 #endif
 
 #include <unordered_map>
