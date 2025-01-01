@@ -29,22 +29,24 @@ namespace Lumora
     {
         uint32_t width = 0;
         uint32_t height = 0;
-        // 포맷, 레이아웃, mipLevels 등 필요한 필드들은 계속 확장 가능
+        // 포맷, mipLevels, 레이아웃 등 추가 확장 가능
     };
 
     // 플랫폼 독립적인 샘플러 생성 파라미터
     struct SamplerDesc
     {
-        // 필터링, 어드레스 모드 등 계속 확장 가능
+        // 필터링, 어드레스 모드, mipmap 모드 등 확장 가능
     };
 
     // 플랫폼 독립적인 파이프라인 생성 파라미터
     struct PipelineDesc
     {
-        // 셰이더, 레스터라이저/블렌딩/깊이버퍼 옵션 등 확장 가능
+        // 간단 예시: 셰이더 경로
+        const char *vertex_shader_path = nullptr;
+        const char *fragment_shader_path = nullptr;
+        // 더 복잡한 파이프라인 옵션(블렌딩, 깊이버퍼, 톱로지 등) 확장 가능
     };
 
-    // 플랫폼 독립적인 렌더러 인터페이스
     class IRenderer
     {
     public:
@@ -71,6 +73,10 @@ namespace Lumora
 
         // 리소스 해제
         virtual void ReleaseResource(uint64_t handle) = 0;
+
+        // 프레임 렌더링(간단 예시)
+        virtual void BeginFrame() = 0;
+        virtual void EndFrame() = 0;
 
         // VulkanRenderer를 생성하는 스태틱 함수
         static std::unique_ptr<IRenderer> Create();
