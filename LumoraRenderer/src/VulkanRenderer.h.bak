@@ -7,12 +7,11 @@
 #include <vulkan/vulkan_win32.h>
 #endif
 
+#include <vulkan/vulkan.hpp>
+// #include <vk_mem_alloc.h>
+
 #include <unordered_map>
 #include <vector>
-#include <vulkan/vulkan.hpp>
-
-// VMA 사용 시
-// #include <vk_mem_alloc.h>
 
 namespace Lumora {
 
@@ -22,31 +21,39 @@ class VulkanRenderer : public IRenderer {
     ~VulkanRenderer() override;
 
     // IRenderer 구현
+    // 스왑체인
     SwapChainHandle CreateSwapChain(const SwapChainDesc& desc) override;
 
+    // 버퍼
     BufferHandle CreateBuffer(const BufferDesc& desc) override;
     void UpdateBuffer(BufferHandle handle, const void* data, size_t size) override;
     void BindBuffer(BufferHandle handle, uint32_t bind_point) override;
 
+    // 텍스처
     TextureHandle CreateTexture(const TextureDesc& desc, const void* initial_data) override;
     void BindTexture(TextureHandle handle, uint32_t bind_point) override;
 
+    // 샘플러
     SamplerHandle CreateSampler(const SamplerDesc& desc) override;
     void BindSampler(SamplerHandle handle, uint32_t bind_point) override;
 
+    // 셰이더
     ShaderHandle CreateShader(const ShaderDesc& desc) override;
     void ReleaseShader(ShaderHandle handle) override;
 
+    // 파이프라인
     PipelineHandle CreatePipeline(const PipelineDesc& desc) override;
     void BindPipeline(PipelineHandle handle) override;
 
+    // 리소스 해제
     void ReleaseResource(uint64_t handle) override;
 
+    // 프레임
     void BeginFrame() override;
     void EndFrame() override;
 
    private:
-    // 내부 구조체들
+    // 내부 구조체
     struct VulkanSwapChain {
         vk::SwapchainKHR swapchain;
         std::vector<vk::Image> images;
@@ -65,8 +72,9 @@ class VulkanRenderer : public IRenderer {
     struct VulkanTexture {
         vk::Image image;
         vk::ImageView image_view;
+        uint32_t width = 0;
+        uint32_t height = 0;
         // VmaAllocation allocation;
-        uint32_t width, height;
     };
 
     struct VulkanSampler {
@@ -80,9 +88,22 @@ class VulkanRenderer : public IRenderer {
     struct VulkanPipeline {
         vk::Pipeline pipeline;
         vk::PipelineLayout pipeline_layout;
+        // DescriptorSetLayout, etc.
     };
 
-    // 리소스 배열
+    // DescriptorSetLayout, DescriptorPool (UBO + Texture)
+    vk::DescriptorSetLayout descriptor_set_layout_;
+    vk::DescriptorPool descriptor_pool_;
+    // 테스트용 descriptor set (1개)
+    std::vector<vk::DescriptorSet> descriptor_sets_;
+
+    // 유니폼 / 정점 / 인덱스 버퍼 핸들
+    BufferHandle ubo_handle_ = 0;
+    BufferHandle vbo_handle_ = 0;
+    BufferHandle ibo_handle_ = 0;
+    uint32_t index_count_ = 0;  // 인덱스 개수
+
+    // 리소스 컨테이너
     std::vector<VulkanSwapChain> swapchains_;
     std::vector<VulkanBuffer> buffers_;
     std::vector<VulkanTexture> textures_;
@@ -97,27 +118,40 @@ class VulkanRenderer : public IRenderer {
     PipelineHandle next_pipeline_handle_ = 1;
     ShaderHandle next_shader_handle_ = 1;
 
-    // Vulkan core
+    // Vulkan Core
     vk::Instance instance_;
     vk::PhysicalDevice physical_device_;
     vk::Device device_;
     vk::Queue graphics_queue_;
     uint32_t graphics_queue_index_ = 0;
 
-    // VMAAllocator 등
-    // VmaAllocator allocator_;
-
-    // CommandPool, CommandBuffers
+    // Command Pool, Command Buffer
     vk::CommandPool command_pool_;
+    std::vector<vk::CommandBuffer> command_buffers_;
 
-    // ...동기화, etc.
+    // 현재 간단 동기화
+    vk::Semaphore image_available_;
+    vk::Semaphore render_finished_;
+    vk::Fence in_flight_fence_;
 
     bool initialized_ = false;
 
-    // 내부 함수
+   private:
     void InitVulkan();
     void CleanupVulkan();
+
     SwapChainHandle CreateSwapChainInternal(const SwapChainDesc& desc);
+
+    // descriptor pool/layout 관련
+    void CreateDescriptorPoolAndLayout();
+    void UpdateTestDescriptorSet();  // ubo + texture
+
+    // 테스트용 삼각형 생성
+    void CreateTestTriangleResources();
+
+    // 커맨드버퍼 기록
+    void RecordCommandBuffer(vk::CommandBuffer cmd, uint32_t image_index);
+
     vk::ShaderModule CreateShaderModule(const std::vector<char>& code);
     std::vector<char> ReadFile(const std::string& filename);
 };

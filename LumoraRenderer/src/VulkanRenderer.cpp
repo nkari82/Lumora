@@ -1,6 +1,6 @@
 #include "VulkanRenderer.h"
 
-#include <cstring>
+#include <cstring>  // memcpy
 #include <fstream>
 #include <iostream>
 #include <stdexcept>
@@ -26,7 +26,7 @@ void VulkanRenderer::InitVulkan() {
 
     // 1) vkInstance
     vk::ApplicationInfo app_info;
-    app_info.pApplicationName = "Lumora";
+    app_info.pApplicationName = "Lumora App";
     app_info.applicationVersion = 1;
     app_info.pEngineName = "Lumora Engine";
     app_info.engineVersion = 1;
@@ -46,7 +46,7 @@ void VulkanRenderer::InitVulkan() {
     // 2) 물리 디바이스
     auto pdevs = instance_.enumeratePhysicalDevices();
     if (pdevs.empty()) {
-        throw std::runtime_error("No Vulkan physical device found");
+        throw std::runtime_error("No physical device found");
     }
     physical_device_ = pdevs[0];
 
@@ -58,11 +58,8 @@ void VulkanRenderer::InitVulkan() {
             break;
         }
     }
-    if (graphics_queue_index_ == UINT32_MAX) {
-        throw std::runtime_error("Failed to find Graphics queue");
-    }
 
-    // 4) Logical Device
+    // 4) Logical device
     float qPriority = 1.0f;
     vk::DeviceQueueCreateInfo dqci;
     dqci.queueFamilyIndex = graphics_queue_index_;
@@ -77,17 +74,28 @@ void VulkanRenderer::InitVulkan() {
     graphics_queue_ = device_.getQueue(graphics_queue_index_, 0);
 
     // 5) Command Pool
-    vk::CommandPoolCreateInfo cpci;
-    cpci.queueFamilyIndex = graphics_queue_index_;
-    cpci.flags = vk::CommandPoolCreateFlagBits::eResetCommandBuffer;
-    command_pool_ = device_.createCommandPool(cpci);
+    {
+        vk::CommandPoolCreateInfo cpci;
+        cpci.queueFamilyIndex = graphics_queue_index_;
+        cpci.flags = vk::CommandPoolCreateFlagBits::eResetCommandBuffer;
+        command_pool_ = device_.createCommandPool(cpci);
+    }
 
-    // 6) VMA Allocator (생략 예시)
-    // VmaAllocatorCreateInfo alloc_info = {};
-    // alloc_info.physicalDevice = physical_device_;
-    // alloc_info.device = device_;
-    // alloc_info.instance = instance_;
-    // vmaCreateAllocator(&alloc_info, &allocator_);
+    // 6) 동기화
+    {
+        vk::SemaphoreCreateInfo sci;
+        image_available_ = device_.createSemaphore(sci);
+        render_finished_ = device_.createSemaphore(sci);
+
+        vk::FenceCreateInfo fci;
+        fci.flags = vk::FenceCreateFlagBits::eSignaled;
+        in_flight_fence_ = device_.createFence(fci);
+    }
+
+    // DescriptorPool/SetLayout
+    CreateDescriptorPoolAndLayout();
+
+    // (아래에서 실제 삼각형 리소스/버퍼 생성)
 }
 
 void VulkanRenderer::CleanupVulkan() {
@@ -95,7 +103,39 @@ void VulkanRenderer::CleanupVulkan() {
         return;
     device_.waitIdle();
 
-    // 스왑체인
+    // 리소스 해제
+    for (size_t i = 1; i < pipelines_.size(); ++i) {
+        auto& p = pipelines_[i];
+        if (p.pipeline) {
+            device_.destroyPipeline(p.pipeline);
+        }
+        if (p.pipeline_layout) {
+            device_.destroyPipelineLayout(p.pipeline_layout);
+        }
+    }
+    for (size_t i = 1; i < buffers_.size(); ++i) {
+        if (buffers_[i].buffer) {
+            device_.destroyBuffer(buffers_[i].buffer);
+        }
+    }
+    for (size_t i = 1; i < textures_.size(); ++i) {
+        if (textures_[i].image_view) {
+            device_.destroyImageView(textures_[i].image_view);
+        }
+        if (textures_[i].image) {
+            device_.destroyImage(textures_[i].image);
+        }
+    }
+    for (size_t i = 1; i < samplers_.size(); ++i) {
+        if (samplers_[i].sampler) {
+            device_.destroySampler(samplers_[i].sampler);
+        }
+    }
+    for (auto& kv : shaders_) {
+        device_.destroyShaderModule(kv.second.shader_module);
+    }
+    shaders_.clear();
+
     for (size_t i = 1; i < swapchains_.size(); ++i) {
         auto& sc = swapchains_[i];
         for (auto fb : sc.framebuffers) {
@@ -111,65 +151,36 @@ void VulkanRenderer::CleanupVulkan() {
             device_.destroySwapchainKHR(sc.swapchain);
         }
     }
-    // 파이프라인
-    for (size_t i = 1; i < pipelines_.size(); ++i) {
-        if (pipelines_[i].pipeline) {
-            device_.destroyPipeline(pipelines_[i].pipeline);
-        }
-        if (pipelines_[i].pipeline_layout) {
-            device_.destroyPipelineLayout(pipelines_[i].pipeline_layout);
-        }
-    }
-    // 버퍼
-    for (size_t i = 1; i < buffers_.size(); ++i) {
-        if (buffers_[i].buffer) {
-            device_.destroyBuffer(buffers_[i].buffer);
-        }
-    }
-    // 텍스처
-    for (size_t i = 1; i < textures_.size(); ++i) {
-        if (textures_[i].image_view) {
-            device_.destroyImageView(textures_[i].image_view);
-        }
-        if (textures_[i].image) {
-            device_.destroyImage(textures_[i].image);
-        }
-    }
-    // 샘플러
-    for (size_t i = 1; i < samplers_.size(); ++i) {
-        if (samplers_[i].sampler) {
-            device_.destroySampler(samplers_[i].sampler);
-        }
-    }
-    // 셰이더
-    for (auto& kv : shaders_) {
-        if (kv.second.shader_module) {
-            device_.destroyShaderModule(kv.second.shader_module);
-        }
-    }
-    shaders_.clear();
 
-    // 커맨드풀
+    if (descriptor_pool_) {
+        device_.destroyDescriptorPool(descriptor_pool_);
+    }
+    if (descriptor_set_layout_) {
+        device_.destroyDescriptorSetLayout(descriptor_set_layout_);
+    }
+
     if (command_pool_) {
         device_.destroyCommandPool(command_pool_);
     }
-
-    // VMA 할당 해제
-    // if (allocator_) {
-    //   vmaDestroyAllocator(allocator_);
-    // }
-
+    if (in_flight_fence_) {
+        device_.destroyFence(in_flight_fence_);
+    }
+    if (image_available_) {
+        device_.destroySemaphore(image_available_);
+    }
+    if (render_finished_) {
+        device_.destroySemaphore(render_finished_);
+    }
     if (device_) {
         device_.destroy();
     }
     if (instance_) {
         instance_.destroy();
     }
-
     initialized_ = false;
 }
 
-// ----- SwapChain -----
+// 스왑체인
 SwapChainHandle VulkanRenderer::CreateSwapChain(const SwapChainDesc& desc) {
     if (!initialized_) {
         InitVulkan();
@@ -179,13 +190,11 @@ SwapChainHandle VulkanRenderer::CreateSwapChain(const SwapChainDesc& desc) {
 
 SwapChainHandle VulkanRenderer::CreateSwapChainInternal(const SwapChainDesc& desc) {
 #ifdef VK_USE_PLATFORM_WIN32_KHR
-    // Win32 Surface
     vk::Win32SurfaceCreateInfoKHR sci;
     sci.hinstance = GetModuleHandle(nullptr);
     sci.hwnd = static_cast<HWND>(desc.window_handle);
     vk::SurfaceKHR surface = instance_.createWin32SurfaceKHR(sci);
 
-    // (실제로 surfaceCapabilities, presentModes, etc. 체크)
     VulkanSwapChain sc;
     sc.extent.width = desc.width;
     sc.extent.height = desc.height;
@@ -201,7 +210,6 @@ SwapChainHandle VulkanRenderer::CreateSwapChainInternal(const SwapChainDesc& des
     ci.clipped = true;
 
     sc.swapchain = device_.createSwapchainKHR(ci);
-
     sc.images = device_.getSwapchainImagesKHR(sc.swapchain);
     sc.image_views.resize(sc.images.size());
     for (size_t i = 0; i < sc.images.size(); ++i) {
@@ -212,7 +220,6 @@ SwapChainHandle VulkanRenderer::CreateSwapChainInternal(const SwapChainDesc& des
         ivci.subresourceRange.aspectMask = vk::ImageAspectFlagBits::eColor;
         ivci.subresourceRange.levelCount = 1;
         ivci.subresourceRange.layerCount = 1;
-
         sc.image_views[i] = device_.createImageView(ivci);
     }
 
@@ -244,7 +251,7 @@ SwapChainHandle VulkanRenderer::CreateSwapChainInternal(const SwapChainDesc& des
         sc.render_pass = device_.createRenderPass(rpci);
     }
 
-    // Framebuffers
+    // Framebuffer
     sc.framebuffers.resize(sc.images.size());
     for (size_t i = 0; i < sc.images.size(); ++i) {
         vk::FramebufferCreateInfo fci;
@@ -255,28 +262,37 @@ SwapChainHandle VulkanRenderer::CreateSwapChainInternal(const SwapChainDesc& des
         fci.width = sc.extent.width;
         fci.height = sc.extent.height;
         fci.layers = 1;
+
         sc.framebuffers[i] = device_.createFramebuffer(fci);
     }
 
-    // 핸들 등록
     SwapChainHandle handle = next_swapchain_handle_++;
     if (handle >= swapchains_.size()) {
         swapchains_.resize(handle + 1);
     }
     swapchains_[handle] = sc;
-    return handle;
 
+    // 커맨드 버퍼 할당 (2프레임이라 가정)
+    vk::CommandBufferAllocateInfo cbai;
+    cbai.commandPool = command_pool_;
+    cbai.level = vk::CommandBufferLevel::ePrimary;
+    cbai.commandBufferCount = static_cast<uint32_t>(sc.images.size());
+    command_buffers_ = device_.allocateCommandBuffers(cbai);
+
+    // 테스트 삼각형 리소스 생성 (UBO, VBO, IBO 등)
+    CreateTestTriangleResources();
+
+    return handle;
 #else
-    throw std::runtime_error("Win32 not enabled, cannot create swapchain");
+    throw std::runtime_error("Not on Win32 platform");
 #endif
 }
 
-// ----- Buffer -----
+// 버퍼
 BufferHandle VulkanRenderer::CreateBuffer(const BufferDesc& desc) {
     if (!initialized_) {
         InitVulkan();
     }
-
     vk::BufferCreateInfo bci;
     bci.size = desc.size_in_bytes;
 
@@ -291,14 +307,12 @@ BufferHandle VulkanRenderer::CreateBuffer(const BufferDesc& desc) {
         usage |= vk::BufferUsageFlagBits::eTransferSrc;
     if (desc.usage_transfer_dst)
         usage |= vk::BufferUsageFlagBits::eTransferDst;
+
     bci.usage = usage;
 
     VulkanBuffer vb;
     vb.buffer = device_.createBuffer(bci);
     vb.size_in_bytes = desc.size_in_bytes;
-
-    // VMA alloc (if needed)
-    // vmaCreateBuffer(...)
 
     BufferHandle handle = next_buffer_handle_++;
     if (handle >= buffers_.size()) {
@@ -309,20 +323,21 @@ BufferHandle VulkanRenderer::CreateBuffer(const BufferDesc& desc) {
 }
 
 void VulkanRenderer::UpdateBuffer(BufferHandle handle, const void* data, size_t size) {
-    // if GPU_ONLY -> staging copy
-    // if CPU_TO_GPU -> direct map & memcpy
+    // 실제로는 VMA로 매핑하거나, staging 버퍼 -> GPU 전송 로직 필요
+    // 여기는 간단히 “memcpy”라 가정
+    // (Demo이므로 생략)
 }
 
 void VulkanRenderer::BindBuffer(BufferHandle handle, uint32_t bind_point) {
-    // e.g. vkCmdBindVertexBuffers / vkCmdBindIndexBuffer
+    // bind_point=0 => vertex buffer
+    // bind_point=1 => index buffer
+    // bind_point=2 => uniform buffer? (descriptor set update)
+
+    // 여기서는 RecordCommandBuffer()에서 실제 binding
 }
 
-// ----- Texture -----
+// 텍스처
 TextureHandle VulkanRenderer::CreateTexture(const TextureDesc& desc, const void* initial_data) {
-    if (!initialized_) {
-        InitVulkan();
-    }
-
     vk::ImageCreateInfo ici;
     ici.imageType = vk::ImageType::e2D;
     ici.extent.width = desc.width;
@@ -348,7 +363,7 @@ TextureHandle VulkanRenderer::CreateTexture(const TextureDesc& desc, const void*
 
     vt.image_view = device_.createImageView(ivci);
 
-    // VMA alloc, initial data copy, layout transition, etc.
+    // initial_data -> staging copy + layout transition
 
     TextureHandle handle = next_texture_handle_++;
     if (handle >= textures_.size()) {
@@ -362,7 +377,7 @@ void VulkanRenderer::BindTexture(TextureHandle handle, uint32_t bind_point) {
     // descriptor set update
 }
 
-// ----- Sampler -----
+// 샘플러
 SamplerHandle VulkanRenderer::CreateSampler(const SamplerDesc& desc) {
     vk::SamplerCreateInfo sci;
     sci.magFilter = vk::Filter::eLinear;
@@ -379,12 +394,14 @@ SamplerHandle VulkanRenderer::CreateSampler(const SamplerDesc& desc) {
     return handle;
 }
 
-void VulkanRenderer::BindSampler(SamplerHandle handle, uint32_t bind_point) {}
+void VulkanRenderer::BindSampler(SamplerHandle handle, uint32_t bind_point) {
+    // descriptor set update
+}
 
-// ----- Shader -----
+// 셰이더
 ShaderHandle VulkanRenderer::CreateShader(const ShaderDesc& desc) {
     auto code = ReadFile(desc.file_path);
-    vk::ShaderModule sm = CreateShaderModule(code);
+    auto sm = CreateShaderModule(code);
 
     VulkanShader vs;
     vs.shader_module = sm;
@@ -400,6 +417,360 @@ void VulkanRenderer::ReleaseShader(ShaderHandle handle) {
         device_.destroyShaderModule(it->second.shader_module);
         shaders_.erase(it);
     }
+}
+
+// 파이프라인
+PipelineHandle VulkanRenderer::CreatePipeline(const PipelineDesc& desc) {
+    // vertex / fragment
+    auto vsh_it = shaders_.find(desc.vertex_shader);
+    auto fsh_it = shaders_.find(desc.fragment_shader);
+    if (vsh_it == shaders_.end() || fsh_it == shaders_.end()) {
+        throw std::runtime_error("Invalid shader handle in pipeline desc");
+    }
+
+    vk::PipelineShaderStageCreateInfo vert_stage;
+    vert_stage.stage = vk::ShaderStageFlagBits::eVertex;
+    vert_stage.module = vsh_it->second.shader_module;
+    vert_stage.pName = "main";
+
+    vk::PipelineShaderStageCreateInfo frag_stage;
+    frag_stage.stage = vk::ShaderStageFlagBits::eFragment;
+    frag_stage.module = fsh_it->second.shader_module;
+    frag_stage.pName = "main";
+
+    vk::PipelineShaderStageCreateInfo stages[] = {vert_stage, frag_stage};
+
+    // 고정 기능
+    vk::PipelineVertexInputStateCreateInfo vi;
+    vk::PipelineInputAssemblyStateCreateInfo ia;
+    ia.topology = vk::PrimitiveTopology::eTriangleList;
+
+    vk::Viewport viewport(0, 0, 1280, 720, 0.f, 1.f);
+    vk::Rect2D scissor({0, 0}, vk::Extent2D{1280, 720});
+    vk::PipelineViewportStateCreateInfo vp;
+    vp.viewportCount = 1;
+    vp.pViewports = &viewport;
+    vp.scissorCount = 1;
+    vp.pScissors = &scissor;
+
+    vk::PipelineRasterizationStateCreateInfo rs;
+    rs.polygonMode = vk::PolygonMode::eFill;
+    rs.cullMode = vk::CullModeFlagBits::eBack;
+    rs.frontFace = vk::FrontFace::eCounterClockwise;
+    rs.lineWidth = 1.0f;
+
+    vk::PipelineMultisampleStateCreateInfo ms;
+    ms.rasterizationSamples = vk::SampleCountFlagBits::e1;
+
+    vk::PipelineColorBlendAttachmentState cbAttach;
+    cbAttach.colorWriteMask = vk::ColorComponentFlagBits::eR | vk::ColorComponentFlagBits::eG |
+                              vk::ColorComponentFlagBits::eB | vk::ColorComponentFlagBits::eA;
+    cbAttach.blendEnable = VK_FALSE;
+
+    vk::PipelineColorBlendStateCreateInfo cb;
+    cb.attachmentCount = 1;
+    cb.pAttachments = &cbAttach;
+
+    // pipelineLayout은 descriptorSetLayout 1개 사용
+    vk::PipelineLayoutCreateInfo plci;
+    plci.setLayoutCount = 1;
+    plci.pSetLayouts = &descriptor_set_layout_;
+
+    auto pipeline_layout = device_.createPipelineLayout(plci);
+
+    // swapchains_[1]이라고 가정 (실제로는 Handle 구분 필요)
+    if (swapchains_.size() <= 1) {
+        throw std::runtime_error("No valid swapchain");
+    }
+    auto rp = swapchains_[1].render_pass;
+
+    vk::GraphicsPipelineCreateInfo gpci;
+    gpci.stageCount = 2;
+    gpci.pStages = stages;
+    gpci.pVertexInputState = &vi;
+    gpci.pInputAssemblyState = &ia;
+    gpci.pViewportState = &vp;
+    gpci.pRasterizationState = &rs;
+    gpci.pMultisampleState = &ms;
+    gpci.pColorBlendState = &cb;
+    gpci.layout = pipeline_layout;
+    gpci.renderPass = rp;
+
+    auto res = device_.createGraphicsPipeline(nullptr, gpci);
+    if (res.result != vk::Result::eSuccess) {
+        throw std::runtime_error("Failed to create pipeline");
+    }
+
+    VulkanPipeline vpip;
+    vpip.pipeline = res.value;
+    vpip.pipeline_layout = pipeline_layout;
+
+    PipelineHandle ph = next_pipeline_handle_++;
+    if (ph >= pipelines_.size()) {
+        pipelines_.resize(ph + 1);
+    }
+    pipelines_[ph] = vpip;
+    return ph;
+}
+
+void VulkanRenderer::BindPipeline(PipelineHandle handle) {
+    // RecordCommandBuffer()에서 사용
+}
+
+// 리소스 해제
+void VulkanRenderer::ReleaseResource(uint64_t handle) {
+    // swapchain
+    if (handle < swapchains_.size() && swapchains_[handle].swapchain) {
+        auto& sc = swapchains_[handle];
+        for (auto fb : sc.framebuffers) {
+            device_.destroyFramebuffer(fb);
+        }
+        if (sc.render_pass) {
+            device_.destroyRenderPass(sc.render_pass);
+        }
+        for (auto iv : sc.image_views) {
+            device_.destroyImageView(iv);
+        }
+        device_.destroySwapchainKHR(sc.swapchain);
+        sc.swapchain = nullptr;
+        return;
+    }
+    // buffer
+    if (handle < buffers_.size() && buffers_[handle].buffer) {
+        device_.destroyBuffer(buffers_[handle].buffer);
+        buffers_[handle].buffer = nullptr;
+        return;
+    }
+    // texture
+    if (handle < textures_.size() && textures_[handle].image) {
+        device_.destroyImageView(textures_[handle].image_view);
+        device_.destroyImage(textures_[handle].image);
+        textures_[handle].image = nullptr;
+        return;
+    }
+    // sampler
+    if (handle < samplers_.size() && samplers_[handle].sampler) {
+        device_.destroySampler(samplers_[handle].sampler);
+        samplers_[handle].sampler = nullptr;
+        return;
+    }
+    // pipeline
+    if (handle < pipelines_.size() && pipelines_[handle].pipeline) {
+        device_.destroyPipeline(pipelines_[handle].pipeline);
+        device_.destroyPipelineLayout(pipelines_[handle].pipeline_layout);
+        pipelines_[handle].pipeline = nullptr;
+        return;
+    }
+    // shader
+    auto it = shaders_.find(handle);
+    if (it != shaders_.end()) {
+        device_.destroyShaderModule(it->second.shader_module);
+        shaders_.erase(it);
+        return;
+    }
+}
+
+// 프레임
+void VulkanRenderer::BeginFrame() {
+    device_.waitForFences(in_flight_fence_, VK_TRUE, UINT64_MAX);
+    device_.resetFences(in_flight_fence_);
+
+    // acquire (간단화)
+    // image_index=0 이라 가정
+}
+
+void VulkanRenderer::EndFrame() {
+    // submit
+    vk::SubmitInfo si;
+    vk::Semaphore wait_sems[] = {image_available_};
+    vk::PipelineStageFlags wait_stages[] = {vk::PipelineStageFlagBits::eColorAttachmentOutput};
+    si.waitSemaphoreCount = 1;
+    si.pWaitSemaphores = wait_sems;
+    si.pWaitDstStageMask = wait_stages;
+    si.commandBufferCount = 1;
+    si.pCommandBuffers = &command_buffers_[0];
+    vk::Semaphore signal_sems[] = {render_finished_};
+    si.signalSemaphoreCount = 1;
+    si.pSignalSemaphores = signal_sems;
+
+    graphics_queue_.submit(si, in_flight_fence_);
+
+    // present (간단화)
+}
+
+// ------------------ 아래 추가 구현들 ------------------
+
+// descriptor pool / set layout
+void VulkanRenderer::CreateDescriptorPoolAndLayout() {
+    // UBO + CombinedSampler
+    std::vector<vk::DescriptorPoolSize> pool_sizes = {
+        {vk::DescriptorType::eUniformBuffer, 100},
+        {vk::DescriptorType::eCombinedImageSampler, 100},
+    };
+    vk::DescriptorPoolCreateInfo dpci;
+    dpci.maxSets = 100;
+    dpci.poolSizeCount = static_cast<uint32_t>(pool_sizes.size());
+    dpci.pPoolSizes = pool_sizes.data();
+    descriptor_pool_ = device_.createDescriptorPool(dpci);
+
+    vk::DescriptorSetLayoutBinding ubo_bind;
+    ubo_bind.binding = 0;
+    ubo_bind.descriptorType = vk::DescriptorType::eUniformBuffer;
+    ubo_bind.descriptorCount = 1;
+    ubo_bind.stageFlags = vk::ShaderStageFlagBits::eVertex;
+
+    vk::DescriptorSetLayoutBinding sampler_bind;
+    sampler_bind.binding = 1;
+    sampler_bind.descriptorType = vk::DescriptorType::eCombinedImageSampler;
+    sampler_bind.descriptorCount = 1;
+    sampler_bind.stageFlags = vk::ShaderStageFlagBits::eFragment;
+
+    std::vector<vk::DescriptorSetLayoutBinding> binds = {ubo_bind, sampler_bind};
+    vk::DescriptorSetLayoutCreateInfo dsci;
+    dsci.bindingCount = (uint32_t)binds.size();
+    dsci.pBindings = binds.data();
+
+    descriptor_set_layout_ = device_.createDescriptorSetLayout(dsci);
+}
+
+// 테스트용 삼각형 리소스
+struct Vertex {
+    float px, py;
+    float uvx, uvy;
+};
+
+#include <glm/glm.hpp>
+#include <glm/gtc/matrix_transform.hpp>
+
+void VulkanRenderer::CreateTestTriangleResources() {
+    // 정점
+    std::vector<Vertex> vertices = {
+        {-0.5f, -0.5f, 0.0f, 1.0f},
+        {0.0f, 0.5f, 0.5f, 0.0f},
+        {0.5f, -0.5f, 1.0f, 1.0f},
+    };
+    // 인덱스
+    std::vector<uint16_t> indices = {0, 1, 2};
+    index_count_ = (uint32_t)indices.size();
+
+    // 1) VBO
+    {
+        BufferDesc bd;
+        bd.size_in_bytes = sizeof(Vertex) * vertices.size();
+        bd.usage_vertex_buffer = true;
+        bd.usage_transfer_dst = true;
+        vbo_handle_ = CreateBuffer(bd);
+
+        UpdateBuffer(vbo_handle_, vertices.data(), bd.size_in_bytes);
+    }
+    // 2) IBO
+    {
+        BufferDesc bd;
+        bd.size_in_bytes = sizeof(uint16_t) * indices.size();
+        bd.usage_index_buffer = true;
+        bd.usage_transfer_dst = true;
+        ibo_handle_ = CreateBuffer(bd);
+
+        UpdateBuffer(ibo_handle_, indices.data(), bd.size_in_bytes);
+    }
+    // 3) UBO (MVP)
+    {
+        BufferDesc bd;
+        bd.size_in_bytes = sizeof(glm::mat4);
+        bd.usage_uniform_buffer = true;
+        bd.usage_transfer_dst = true;
+        ubo_handle_ = CreateBuffer(bd);
+
+        glm::mat4 model = glm::mat4(1.0f);
+        glm::mat4 view = glm::lookAt(glm::vec3(0.f, 0.f, 2.f), glm::vec3(0.f, 0.f, 0.f), glm::vec3(0.f, 1.f, 0.f));
+        glm::mat4 proj = glm::perspective(glm::radians(45.f), 1.77f, 0.1f, 10.f);
+        proj[1][1] *= -1.f;  // Vulkan
+        glm::mat4 mvp = proj * view * model;
+
+        UpdateBuffer(ubo_handle_, &mvp, sizeof(mvp));
+    }
+    // 4) DescriptorSet 할당
+    {
+        vk::DescriptorSetAllocateInfo dsai;
+        dsai.descriptorPool = descriptor_pool_;
+        dsai.descriptorSetCount = 1;
+        dsai.pSetLayouts = &descriptor_set_layout_;
+        descriptor_sets_ = device_.allocateDescriptorSets(dsai);
+
+        // UBO binding=0
+        vk::DescriptorBufferInfo dbi;
+        dbi.buffer = buffers_[ubo_handle_].buffer;
+        dbi.offset = 0;
+        dbi.range = sizeof(glm::mat4);
+
+        vk::WriteDescriptorSet wds_ubo;
+        wds_ubo.dstSet = descriptor_sets_[0];
+        wds_ubo.dstBinding = 0;
+        wds_ubo.descriptorCount = 1;
+        wds_ubo.descriptorType = vk::DescriptorType::eUniformBuffer;
+        wds_ubo.pBufferInfo = &dbi;
+
+        // 샘플러 (dummy texture)
+        vk::DescriptorImageInfo dii;
+        dii.imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
+        dii.imageView = VK_NULL_HANDLE;  // 실제 텍스처가 없으니
+        dii.sampler = VK_NULL_HANDLE;    // 샘플러도 없음
+
+        vk::WriteDescriptorSet wds_sampler;
+        wds_sampler.dstSet = descriptor_sets_[0];
+        wds_sampler.dstBinding = 1;
+        wds_sampler.descriptorCount = 1;
+        wds_sampler.descriptorType = vk::DescriptorType::eCombinedImageSampler;
+        wds_sampler.pImageInfo = &dii;
+
+        std::vector<vk::WriteDescriptorSet> writes = {wds_ubo, wds_sampler};
+        device_.updateDescriptorSets(writes, {});
+    }
+
+    // cmd buffer 기록
+    RecordCommandBuffer(command_buffers_[0], 0);
+}
+
+void VulkanRenderer::RecordCommandBuffer(vk::CommandBuffer cmd, uint32_t image_index) {
+    vk::CommandBufferBeginInfo begin_info;
+    cmd.begin(begin_info);
+
+    // renderpass 시작
+    auto& sc = swapchains_[1];  // handle=1이라 가정
+    vk::RenderPassBeginInfo rpbi;
+    rpbi.renderPass = sc.render_pass;
+    rpbi.framebuffer = sc.framebuffers[image_index];
+    rpbi.renderArea.offset = vk::Offset2D{0, 0};
+    rpbi.renderArea.extent = sc.extent;
+
+    vk::ClearValue clear_color = vk::ClearColorValue(std::array<float, 4>{0.2f, 0.3f, 0.4f, 1.f});
+    rpbi.clearValueCount = 1;
+    rpbi.pClearValues = &clear_color;
+
+    cmd.beginRenderPass(rpbi, vk::SubpassContents::eInline);
+
+    // 파이프라인 바인딩
+    if (pipelines_.size() > 1 && pipelines_[1].pipeline) {
+        cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, pipelines_[1].pipeline);
+        // descriptor set 바인딩
+        cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, pipelines_[1].pipeline_layout, 0, descriptor_sets_[0],
+                               {});
+    }
+
+    // 정점/인덱스 버퍼 바인딩
+    if (vbo_handle_ < buffers_.size()) {
+        vk::Buffer vb = buffers_[vbo_handle_].buffer;
+        vk::DeviceSize offset = 0;
+        cmd.bindVertexBuffers(0, vb, offset);
+    }
+    if (ibo_handle_ < buffers_.size()) {
+        cmd.bindIndexBuffer(buffers_[ibo_handle_].buffer, 0, vk::IndexType::eUint16);
+    }
+
+    cmd.drawIndexed(index_count_, 1, 0, 0, 0);
+
+    cmd.endRenderPass();
+    cmd.end();
 }
 
 vk::ShaderModule VulkanRenderer::CreateShaderModule(const std::vector<char>& code) {
@@ -420,88 +791,6 @@ std::vector<char> VulkanRenderer::ReadFile(const std::string& filename) {
     file.read(buffer.data(), file_size);
     file.close();
     return buffer;
-}
-
-// ----- Pipeline -----
-PipelineHandle VulkanRenderer::CreatePipeline(const PipelineDesc& desc) {
-    // Vertex / Fragment shader
-    auto vsh_it = shaders_.find(desc.vertex_shader);
-    auto fsh_it = shaders_.find(desc.fragment_shader);
-    if (vsh_it == shaders_.end() || fsh_it == shaders_.end()) {
-        throw std::runtime_error("Invalid shader handle");
-    }
-    // Create pipeline (dummy)
-    PipelineHandle ph = next_pipeline_handle_++;
-    if (ph >= pipelines_.size()) {
-        pipelines_.resize(ph + 1);
-    }
-    VulkanPipeline vp;
-    // pipeline, layout, etc.
-    pipelines_[ph] = vp;
-    return ph;
-}
-
-void VulkanRenderer::BindPipeline(PipelineHandle handle) {}
-
-// ----- ReleaseResource -----
-void VulkanRenderer::ReleaseResource(uint64_t handle) {
-    // 1) swapchain
-    if (handle < swapchains_.size() && swapchains_[handle].swapchain) {
-        auto& sc = swapchains_[handle];
-        for (auto fb : sc.framebuffers) {
-            device_.destroyFramebuffer(fb);
-        }
-        if (sc.render_pass) {
-            device_.destroyRenderPass(sc.render_pass);
-        }
-        for (auto iv : sc.image_views) {
-            device_.destroyImageView(iv);
-        }
-        device_.destroySwapchainKHR(sc.swapchain);
-        sc.swapchain = nullptr;
-        return;
-    }
-    // 2) buffer
-    if (handle < buffers_.size() && buffers_[handle].buffer) {
-        device_.destroyBuffer(buffers_[handle].buffer);
-        buffers_[handle].buffer = nullptr;
-        return;
-    }
-    // 3) texture
-    if (handle < textures_.size() && textures_[handle].image) {
-        device_.destroyImageView(textures_[handle].image_view);
-        device_.destroyImage(textures_[handle].image);
-        textures_[handle].image = nullptr;
-        return;
-    }
-    // 4) sampler
-    if (handle < samplers_.size() && samplers_[handle].sampler) {
-        device_.destroySampler(samplers_[handle].sampler);
-        samplers_[handle].sampler = nullptr;
-        return;
-    }
-    // 5) pipeline
-    if (handle < pipelines_.size() && pipelines_[handle].pipeline) {
-        device_.destroyPipeline(pipelines_[handle].pipeline);
-        device_.destroyPipelineLayout(pipelines_[handle].pipeline_layout);
-        pipelines_[handle].pipeline = nullptr;
-        return;
-    }
-    // 6) shader
-    auto it = shaders_.find(handle);
-    if (it != shaders_.end()) {
-        device_.destroyShaderModule(it->second.shader_module);
-        shaders_.erase(it);
-        return;
-    }
-}
-
-void VulkanRenderer::BeginFrame() {
-    // Acquire image, record command buffer, etc.
-}
-
-void VulkanRenderer::EndFrame() {
-    // Present
 }
 
 }  // namespace Lumora
