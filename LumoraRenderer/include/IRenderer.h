@@ -9,13 +9,24 @@ namespace Lumora
 {
 
     // 핸들 정의
+    using SwapChainHandle = uint64_t;
     using BufferHandle = uint64_t;
     using TextureHandle = uint64_t;
     using SamplerHandle = uint64_t;
     using PipelineHandle = uint64_t;
     using ShaderHandle = uint64_t;
 
-    // 버퍼 생성 파라미터
+    // 스왑체인 파라미터
+    struct SwapChainDesc
+    {
+        // Win32라면 HWND가 될 수 있습니다.
+        void *window_handle = nullptr;
+        int width = 1280;
+        int height = 720;
+        bool vsync = true;
+    };
+
+    // 버퍼, 텍스처, 샘플러, 파이프라인 등 각종 Desc 구조체들
     struct BufferDesc
     {
         size_t size_in_bytes = 0;
@@ -26,44 +37,40 @@ namespace Lumora
         bool usage_transfer_dst = false;
     };
 
-    // 텍스처 생성 파라미터
     struct TextureDesc
     {
         uint32_t width = 0;
         uint32_t height = 0;
-        // 포맷, mipLevels, arrayLayers 등 필요 시 확장
     };
 
-    // 샘플러 생성 파라미터
     struct SamplerDesc
     {
-        // 필터, 어드레스 모드 등
+        // 필터/주소모드 등
     };
 
-    // 셰이더 생성 파라미터
     struct ShaderDesc
     {
-        std::string file_path; // SPIR-V (.spv) 바이너리 경로
-                               // Vertex/Fragment/Compute 구분, entry point 등 확장 가능
+        std::string file_path; // SPIR-V 등
     };
 
-    // 파이프라인 생성 파라미터
     struct PipelineDesc
     {
         ShaderHandle vertex_shader = 0;
         ShaderHandle fragment_shader = 0;
-        // 렌더 상태, 블렌딩, 깊이버퍼, 톱로지 등 확장 가능
     };
 
+    // 렌더러 인터페이스
     class IRenderer
     {
     public:
         virtual ~IRenderer() = default;
 
+        // 스왑체인
+        virtual SwapChainHandle CreateSwapChain(const SwapChainDesc &desc) = 0;
+
         // 버퍼
         virtual BufferHandle CreateBuffer(const BufferDesc &desc) = 0;
-        virtual void UpdateBuffer(BufferHandle handle, const void *data,
-                                  size_t size) = 0;
+        virtual void UpdateBuffer(BufferHandle handle, const void *data, size_t size) = 0;
         virtual void BindBuffer(BufferHandle handle, uint32_t bind_point) = 0;
 
         // 텍스처
@@ -83,14 +90,14 @@ namespace Lumora
         virtual PipelineHandle CreatePipeline(const PipelineDesc &desc) = 0;
         virtual void BindPipeline(PipelineHandle handle) = 0;
 
-        // 리소스 해제 (버퍼/텍스처/샘플러/파이프라인/셰이더 등)
+        // 리소스 해제
         virtual void ReleaseResource(uint64_t handle) = 0;
 
-        // 프레임 제어
+        // 프레임
         virtual void BeginFrame() = 0;
         virtual void EndFrame() = 0;
 
-        // 정적 생성 함수 -> VulkanRenderer 반환
+        // 스태틱 함수 -> VulkanRenderer 생성
         static std::unique_ptr<IRenderer> Create();
     };
 
