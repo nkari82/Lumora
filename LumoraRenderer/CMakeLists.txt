@@ -5,6 +5,11 @@ project(Lumora LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# Win32 빌드 시 VK_USE_PLATFORM_WIN32_KHR 디파인
+if (WIN32)
+    add_definitions(-DVK_USE_PLATFORM_WIN32_KHR)
+endif()
+
 # Vulkan
 find_package(Vulkan REQUIRED)
 
