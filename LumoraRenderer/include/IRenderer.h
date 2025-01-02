@@ -155,8 +155,8 @@ enum class Filter { kNearest, kLinear };
 enum class AddressMode { kRepeat, kClampToEdge };
 
 struct SamplerDesc {
-    Filter filter_min = Filter::kLinear;
-    Filter filter_mag = Filter::kLinear;
+    Filter mag_filter = Filter::kLinear;
+    Filter min_filter = Filter::kLinear;
     AddressMode address_mode_u = AddressMode::kRepeat;
     AddressMode address_mode_v = AddressMode::kRepeat;
     AddressMode address_mode_w = AddressMode::kRepeat;
