@@ -107,18 +107,16 @@ inline bool operator&(TextureUsage lhs, TextureUsage rhs) {
 enum class TextureType {
     k2D,      // 기본값: 2D 텍스처
     k3D,      // 3D 텍스처
-    kCubeMap  // 큐브 맵 텍스처
+    kCubeMap  // 큐브 맵 텍스처 (array 6으로 사용)
 };
 
 struct TextureDesc {
     uint8_t* data = nullptr;              // initial data
     size_t size = 0;                      // initial data size
     TextureType type = TextureType::k2D;  // 텍스처 타입 (기본: 2D)
-    uint32_t width;                       // 텍스처의 너비
-    uint32_t height;                      // 텍스처의 높이
+    uint32_t width = 0;                   // 텍스처의 너비
+    uint32_t height = 0;                  // 텍스처의 높이
     uint32_t depth = 1;                   // 텍스처 깊이 (3D 텍스처 전용, 기본값: 1)
-    uint32_t width = 0;
-    uint32_t height = 0;
     uint32_t mip_levels = 1;
     uint32_t array_layers = 1;
     Format format = Format::kSRGBA8Unorm;
@@ -288,10 +286,10 @@ struct RenderPassDesc {
     TextureHandle depth_target;                // Depth 타겟 (optional)
 
     // 클리어 옵션
-    std::vector<std::array<float, 4>> clear_colors;  // 각 컬러 타겟에 대한 클리어 색상
-    bool clear_depth = true;                         // 깊이 클리어 여부
-    float clear_depth_value = 1.0f;                  // 깊이 클리어 값
-    uint32_t clear_stencil_value = 0;                // 스텐실 클리어 값
+    std::vector<float[4]> clear_colors;  // 각 컬러 타겟에 대한 클리어 색상
+    bool clear_depth = true;             // 깊이 클리어 여부
+    float clear_depth_value = 1.0f;      // 깊이 클리어 값
+    uint32_t clear_stencil_value = 0;    // 스텐실 클리어 값
 
     // Attachment 옵션
     std::vector<AttachmentOptions> color_attachment_options;  // 각 컬러 타겟의 옵션
