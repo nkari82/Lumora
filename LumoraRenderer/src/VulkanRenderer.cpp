@@ -50,6 +50,18 @@ struct SwapChainData {
     // Add other swapchain-specific data if needed (e.g., framebuffers)
 };
 
+// Descriptor Set Management Structures
+struct DescriptorSetLayoutInfo {
+    vk::DescriptorSetLayoutBinding binding;
+    vk::DescriptorType type;
+    vk::ShaderStageFlags stageFlags;
+};
+
+struct DescriptorPoolInfo {
+    uint32_t maxSets;
+    std::vector<vk::DescriptorPoolSize> poolSizes;
+};
+
 class VulkanRenderer : public IRenderer {
    public:
     VulkanRenderer();
@@ -121,14 +133,23 @@ class VulkanRenderer : public IRenderer {
     // SwapChain maps
     std::unordered_map<uint64_t, SwapChainData> swapChains;
 
+    // Descriptor Set Management
+    vk::DescriptorPool descriptorPool;
+    std::mutex descriptorMutex;
+
     // Handle to index mapping
     std::mutex resourceMutex;
 
     // Current command buffer
     vk::CommandBuffer currentCommandBuffer;
 
-    // Frame synchronization
-    // (For simplicity, not implemented here)
+    // Synchronization Primitives
+    std::unordered_map<uint64_t, std::vector<vk::Semaphore>> imageAvailableSemaphores;
+    std::unordered_map<uint64_t, std::vector<vk::Semaphore>> renderFinishedSemaphores;
+    std::unordered_map<uint64_t, std::vector<vk::Fence>> inFlightFences;
+    std::unordered_map<uint64_t, size_t> currentFrame;
+
+    const int MAX_FRAMES_IN_FLIGHT = 2;
 
     // Internal methods
     void InitVulkan(const char* app_name);
@@ -144,6 +165,16 @@ class VulkanRenderer : public IRenderer {
     void CreateRenderPass(const RenderPassDesc& desc);
     void CreateCommandPool();
     void AllocateCommandBuffer();
+    void SetupSynchronization(const SwapChainHandle& handle);
+    void CleanupSynchronization(const SwapChainHandle& handle);
+
+    // Descriptor Set Management Methods
+    vk::DescriptorSetLayout CreateDescriptorSetLayout(const std::vector<DescriptorSetLayoutInfo>& bindings);
+    vk::DescriptorSet AllocateDescriptorSet(vk::DescriptorSetLayout layout);
+    void UpdateDescriptorSet(vk::DescriptorSet set, uint32_t binding, vk::DescriptorType type,
+                             const vk::DescriptorImageInfo& imageInfo);
+    void UpdateDescriptorSet(vk::DescriptorSet set, uint32_t binding, vk::DescriptorType type,
+                             const vk::DescriptorBufferInfo& bufferInfo);
 
     // Helper methods
     vk::ShaderModule CreateShaderModule(const std::string& code);
@@ -204,6 +235,29 @@ void VulkanRenderer::InitVulkan(const char* app_name) {
 
 void VulkanRenderer::CleanupVulkan() {
     std::lock_guard<std::mutex> lock(resourceMutex);
+
+    // Destroy synchronization primitives
+    for (auto& [id, semaphores] : imageAvailableSemaphores) {
+        for (auto& semaphore : semaphores) {
+            device.destroySemaphore(semaphore);
+        }
+    }
+    imageAvailableSemaphores.clear();
+
+    for (auto& [id, semaphores] : renderFinishedSemaphores) {
+        for (auto& semaphore : semaphores) {
+            device.destroySemaphore(semaphore);
+        }
+    }
+    renderFinishedSemaphores.clear();
+
+    for (auto& [id, fences] : inFlightFences) {
+        for (auto& fence : fences) {
+            device.destroyFence(fence);
+        }
+    }
+    inFlightFences.clear();
+    currentFrame.clear();
 
     // Destroy all pipelines
     for (auto& [id, pipeline] : pipelines) {
@@ -373,8 +427,9 @@ void VulkanRenderer::PickPhysicalDevice() {
         for (size_t i = 0; i < queueFamilies.size(); ++i) {
             if (queueFamilies[i].queueFlags & vk::QueueFlagBits::eGraphics) {
                 // Check if the device supports the surface
-                bool presentSupport = deviceCandidate.getSurfaceSupportKHR(static_cast<uint32_t>(i), surface);
-                if (presentSupport) {
+                auto surfaceFormats = deviceCandidate.getSurfaceFormatsKHR(surface);
+                auto presentModes = deviceCandidate.getSurfacePresentModesKHR(surface);
+                if (!surfaceFormats.empty() && !presentModes.empty()) {
                     graphicsQueueFamily = static_cast<uint32_t>(i);
                     hasGraphics = true;
                     break;
@@ -391,7 +446,6 @@ void VulkanRenderer::PickPhysicalDevice() {
         throw std::runtime_error("Failed to find a suitable GPU with graphics and present capabilities.");
     }
 }
-
 void VulkanRenderer::CreateLogicalDevice() {
     float queuePriority = 1.0f;
     vk::DeviceQueueCreateInfo queueCreateInfo;
@@ -416,7 +470,7 @@ void VulkanRenderer::CreateLogicalDevice() {
     createInfo.ppEnabledExtensionNames = deviceExtensions.data();
 
     // Enable validation layers for device (optional, deprecated in newer Vulkan)
-    // createInfo.enabledLayerCount = 0;
+    createInfo.enabledLayerCount = 0;
 
     try {
         device = physicalDevice.createDevice(createInfo);
@@ -489,7 +543,7 @@ void VulkanRenderer::CreateSurface(const SwapChainDesc& desc) {
     // MoltenVK Surface (macOS/iOS)
     VkMetalSurfaceCreateInfoEXT createInfo = {};
     createInfo.sType = VK_STRUCTURE_TYPE_METAL_SURFACE_CREATE_INFO_EXT;
-    createInfo.pLayer = static_cast<id<CAMetalLayer> >(desc.window_handle.cocoa.view);
+    createInfo.pLayer = static_cast<id<CAMetalLayer>>(desc.window_handle.cocoa.view);
 
     VkSurfaceKHR rawSurface;
     if (vkCreateMetalSurfaceEXT(static_cast<VkInstance>(instance), &createInfo, nullptr, &rawSurface) != VK_SUCCESS) {
@@ -631,6 +685,8 @@ void VulkanRenderer::CreateImageViews(SwapChainData& scData) {
 }
 
 // Automatically create framebuffers for each swapchain image.
+// Retrieve from RenderPassDesc or SwapChainData
+// #FIXME 내부적으로 자동관리 객체는 RenderPassData로 함.
 void VulkanRenderer::CreateFramebuffers(SwapChainData& scData) {
     scData.framebuffers.resize(scData.imageViews.size());
 
@@ -641,6 +697,10 @@ void VulkanRenderer::CreateFramebuffers(SwapChainData& scData) {
         for (const auto& colorTarget : /* Retrieve from RenderPassDesc or SwapChainData */) {
             attachments.push_back(imageViews[colorTarget.id]);
         }
+
+#if 0
+        std::vector<vk::ImageView> attachments = { scData.imageViews[i] }
+#endif
 
         // Add depth attachment if present
         // Assuming a single depth attachment for simplicity
@@ -821,7 +881,12 @@ SamplerHandle VulkanRenderer::CreateSampler(const SamplerDesc& desc) {
     samplerInfo.compareOp = vk::CompareOp::eAlways;
     samplerInfo.mipmapMode = vk::SamplerMipmapMode::eLinear;
 
-    vk::Sampler sampler = device.createSampler(samplerInfo);
+    vk::Sampler sampler;
+    try {
+        sampler = device.createSampler(samplerInfo);
+    } catch (const std::exception& e) {
+        throw std::runtime_error(std::string("Failed to create sampler: ") + e.what());
+    }
 
     SamplerHandle handle;
     handle.id = GenerateUniqueID();
@@ -839,8 +904,7 @@ void VulkanRenderer::BindSampler(SamplerHandle handle, uint32_t bind_point) {
 }
 
 ShaderHandle VulkanRenderer::CreateShader(const ShaderDesc& desc) {
-    // Load shader code from file
-    // For simplicity, assume desc.file_path contains SPIR-V binary
+    // Load shader code from file (SPIR-V binary)
     std::ifstream file(desc.file_path, std::ios::ate | std::ios::binary);
     if (!file.is_open()) {
         throw std::runtime_error("Failed to open shader file.");
@@ -1013,9 +1077,9 @@ PipelineHandle VulkanRenderer::CreatePipeline(const PipelineDesc& desc) {
     pipelineInfo.pViewportState = &viewportState;
     pipelineInfo.pRasterizationState = &rasterizer;
     pipelineInfo.pMultisampleState = &multisampling;
-    pipelineInfo.pDepthStencilState = nullptr;  // Implement if using depth
+    pipelineInfo.pDepthStencilState = nullptr;  // Implement if using depth #FIXME depthStencilState
     pipelineInfo.pColorBlendState = &colorBlending;
-    pipelineInfo.pDynamicState = nullptr;  // Implement if using dynamic states
+    pipelineInfo.pDynamicState = nullptr;  // Implement if using dynamic states #FIXME dynamic states
     pipelineInfo.layout = pipelineLayout;
     pipelineInfo.renderPass = renderPass;
     pipelineInfo.subpass = 0;
@@ -1133,17 +1197,32 @@ void VulkanRenderer::Render(const SwapChainHandle& handle, std::function<void()>
 
     SwapChainData& scData = it->second;
 
+    // Handle synchronization
+    size_t frame = currentFrame[handle.id];
+    vk::Semaphore imageAvailableSemaphore = imageAvailableSemaphores[handle.id][frame];
+    vk::Semaphore renderFinishedSemaphore = renderFinishedSemaphores[handle.id][frame];
+    vk::Fence inFlightFence = inFlightFences[handle.id][frame];
+
+    // Wait for the previous frame
+    device.waitForFences(inFlightFence, VK_TRUE, UINT64_MAX);
+
+    // Reset the fence
+    device.resetFences(inFlightFence);
+
     // Acquire image from swapchain
-    vk::ResultValue<uint32_t> acquireResult =
-        device.acquireNextImageKHR(scData.swapchain, UINT64_MAX, nullptr, nullptr);
-    if (acquireResult.result != vk::Result::eSuccess && acquireResult.result != vk::Result::eSuboptimalKHR) {
+    uint32_t imageIndex;
+    vk::Result result =
+        device.acquireNextImageKHR(scData.swapchain, UINT64_MAX, imageAvailableSemaphore, nullptr, &imageIndex);
+    if (result == vk::Result::eErrorOutOfDateKHR) {
+        throw std::runtime_error("Swapchain is out of date.");
+    } else if (result != vk::Result::eSuccess && result != vk::Result::eSuboptimalKHR) {
         throw std::runtime_error("Failed to acquire swapchain image.");
     }
-    uint32_t imageIndex = acquireResult.value;
 
-    // Begin command buffer recording
-    vk::CommandBufferBeginInfo beginInfo;
-    beginInfo.flags = vk::CommandBufferUsageFlagBits::eSimultaneousUse;
+    // Begin command buffer
+    currentCommandBuffer.reset({});
+    vk::CommandBufferBeginInfo beginInfo{};
+    beginInfo.flags = vk::CommandBufferUsageFlagBits::eOneTimeSubmit;
 
     try {
         currentCommandBuffer.begin(beginInfo);
@@ -1152,35 +1231,27 @@ void VulkanRenderer::Render(const SwapChainHandle& handle, std::function<void()>
     }
 
     // Begin render pass
-    vk::RenderPassBeginInfo renderPassInfo;
+    vk::RenderPassBeginInfo renderPassInfo{};
     renderPassInfo.renderPass = renderPass;
     renderPassInfo.framebuffer = scData.framebuffers[imageIndex];
     renderPassInfo.renderArea.offset = vk::Offset2D{0, 0};
     renderPassInfo.renderArea.extent = scData.extent;
-    renderPassInfo.clearValueCount =
-        static_cast<uint32_t>(1 + (renderPass.getAttachmentDescription(0).format == vk::Format::eD32Sfloat
-                                       ? 1
-                                       : 0));  // #FIXME RenderPass correction info
+
+    // Define clear values based on RenderPassDesc
     std::vector<vk::ClearValue> clearValues;
-
-    // Add color clear value
-    clearValues.emplace_back(
-        vk::ClearValue(vk::ClearColorValue(std::array<float, 4>{0.2f, 0.3f, 0.4f, 1.0f})));  // Example clear color
-
-    // Add depth clear value if present
-    // Check if render pass has a depth attachment
-    bool hasDepth = false;
-    for (size_t i = 0; i < renderPass.getAttachmentCount(); ++i) {  // #FIXME RenderPass correction info
-        if (renderPass.getAttachmentDescription(i).format == vk::Format::eD32Sfloat) {
-            hasDepth = true;
-            break;
-        }
+    for (const auto& color : desc.clear_colors) {  // #FIXEME SwapChain내부에 default renderdesc 생성.
+        vk::ClearColorValue clearColor =
+            vk::ClearColorValue(std::array<float, 4>{color[0], color[1], color[2], color[3]});
+        clearValues.emplace_back(clearColor);
+    }
+    if (desc.clear_depth) {
+        vk::ClearDepthStencilValue depthClear = {};
+        depthClear.depth = desc.clear_depth_value;
+        depthClear.stencil = desc.clear_stencil_value;
+        clearValues.emplace_back(depthClear);
     }
 
-    if (hasDepth) {
-        clearValues.emplace_back(vk::ClearValue(vk::ClearDepthStencilValue{1.0f, 0}));
-    }
-
+    renderPassInfo.clearValueCount = static_cast<uint32_t>(clearValues.size());
     renderPassInfo.pClearValues = clearValues.data();
 
     try {
@@ -1189,7 +1260,7 @@ void VulkanRenderer::Render(const SwapChainHandle& handle, std::function<void()>
         throw std::runtime_error(std::string("Failed to begin render pass: ") + e.what());
     }
 
-    // Execute callback (user-defined rendering commands)
+    // Execute user-defined rendering commands
     callback();
 
     // End render pass
@@ -1199,7 +1270,7 @@ void VulkanRenderer::Render(const SwapChainHandle& handle, std::function<void()>
         throw std::runtime_error(std::string("Failed to end render pass: ") + e.what());
     }
 
-    // End command buffer recording
+    // End command buffer
     try {
         currentCommandBuffer.end();
     } catch (const std::exception& e) {
@@ -1207,34 +1278,45 @@ void VulkanRenderer::Render(const SwapChainHandle& handle, std::function<void()>
     }
 
     // Submit command buffer
-    vk::SubmitInfo submitInfo = {};
+    vk::SubmitInfo submitInfo{};
+    vk::Semaphore waitSemaphores[] = {imageAvailableSemaphore};
+    vk::PipelineStageFlags waitStages[] = {vk::PipelineStageFlagBits::eColorAttachmentOutput};
+    submitInfo.waitSemaphoreCount = 1;
+    submitInfo.pWaitSemaphores = waitSemaphores;
+    submitInfo.pWaitDstStageMask = waitStages;
     submitInfo.commandBufferCount = 1;
     submitInfo.pCommandBuffers = &currentCommandBuffer;
+    vk::Semaphore signalSemaphores[] = {renderFinishedSemaphore};
+    submitInfo.signalSemaphoreCount = 1;
+    submitInfo.pSignalSemaphores = signalSemaphores;
 
     try {
-        graphicsQueue.submit(submitInfo, VK_NULL_HANDLE);
+        graphicsQueue.submit(submitInfo, inFlightFences[handle.id][frame]);
     } catch (const std::exception& e) {
         throw std::runtime_error(std::string("Failed to submit command buffer: ") + e.what());
     }
 
-    // Wait for the queue to become idle
-    try {
-        graphicsQueue.waitIdle();
-    } catch (const std::exception& e) {
-        throw std::runtime_error(std::string("Failed to wait for queue idle: ") + e.what());
-    }
-
     // Present the image
-    vk::PresentInfoKHR presentInfo = {};
+    vk::PresentInfoKHR presentInfo{};
+    presentInfo.waitSemaphoreCount = 1;
+    presentInfo.pWaitSemaphores = signalSemaphores;
     presentInfo.swapchainCount = 1;
     presentInfo.pSwapchains = &scData.swapchain;
     presentInfo.pImageIndices = &imageIndex;
 
     try {
-        std::ignore = graphicsQueue.presentKHR(presentInfo);  // Correct usage of presentKHR
+        vk::Result presentResult = graphicsQueue.presentKHR(presentInfo);
+        if (presentResult == vk::Result::eErrorOutOfDateKHR || presentResult == vk::Result::eSuboptimalKHR) {
+            throw std::runtime_error("Swapchain is out of date or suboptimal.");
+        } else if (presentResult != vk::Result::eSuccess) {
+            throw std::runtime_error("Failed to present swapchain image.");
+        }
     } catch (const std::exception& e) {
         throw std::runtime_error(std::string("Failed to present swapchain image: ") + e.what());
     }
+
+    // Advance to the next frame
+    currentFrame[handle.id] = (currentFrame[handle.id] + 1) % MAX_FRAMES_IN_FLIGHT;
 }
 
 void VulkanRenderer::DrawIndexed(uint32_t index_count, uint32_t instance_count, uint32_t first_index,
@@ -1323,6 +1405,69 @@ void VulkanRenderer::ReleaseResource(ShaderHandle handle) {
         device.destroyShaderModule(it->second);
         shaders.erase(it);
     }
+}
+
+// Descriptor Set Management
+
+vk::DescriptorSetLayout VulkanRenderer::CreateDescriptorSetLayout(
+    const std::vector<DescriptorSetLayoutInfo>& bindings) {
+    std::lock_guard<std::mutex> lock(descriptorMutex);
+
+    std::vector<vk::DescriptorSetLayoutBinding> layoutBindings;
+    for (const auto& bindingInfo : bindings) {
+        layoutBindings.push_back(bindingInfo.binding);
+    }
+
+    vk::DescriptorSetLayoutCreateInfo layoutInfo{};
+    layoutInfo.bindingCount = static_cast<uint32_t>(layoutBindings.size());
+    layoutInfo.pBindings = layoutBindings.data();
+
+    try {
+        return device.createDescriptorSetLayout(layoutInfo);
+    } catch (const std::exception& e) {
+        throw std::runtime_error(std::string("Failed to create descriptor set layout: ") + e.what());
+    }
+}
+
+vk::DescriptorSet VulkanRenderer::AllocateDescriptorSet(vk::DescriptorSetLayout layout) {
+    std::lock_guard<std::mutex> lock(descriptorMutex);
+
+    vk::DescriptorSetAllocateInfo allocInfo{};
+    allocInfo.descriptorPool = descriptorPool;
+    allocInfo.descriptorSetCount = 1;
+    allocInfo.pSetLayouts = &layout;
+
+    try {
+        return device.allocateDescriptorSets(allocInfo).front();
+    } catch (const std::exception& e) {
+        throw std::runtime_error(std::string("Failed to allocate descriptor set: ") + e.what());
+    }
+}
+
+void VulkanRenderer::UpdateDescriptorSet(vk::DescriptorSet set, uint32_t binding, vk::DescriptorType type,
+                                         const vk::DescriptorImageInfo& imageInfo) {
+    vk::WriteDescriptorSet descriptorWrite{};
+    descriptorWrite.dstSet = set;
+    descriptorWrite.dstBinding = binding;
+    descriptorWrite.dstArrayElement = 0;
+    descriptorWrite.descriptorType = type;
+    descriptorWrite.descriptorCount = 1;
+    descriptorWrite.pImageInfo = &imageInfo;
+
+    device.updateDescriptorSets(descriptorWrite, nullptr);
+}
+
+void VulkanRenderer::UpdateDescriptorSet(vk::DescriptorSet set, uint32_t binding, vk::DescriptorType type,
+                                         const vk::DescriptorBufferInfo& bufferInfo) {
+    vk::WriteDescriptorSet descriptorWrite{};
+    descriptorWrite.dstSet = set;
+    descriptorWrite.dstBinding = binding;
+    descriptorWrite.dstArrayElement = 0;
+    descriptorWrite.descriptorType = type;
+    descriptorWrite.descriptorCount = 1;
+    descriptorWrite.pBufferInfo = &bufferInfo;
+
+    device.updateDescriptorSets(descriptorWrite, nullptr);
 }
 
 void VulkanRenderer::CreateRenderPass(const RenderPassDesc& desc) {
@@ -1454,6 +1599,41 @@ void VulkanRenderer::AllocateCommandBuffer() {
     } catch (const std::exception& e) {
         throw std::runtime_error(std::string("Failed to allocate command buffer: ") + e.what());
     }
+}
+
+void VulkanRenderer::SetupSynchronization(const SwapChainHandle& handle) {
+    // Initialize synchronization primitives for the swapchain
+    imageAvailableSemaphores[handle.id].resize(MAX_FRAMES_IN_FLIGHT);
+    renderFinishedSemaphores[handle.id].resize(MAX_FRAMES_IN_FLIGHT);
+    inFlightFences[handle.id].resize(MAX_FRAMES_IN_FLIGHT);
+    currentFrame[handle.id] = 0;
+
+    vk::SemaphoreCreateInfo semaphoreInfo{};
+    vk::FenceCreateInfo fenceInfo{};
+    fenceInfo.flags = vk::FenceCreateFlagBits::eSignaled;  // Initially signaled
+
+    for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
+        try {
+            imageAvailableSemaphores[handle.id][i] = device.createSemaphore(semaphoreInfo);
+            renderFinishedSemaphores[handle.id][i] = device.createSemaphore(semaphoreInfo);
+            inFlightFences[handle.id][i] = device.createFence(fenceInfo);
+        } catch (const std::exception& e) {
+            throw std::runtime_error(std::string("Failed to create synchronization primitives: ") + e.what());
+        }
+    }
+}
+
+void VulkanRenderer::CleanupSynchronization(const SwapChainHandle& handle) {
+    // Destroy synchronization primitives for the swapchain
+    for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
+        device.destroySemaphore(imageAvailableSemaphores[handle.id][i]);
+        device.destroySemaphore(renderFinishedSemaphores[handle.id][i]);
+        device.destroyFence(inFlightFences[handle.id][i]);
+    }
+    imageAvailableSemaphores.erase(handle.id);
+    renderFinishedSemaphores.erase(handle.id);
+    inFlightFences.erase(handle.id);
+    currentFrame.erase(handle.id);
 }
 
 bool VulkanRenderer::CheckValidationLayerSupport() {
