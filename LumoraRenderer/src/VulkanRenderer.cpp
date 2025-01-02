@@ -323,28 +323,44 @@ void VulkanRenderer::CreateSwapChainInternal(const SwapChainDesc& desc) {
     //     int32_t buffer_count = 2;
     //     bool vsync = true; // unused
     //  };
+    if (!surface || !physicalDevice || !device) {
+        throw std::runtime_error("Surface, physicalDevice, or device is not initialized.");
+    }
 
-    vk::SurfaceCapabilitiesKHR capabilities = physicalDevice.getSurfaceCapabilitiesKHR(surface);
-    vk::SurfaceFormatKHR surfaceFormat = physicalDevice.getSurfaceFormatsKHR(surface)[0];
-    vk::PresentModeKHR presentMode = vk::PresentModeKHR::eFifo;
+    // desc.format의 unknown이라면 첫번째 값으로 초기화 하고 desc.format과 일치하는 format이 있는지 찾아보고 없으면
+    // 첫번째 값
+    auto capabilities = physicalDevice.getSurfaceCapabilitiesKHR(surface);
+    auto formats = physicalDevice.getSurfaceFormatsKHR(surface);
+    if (formats.empty()) {
+        throw std::runtime_error("No surface formats available.");
+    }
 
-    swapchainExtent.width = desc.width;
-    swapchainExtent.height = desc.height;
+    vk::SurfaceFormatKHR surfaceFormat = formats[0];
+    swapchainExtent.width =
+        std::clamp<uint32_t>(desc.width, capabilities.minImageExtent.width, capabilities.maxImageExtent.width);
+    swapchainExtent.height =
+        std::clamp<uint32_t>(desc.height, capabilities.minImageExtent.height, capabilities.maxImageExtent.height);
 
     vk::SwapchainCreateInfoKHR createInfo;
     createInfo.surface = surface;
-    createInfo.minImageCount = static_cast<uint32_t>(desc.buffer_count);
+    createInfo.minImageCount = std::max<uint32_t>(static_cast<uint32_t>(desc.buffer_count), capabilities.minImageCount);
     createInfo.imageFormat = surfaceFormat.format;
-    swapchainImageFormat = surfaceFormat.format;  // Mapping might be needed
     createInfo.imageColorSpace = surfaceFormat.colorSpace;
     createInfo.imageExtent = swapchainExtent;
     createInfo.imageUsage = vk::ImageUsageFlagBits::eColorAttachment;
-
-    createInfo.imageSharingMode = vk::SharingMode::eExclusive;
     createInfo.preTransform = capabilities.currentTransform;
     createInfo.compositeAlpha = vk::CompositeAlphaFlagBitsKHR::eOpaque;
-    createInfo.presentMode = presentMode;
+    createInfo.presentMode = vk::PresentModeKHR::eFifo;
     createInfo.clipped = VK_TRUE;
+
+    uint32_t queueFamilyIndices[] = {graphicsQueueFamily};
+    createInfo.queueFamilyIndexCount = 1;
+    createInfo.pQueueFamilyIndices = queueFamilyIndices;
+    createInfo.imageSharingMode = vk::SharingMode::eExclusive;
+
+    if (!(capabilities.supportedUsageFlags & createInfo.imageUsage)) {
+        throw std::runtime_error("Color attachment is not supported.");
+    }
 
     swapchain = device.createSwapchainKHR(createInfo);  // #FIXME access violation
     swapchainImages = device.getSwapchainImagesKHR(swapchain);
