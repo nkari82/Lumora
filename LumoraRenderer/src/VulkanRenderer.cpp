@@ -631,13 +631,13 @@ void VulkanRenderer::Render(const SwapChainHandle& handle, std::function<void()>
     graphicsQueue.submit(submitInfo, VK_NULL_HANDLE);
     graphicsQueue.waitIdle();
 
-    // Present the image
+    // Present the image using the graphics queue
     vk::PresentInfoKHR presentInfo;
     presentInfo.swapchainCount = 1;
     presentInfo.pSwapchains = &swapchain;
     presentInfo.pImageIndices = &imageIndex;
 
-    // device.presentKHR(presentInfo); // #FIXME Queue::presentKHR
+    graphicsQueue.presentKHR(presentInfo);  // Correct usage of presentKHR
 }
 
 void VulkanRenderer::DrawIndexed(uint32_t index_count, uint32_t instance_count, uint32_t first_index,
