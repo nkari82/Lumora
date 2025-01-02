@@ -6,7 +6,7 @@
 #include <vector>
 #include <vulkan/vulkan.hpp>
 
-#ifdef _WIN32
+#ifdef VK_USE_PLATFORM_WIN32_KHR
 #include <Windows.h>
 #include <vulkan/vulkan_win32.h>
 #endif
@@ -262,6 +262,43 @@ SwapChainHandle VulkanRenderer::CreateSwapChainInternal(const SwapChainDesc& des
 
     sc.swapchain = device_.createSwapchainKHR(ci);
     sc.images = device_.getSwapchainImagesKHR(sc.swapchain);
+
+    // create depth image (eg: D32_SFLOAT)
+    {
+        vk::ImageCreateInfo ici;
+        ici.imageType = vk::ImageType::e2D;
+        ici.extent.width = sc.extent.width;
+        ici.extent.height = sc.extent.height;
+        ici.extent.depth = 1;
+        ici.mipLevels = 1;
+        ici.arrayLayers = 1;
+        ici.format = vk::Format::eD32Sfloat;
+        ici.usage = vk::ImageUsageFlagBits::eDepthStencilAttachment;
+
+        VmaAllocationCreateInfo aci = {};
+        aci.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
+
+        VkImage raw_img;
+        VmaAllocation alloc;
+        auto rr = vmaCreateImage(allocator_, (VkImageCreateInfo*)&ici, &aci, &raw_img, &alloc, nullptr);
+        if (rr != VK_SUCCESS) {
+            throw std::runtime_error("Failed to create depth image");
+        }
+        sc.depth_image = raw_img;
+        sc.depth_alloc = alloc;
+
+        // depth view
+        vk::ImageViewCreateInfo ivci;
+        ivci.image = sc.depth_image;
+        ivci.viewType = vk::ImageViewType::e2D;
+        ivci.format = vk::Format::eD32Sfloat;
+        ivci.subresourceRange.aspectMask = vk::ImageAspectFlagBits::eDepth;
+        ivci.subresourceRange.levelCount = 1;
+        ivci.subresourceRange.layerCount = 1;
+        sc.depth_view = device_.createImageView(ivci);
+    }
+
+    m_swapchainImageCount = (uint32_t)sc.images.size();
     sc.image_views.resize(sc.images.size());
     for (size_t i = 0; i < sc.images.size(); ++i) {
         vk::ImageViewCreateInfo ivci;
@@ -275,8 +312,9 @@ SwapChainHandle VulkanRenderer::CreateSwapChainInternal(const SwapChainDesc& des
         sc.image_views[i] = device_.createImageView(ivci);
     }
 
-    // RenderPass
+    // renderpass with depth
     {
+        // color attach
         vk::AttachmentDescription color_attach;
         color_attach.format = ci.imageFormat;
         color_attach.samples = vk::SampleCountFlagBits::e1;
@@ -284,30 +322,46 @@ SwapChainHandle VulkanRenderer::CreateSwapChainInternal(const SwapChainDesc& des
         color_attach.storeOp = vk::AttachmentStoreOp::eStore;
         color_attach.initialLayout = vk::ImageLayout::eUndefined;
         color_attach.finalLayout = vk::ImageLayout::ePresentSrcKHR;
+        
+        // depth attach
+        vk::AttachmentDescription depth_attach;
+        depth_attach.format = vk::Format::eD32Sfloat;
+        depth_attach.samples = vk::SampleCountFlagBits::e1;
+        depth_attach.loadOp = vk::AttachmentLoadOp::eClear;
+        depth_attach.storeOp = vk::AttachmentStoreOp::eDontCare;
+        depth_attach.initialLayout = vk::ImageLayout::eUndefined;
+        depth_attach.finalLayout = vk::ImageLayout::eDepthStencilAttachmentOptimal;
+
+        std::vector<vk::AttachmentDescription> attaches = {color_attach, depth_attach};
 
         vk::AttachmentReference color_ref;
         color_ref.attachment = 0;
         color_ref.layout = vk::ImageLayout::eColorAttachmentOptimal;
 
+        vk::AttachmentReference depth_ref;
+        depth_ref.attachment = 1;
+        depth_ref.layout = vk::ImageLayout::eDepthStencilAttachmentOptimal;
+
         vk::SubpassDescription subpass;
         subpass.pipelineBindPoint = vk::PipelineBindPoint::eGraphics;
         subpass.colorAttachmentCount = 1;
         subpass.pColorAttachments = &color_ref;
+        subpass.pDepthStencilAttachment = &depth_ref;
 
         vk::RenderPassCreateInfo rpci;
-        rpci.attachmentCount = 1;
-        rpci.pAttachments = &color_attach;
+        rpci.attachmentCount = (uint32_t)attaches.size();
+        rpci.pAttachments = attaches.data();
         rpci.subpassCount = 1;
         rpci.pSubpasses = &subpass;
-
         sc.render_pass = device_.createRenderPass(rpci);
     }
+
     // Framebuffer
     sc.framebuffers.resize(sc.images.size());
     for (size_t i = 0; i < sc.images.size(); ++i) {
         vk::FramebufferCreateInfo fci;
         fci.renderPass = sc.render_pass;
-        vk::ImageView attachments[] = {sc.image_views[i]};
+        vk::ImageView attachments[] = {sc.image_views[i], sc.depth_view};
         fci.attachmentCount = 1;
         fci.pAttachments = attachments;
         fci.width = sc.extent.width;
@@ -322,12 +376,38 @@ SwapChainHandle VulkanRenderer::CreateSwapChainInternal(const SwapChainDesc& des
     }
     swapchains_[handle] = sc;
 
-    // Command buffer (이미 1개만 쓸 것이라 가정)
-    vk::CommandBufferAllocateInfo cbai;
-    cbai.commandPool = command_pool_;
-    cbai.level = vk::CommandBufferLevel::ePrimary;
-    cbai.commandBufferCount = 1;
-    command_buffers_ = device_.allocateCommandBuffers(cbai);
+    // Command Buffers = swapchainImageCount
+    {
+        vk::CommandBufferAllocateInfo cbai;
+        cbai.commandPool = command_pool_;
+        cbai.level = vk::CommandBufferLevel::ePrimary;
+        cbai.commandBufferCount = m_swapchainImageCount;
+        m_commandBuffers = device_.allocateCommandBuffers(cbai);
+    }
+
+    // Sync objects = kMaxFramesInFlight
+    m_imageAvailable.resize(kMaxFramesInFlight);
+    m_renderFinished.resize(kMaxFramesInFlight);
+    m_inFlightFences.resize(kMaxFramesInFlight);
+    for (int i = 0; i < kMaxFramesInFlight; ++i) {
+        m_imageAvailable[i] = device_.createSemaphore({});
+        m_renderFinished[i] = device_.createSemaphore({});
+        vk::FenceCreateInfo fci;
+        fci.flags = vk::FenceCreateFlagBits::eSignaled;
+        m_inFlightFences[i] = device_.createFence(fci);
+    }
+
+    // descriptor sets도 swapchainImageCount만큼 allocate (예: m_descriptorSets)
+    // (descriptor_set_layout_ 이미 존재한다고 가정)
+    {
+        std::vector<vk::DescriptorSetLayout> layouts(m_swapchainImageCount, descriptor_set_layout_);
+        vk::DescriptorSetAllocateInfo dsai;
+        dsai.descriptorPool = descriptor_pool_;
+        dsai.descriptorSetCount = m_swapchainImageCount;
+        dsai.pSetLayouts = layouts.data();
+        m_descriptorSets = device_.allocateDescriptorSets(dsai);
+        // 이후 BindXXX 시, imageIndex에 따라 m_descriptorSets[imageIndex] 업데이트
+    }
 
     return handle;
 #else
@@ -456,7 +536,48 @@ void VulkanRenderer::UpdateBuffer(BufferHandle handle, const void* data, size_t 
 }
 
 void VulkanRenderer::BindBuffer(BufferHandle handle, uint32_t bind_point) {
-    // RecordCommandBuffer()에서 실제 vkCmdBindVertexBuffers/IndexBuffer
+    if (handle == 0 || handle >= buffers_.size()) {
+        throw std::runtime_error("Invalid buffer handle in BindBuffer");
+    }
+    const auto& vb = buffers_[handle];
+
+    // 2-1) 버텍스/인덱스 버퍼라면, RecordCommandBuffer에서 참고하도록
+    //       임시로 보관 (예: m_currentVertexBufferHandle 등)
+    // 2-2) 유니폼 버퍼라면 -> descriptor set binding 업데이트
+
+    // 사용 예시: bind_point = 0 -> vertex, 1 -> index, 10 -> ubo binding(=10)
+    // (실제로는 더 체계적인 매핑 필요)
+
+    if (vb.buffer) {
+        // 예시 분기:
+        if (bind_point == 0) {
+            // vertex buffer
+            // 임시 보관
+            m_boundVertexBufferHandle_ = handle;
+        } else if (bind_point == 1) {
+            // index buffer
+            m_boundIndexBufferHandle_ = handle;
+        } else {
+            uint32_t imageIndex = m_currentSwapchainImageIndex;
+            auto ds = m_descriptorSets[imageIndex];
+
+            // 유니폼 버퍼 (descriptor set 업데이트)
+            vk::DescriptorBufferInfo dbi;
+            dbi.buffer = vb.buffer;
+            dbi.offset = 0;
+            dbi.range = vb.size_in_bytes;  // 전체
+
+            // descriptor_sets_[0]의 binding=bind_point에 연결한다고 가정
+            vk::WriteDescriptorSet wds;
+            wds.dstSet = ds;
+            wds.dstBinding = bind_point;
+            wds.descriptorCount = 1;
+            wds.descriptorType = vk::DescriptorType::eUniformBuffer;
+            wds.pBufferInfo = &dbi;
+
+            device_.updateDescriptorSets(wds, {});
+        }
+    }
 }
 
 // 텍스처
@@ -523,7 +644,31 @@ TextureHandle VulkanRenderer::CreateTexture(const TextureDesc& desc, const void*
 }
 
 void VulkanRenderer::BindTexture(TextureHandle handle, uint32_t bind_point) {
-    // descriptor set update
+    if (handle == 0 || handle >= textures_.size()) {
+        throw std::runtime_error("Invalid texture handle in BindTexture");
+    }
+    const auto& tex = textures_[handle];
+
+    // descriptor set(binding=bind_point)에 CombinedImageSampler를 업데이트
+    // (Sampler는 BindSampler에서 할 수도 있지만, 여기서는 Texture+Sampler 합쳐서 처리 가능)
+
+    // 임시로 sampler는 별도로, 또는 하나로 처리
+    // 여기서는 Sampler를 미리 m_boundSamplerHandle_에 저장해둘 수도 있음
+    // ...
+
+    vk::DescriptorImageInfo dii;
+    dii.imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
+    dii.imageView = tex.image_view;
+    // sampler는 BindSampler()에서 업데이트 or m_boundSamplerHandle_ 참고
+
+    vk::WriteDescriptorSet wds;
+    wds.dstSet = descriptor_sets_[0];
+    wds.dstBinding = bind_point;
+    wds.descriptorCount = 1;
+    wds.descriptorType = vk::DescriptorType::eCombinedImageSampler;
+    wds.pImageInfo = &dii;
+
+    device_.updateDescriptorSets(wds, {});
 }
 
 // 샘플러
@@ -568,7 +713,27 @@ SamplerHandle VulkanRenderer::CreateSampler(const SamplerDesc& desc) {
 }
 
 void VulkanRenderer::BindSampler(SamplerHandle handle, uint32_t bind_point) {
-    // descriptor set update
+    if (handle == 0 || handle >= samplers_.size()) {
+        throw std::runtime_error("Invalid sampler handle in BindSampler");
+    }
+    const auto& samp = samplers_[handle];
+
+    // 만약 sampler를 텍스처와 분리해서 binding한다면 descriptorType=eSampler
+    // 하지만 보통 combinedImageSampler로 같이 binding. 취향/설계 따라 다름.
+    // 예시로 sampler만 업데이트:
+    vk::DescriptorImageInfo dii;
+    dii.sampler = samp.sampler;
+    dii.imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
+    dii.imageView = VK_NULL_HANDLE;  // 텍스처는 별도
+
+    vk::WriteDescriptorSet wds;
+    wds.dstSet = descriptor_sets_[0];
+    wds.dstBinding = bind_point;
+    wds.descriptorCount = 1;
+    wds.descriptorType = vk::DescriptorType::eSampler;
+    wds.pImageInfo = &dii;
+
+    device_.updateDescriptorSets(wds, {});
 }
 
 // 셰이더
@@ -684,6 +849,7 @@ PipelineHandle VulkanRenderer::CreatePipeline(const PipelineDesc& desc) {
     vk::PipelineMultisampleStateCreateInfo ms;
     ms.rasterizationSamples = vk::SampleCountFlagBits::e1;
 
+    // blend
     vk::PipelineColorBlendAttachmentState cbAttach;
     cbAttach.colorWriteMask = vk::ColorComponentFlagBits::eR | vk::ColorComponentFlagBits::eG |
                               vk::ColorComponentFlagBits::eB | vk::ColorComponentFlagBits::eA;
@@ -746,6 +912,15 @@ void VulkanRenderer::ReleaseResource(uint64_t handle) {
         for (auto fb : sc.framebuffers) {
             device_.destroyFramebuffer(fb);
         }
+        if (sc.depth_view) {
+            device_.destroyImageView(sc.depth_view);
+            sc.depth_view = nullptr;
+        }
+        if (sc.depth_image) {
+            vmaDestroyImage(allocator_, (VkImage)sc.depth_image, sc.depth_alloc);
+            sc.depth_image = nullptr;
+            sc.depth_alloc = nullptr;
+        }
         if (sc.render_pass) {
             device_.destroyRenderPass(sc.render_pass);
         }
@@ -792,30 +967,51 @@ void VulkanRenderer::ReleaseResource(uint64_t handle) {
 }
 
 void VulkanRenderer::BeginFrame() {
-    device_.waitForFences(in_flight_fence_, VK_TRUE, UINT64_MAX);
-    device_.resetFences(in_flight_fence_);
-    // acquire image_index=0 (단순화)
+    device_.waitForFences(m_inFlightFences[m_currentFrame], VK_TRUE, UINT64_MAX);
+    device_.resetFences(m_inFlightFences[m_currentFrame]);
+
+    auto [result, imageIndex] = device_.acquireNextImageKHR(swapchains_[1].swapchain,  // 예: handle=1
+                                                            UINT64_MAX, m_imageAvailable[m_currentFrame], nullptr);
+    if (result != vk::Result::eSuccess && result != vk::Result::eSuboptimalKHR) {
+        // handle error
+    }
+    m_currentSwapchainImageIndex = imageIndex;  // 멤버 추가 가정
+
+    // commandBuffers[imageIndex].reset() if needed
+    // Record cmd
 }
 
 void VulkanRenderer::EndFrame() {
-    // submit command_buffers_[0]
+    // submit commandBuffers[m_currentSwapchainImageIndex]
     vk::SubmitInfo si;
-    vk::Semaphore wait_sems[] = {image_available_};
-    vk::PipelineStageFlags wait_stages[] = {vk::PipelineStageFlagBits::eColorAttachmentOutput};
+    vk::Semaphore waitSemaphores[] = {m_imageAvailable[m_currentFrame]};
+    vk::PipelineStageFlags waitStages[] = {vk::PipelineStageFlagBits::eColorAttachmentOutput};
     si.waitSemaphoreCount = 1;
-    si.pWaitSemaphores = wait_sems;
-    si.pWaitDstStageMask = wait_stages;
+    si.pWaitSemaphores = waitSemaphores;
+    si.pWaitDstStageMask = waitStages;
 
+    // cmd
     si.commandBufferCount = 1;
-    si.pCommandBuffers = &command_buffers_[0];
+    si.pCommandBuffers = &m_commandBuffers[m_currentSwapchainImageIndex];
 
-    vk::Semaphore signal_sems[] = {render_finished_};
+    vk::Semaphore signalSemaphores[] = {m_renderFinished[m_currentFrame]};
     si.signalSemaphoreCount = 1;
-    si.pSignalSemaphores = signal_sems;
+    si.pSignalSemaphores = signalSemaphores;
 
-    graphics_queue_.submit(si, in_flight_fence_);
+    graphics_queue_.submit(si, m_inFlightFences[m_currentFrame]);
 
-    // present (dummy)
+    // present
+    vk::PresentInfoKHR pi;
+    pi.waitSemaphoreCount = 1;
+    pi.pWaitSemaphores = signalSemaphores;
+    vk::SwapchainKHR sc[] = {swapchains_[1].swapchain};
+    pi.swapchainCount = 1;
+    pi.pSwapchains = sc;
+    pi.pImageIndices = &m_currentSwapchainImageIndex;
+
+    graphics_queue_.presentKHR(pi);
+
+    m_currentFrame = (m_currentFrame + 1) % kMaxFramesInFlight;
 }
 
 void VulkanRenderer::RecordCommandBuffer(vk::CommandBuffer cmd, uint32_t image_index) {
@@ -843,14 +1039,14 @@ void VulkanRenderer::RecordCommandBuffer(vk::CommandBuffer cmd, uint32_t image_i
         }
     }
     // 정점 버퍼
-    if (vbo_handle_ < buffers_.size() && buffers_[vbo_handle_].buffer) {
-        vk::Buffer vb = buffers_[vbo_handle_].buffer;
+    if (m_boundVertexBufferHandle_ < buffers_.size() && buffers_[m_boundVertexBufferHandle_].buffer) {
+        vk::Buffer vb = buffers_[m_boundVertexBufferHandle_].buffer;
         vk::DeviceSize off = 0;
         cmd.bindVertexBuffers(0, vb, off);
     }
     // 인덱스 버퍼
-    if (ibo_handle_ < buffers_.size() && buffers_[ibo_handle_].buffer) {
-        cmd.bindIndexBuffer(buffers_[ibo_handle_].buffer, 0, vk::IndexType::eUint16);
+    if (m_boundIndexBufferHandle_ < buffers_.size() && buffers_[m_boundIndexBufferHandle_].buffer) {
+        cmd.bindIndexBuffer(buffers_[m_boundIndexBufferHandle_].buffer, 0, vk::IndexType::eUint16);
     }
     // drawIndexed
     cmd.drawIndexed(index_count_, 1, 0, 0, 0);

@@ -39,6 +39,11 @@ class VulkanRenderer : public IRenderer {
         vk::Extent2D extent;
         vk::RenderPass render_pass;
         std::vector<vk::Framebuffer> framebuffers;
+
+        // depth
+        vk::Image depth_image;
+        vk::ImageView depth_view;
+        VmaAllocation depth_alloc = nullptr;
     };
 
     struct VulkanBuffer {
@@ -115,6 +120,32 @@ class VulkanRenderer : public IRenderer {
     vk::DescriptorPool descriptor_pool_;
     vk::DescriptorSetLayout descriptor_set_layout_;
     std::vector<vk::DescriptorSet> descriptor_sets_;
+
+    // begin perframe
+    // e.g. kMaxFramesInFlight = 2 or 3
+    static const int kMaxFramesInFlight = 2;
+
+    // 스왑체인 이미지 개수 (실제 acquireNextImageKHR 후 반환되는 count)
+    // 일정하다고 가정
+    uint32_t m_swapchainImageCount = 0;
+
+    uint32_t m_currentSwapchainImageIndex = 0;
+
+    // 현재 프레임 인덱스
+    uint32_t m_currentFrame = 0;
+
+    // CommandBuffer, Semaphores, Fences, DescriptorSets 등도 "per swapchain image" 또는 "per in-flight"로 구성
+    std::vector<vk::CommandBuffer> m_commandBuffers;  // size=swapchainImageCount
+    std::vector<vk::Semaphore> m_imageAvailable;
+    std::vector<vk::Semaphore> m_renderFinished;
+    std::vector<vk::Fence> m_inFlightFences;
+
+    // DescriptorSets도 스왑체인 이미지 개수만큼
+    std::vector<vk::DescriptorSet> m_descriptorSets;  // size=swapchainImageCount
+    // end perframe
+
+    BufferHandle m_boundVertexBufferHandle_;
+    BufferHandle m_boundIndexBufferHandle_;
 
     BufferHandle ubo_handle_ = 0;
     BufferHandle vbo_handle_ = 0;
