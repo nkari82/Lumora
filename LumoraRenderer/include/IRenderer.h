@@ -11,9 +11,7 @@ namespace lumora {
 // Resource handle definition
 struct ResourceHandle {
     uint64_t id = 0;
-    bool IsValid() const { return id != 0; }
 };
-
 struct SwapChainHandle : ResourceHandle {};
 struct BufferHandle : ResourceHandle {};
 struct TextureHandle : ResourceHandle {};
@@ -56,33 +54,73 @@ enum class MemoryUsage { kAuto, kGpuOnly, kCpuToGpu };
 
 struct SwapChainDesc {
     void* window_handle = nullptr;
-    int width = 1280;
-    int height = 720;
+    int32_t width = 1280;
+    int32_t height = 720;
     Format format;
-    int buffer_count = 2;
+    int32_t buffer_count = 2;
     bool vsync = true;
 };
 
-enum class BufferUsage { kVertex, kIndex, kUniform, kStorage };
+enum class BufferUsage {
+    kNone = 0x0,       // 기본값: 아무 용도도 없음
+    kVertex = 0x1,     // Vertex Buffer
+    kIndex = 0x2,      // Index Buffer
+    kUniform = 0x4,    // Uniform Buffer
+    kStorage = 0x8,    // Storage Buffer
+    kIndirect = 0x10,  // Indirect Draw/Dispatch Buffer
+    kDynamic = 0x20    // 동적 버퍼
+};
+
+inline BufferUsage operator|(BufferUsage lhs, BufferUsage rhs) {
+    return static_cast<BufferUsage>(static_cast<uint32_t>(lhs) | static_cast<uint32_t>(rhs));
+}
+
+inline bool operator&(BufferUsage lhs, BufferUsage rhs) {
+    return (static_cast<uint32_t>(lhs) & static_cast<uint32_t>(rhs)) != 0;
+}
 
 struct BufferDesc {
     BufferUsage usage;
     uint8_t* data = nullptr;  // initial data
-    size_t size = 0;
-    bool is_dynamic = false;
+    size_t size = 0;          // initial data size
     MemoryUsage memory_usage = MemoryUsage::kAuto;
 };
 
+enum class TextureUsage : uint32_t {
+    kSampled = 0x1,          // 샘플링 가능한 텍스처
+    kRenderTarget = 0x2,     // 렌더 타겟으로 사용
+    kDepthStencil = 0x4,     // Depth/Stencil 용도로 사용
+    kStorage = 0x8,          // Storage Image로 사용
+    kInputAttachment = 0x10  // Input Attachment로 사용 (렌더패스에서)
+};
+
+inline TextureUsage operator|(TextureUsage lhs, TextureUsage rhs) {
+    return static_cast<TextureUsage>(static_cast<uint32_t>(lhs) | static_cast<uint32_t>(rhs));
+}
+
+inline bool operator&(TextureUsage lhs, TextureUsage rhs) {
+    return (static_cast<uint32_t>(lhs) & static_cast<uint32_t>(rhs)) != 0;
+}
+
+enum class TextureType {
+    k2D,      // 기본값: 2D 텍스처
+    k3D,      // 3D 텍스처
+    kCubeMap  // 큐브 맵 텍스처
+};
+
 struct TextureDesc {
-    uint8_t* data = nullptr;  // initial data
+    uint8_t* data = nullptr;              // initial data
+    size_t size = 0;                      // initial data size
+    TextureType type = TextureType::k2D;  // 텍스처 타입 (기본: 2D)
+    uint32_t width;                       // 텍스처의 너비
+    uint32_t height;                      // 텍스처의 높이
+    uint32_t depth = 1;                   // 텍스처 깊이 (3D 텍스처 전용, 기본값: 1)
     uint32_t width = 0;
     uint32_t height = 0;
     uint32_t mip_levels = 1;
     uint32_t array_layers = 1;
     Format format = Format::kSRGBA8Unorm;
-
-    bool usage_color_attachment = false;
-    bool usage_storage_image = false;
+    TextureUsage usage = TextureUsage::kSampled;
 };
 
 enum class Filter { kNearest, kLinear };
@@ -202,6 +240,77 @@ struct ComputePipelineDesc {
     ShaderHandle compute_shader;
 };
 
+enum class AttachmentLoadOp {
+    kLoad,      // 기존 내용을 유지
+    kClear,     // 기존 내용을 지우고 초기화
+    kDontCare,  // 내용 무시
+};
+
+enum class AttachmentStoreOp {
+    kStore,     // 결과 저장
+    kDontCare,  // 결과 무시
+};
+
+struct AttachmentOptions {
+    AttachmentLoadOp load_op = AttachmentLoadOp::kClear;     // 기본값: 클리어
+    AttachmentStoreOp store_op = AttachmentStoreOp::kStore;  // 기본값: 저장
+};
+
+enum class AttachmentAccess {
+    kRead,       // 읽기 전용
+    kWrite,      // 쓰기 전용
+    kReadWrite,  // 읽기/쓰기
+};
+
+struct SubpassAttachment {
+    TextureHandle attachment;  // 참조할 렌더 타겟
+    AttachmentAccess access;   // 접근 방식
+};
+
+struct SubpassDesc {
+    std::vector<SubpassAttachment> color_attachments;  // 컬러 첨부
+    SubpassAttachment depth_attachment;                // Depth 첨부 (optional)
+    std::vector<SubpassAttachment> input_attachments;  // Input 첨부
+};
+
+struct RenderPassDesc {
+    std::vector<TextureHandle> color_targets;  // MRT를 위한 컬러 타겟 리스트
+    TextureHandle depth_target;                // Depth 타겟 (optional)
+
+    // 클리어 옵션
+    std::vector<std::array<float, 4>> clear_colors;  // 각 컬러 타겟에 대한 클리어 색상
+    bool clear_depth = true;                         // 깊이 클리어 여부
+    float clear_depth_value = 1.0f;                  // 깊이 클리어 값
+    uint32_t clear_stencil_value = 0;                // 스텐실 클리어 값
+
+    // Attachment 옵션
+    std::vector<AttachmentOptions> color_attachment_options;  // 각 컬러 타겟의 옵션
+    AttachmentOptions depth_attachment_options;               // 깊이 타겟의 옵션
+
+    // 서브패스
+    std::vector<SubpassDesc> subpasses;  // RenderPass 내의 서브패스 리스트
+};
+
+// example
+// RenderPassDesc pass_desc{};
+// pass_desc.color_targets = {render_target};
+// pass_desc.clear_colors = {{0.2f, 0.3f, 0.4f, 1.0f}};
+// pass_desc.depth_target = depth_target;
+
+// pass_desc.subpasses = {{
+//     {
+//         .color_attachments = {{render_target, AttachmentAccess::kWrite}},
+//         .depth_attachment = {depth_target, AttachmentAccess::kWrite},
+//     },
+// }};
+
+// renderer->Render(swapchain, [&]() {
+//     renderer->BeginRenderPass(pass_desc);
+//     renderer->BindPipeline(my_pipeline);
+//     renderer->DrawIndexed(36);
+//     renderer->EndRenderPass();
+// });
+
 class IRenderer {
    public:
     virtual ~IRenderer() = default;
@@ -211,30 +320,38 @@ class IRenderer {
     virtual void UpdateBuffer(BufferHandle handle, const void* data, size_t size) = 0;
     virtual void BindBuffer(BufferHandle handle, uint32_t bind_point, uint32_t dynamic_offset = 0) = 0;
     virtual TextureHandle CreateTexture(const TextureDesc& desc) = 0;
-    virtual void BindTexture(TextureHandle handle, uint32_t bind_point, bool is_storage = false) = 0;
+    virtual void BindTexture(TextureHandle handle, uint32_t bind_point) = 0;
     virtual SamplerHandle CreateSampler(const SamplerDesc& desc) = 0;
     virtual void BindSampler(SamplerHandle handle, uint32_t bind_point) = 0;
     virtual ShaderHandle CreateShader(const ShaderDesc& desc) = 0;
     virtual PipelineHandle CreatePipeline(const PipelineDesc& desc) = 0;
     virtual PipelineHandle CreatePipeline(const ComputePipelineDesc& desc) = 0;
     virtual void BindPipeline(PipelineHandle handle) = 0;
+
+    virtual void DispatchCompute(uint32_t group_x, uint32_t group_y, uint32_t group_z) = 0;
+
+    // renderer->Render(swapchain, {[](){
+    //   renderer->BeginRenderPass(desc0); // BeginRenderPass를 지정하지 않을 경우 내부적으로 스왑체인과 연관된
+    //   렌더패스를 호출한다.
+    //   renderer->BindPipeline(myPipeline); renderer->BindBuffer(myVbo);
+    //   renderer->BindBuffer(myIbo);
+    //   renderer->BindTexture(...);
+    //   renderer->DrawIndexed(36); // e.g. a cube with 36 indices
+    //   renderer->EndRenderPass();
+    //}});
+
+    virtual void BeginRenderPass(const RenderPassDesc& desc) = 0;
+    virtual void EndRenderPass() = 0;
+    virtual void Render(const SwapChainHandle& handle, std::function<void()> callback) = 0;
+    virtual void DrawIndexed(uint32_t index_count, uint32_t instance_count = 1, uint32_t first_index = 0,
+                             int32_t vertex_offset = 0, uint32_t first_instance = 0) = 0;
+    virtual bool ReloadShader(ShaderHandle handle, const ShaderDesc& new_desc) = 0;
+
     virtual void ReleaseResource(SwapChainHandle handle) = 0;
     virtual void ReleaseResource(TextureHandle handle) = 0;
     virtual void ReleaseResource(SamplerHandle handle) = 0;
     virtual void ReleaseResource(PipelineHandle handle) = 0;
     virtual void ReleaseResource(ShaderHandle handle) = 0;
-    virtual void DispatchCompute(uint32_t group_x, uint32_t group_y, uint32_t group_z) = 0;
-    // renderer->Render({[](){
-    //   r->BindPipeline(myPipeline);
-    //   r->BindBuffer(myVbo);
-    //   r->BindBuffer(myIbo);
-    //   r->BindTexture(...);
-    //   r->DrawIndexed(36); // e.g. a cube with 36 indices
-    //}});
-    virtual void Render(std::vector<std::function<void()>> callbacks) = 0;
-    virtual void DrawIndexed(uint32_t index_count, uint32_t instance_count = 1, uint32_t first_index = 0,
-                             int32_t vertex_offset = 0, uint32_t first_instance = 0) = 0;
-    virtual bool ReloadShader(ShaderHandle handle, const ShaderDesc& new_desc) = 0;
 
     static std::unique_ptr<IRenderer> Create();
 };
