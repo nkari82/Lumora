@@ -131,11 +131,13 @@ class IRenderer {
     virtual void BindPipeline(PipelineHandle handle) = 0;
 
     // 리소스 해제
-    virtual void ReleaseResource(uint64_t handle) = 0;
+    virtual void ReleaseResource(uint64_t handle) = 0;  // #FIXME template handle.
 
     // 프레임
     virtual void BeginFrame() = 0;
     virtual void EndFrame() = 0;
+
+    virtual void PushConstants(uint32_t offset, uint32_t size, const void* data) = 0;  // #FIXME 사라질 것
 
     // 정적 생성 함수
     static std::unique_ptr<IRenderer> Create();

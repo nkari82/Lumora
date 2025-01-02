@@ -30,6 +30,9 @@ class VulkanRenderer : public IRenderer {
     void BeginFrame() override;
     void EndFrame() override;
 
+    // PushConstants 구현
+    void PushConstants(uint32_t offset, uint32_t size, const void* data) override;  // #FIXME 사라질 것
+
    private:
     // 내부 구조체
     struct VulkanSwapChain {
@@ -128,20 +131,17 @@ class VulkanRenderer : public IRenderer {
     // 스왑체인 이미지 개수 (실제 acquireNextImageKHR 후 반환되는 count)
     // 일정하다고 가정
     uint32_t m_swapchainImageCount = 0;
-
     uint32_t m_currentSwapchainImageIndex = 0;
-
-    // 현재 프레임 인덱스
-    uint32_t m_currentFrame = 0;
+    uint32_t m_currentFrame = 0;  // 현재 프레임 인덱스
 
     // CommandBuffer, Semaphores, Fences, DescriptorSets 등도 "per swapchain image" 또는 "per in-flight"로 구성
-    std::vector<vk::CommandBuffer> m_commandBuffers;  // size=swapchainImageCount
-    std::vector<vk::Semaphore> m_imageAvailable;
-    std::vector<vk::Semaphore> m_renderFinished;
-    std::vector<vk::Fence> m_inFlightFences;
+    std::vector<vk::CommandBuffer> m_commandBuffers;  // command_buffers_ size=swapchainImageCount
+    std::vector<vk::Semaphore> m_imageAvailable;      // image_available_
+    std::vector<vk::Semaphore> m_renderFinished;      // render_finished_
+    std::vector<vk::Fence> m_inFlightFences;          // in_flight_fence_
 
     // DescriptorSets도 스왑체인 이미지 개수만큼
-    std::vector<vk::DescriptorSet> m_descriptorSets;  // size=swapchainImageCount
+    std::vector<vk::DescriptorSet> m_descriptorSets;  // descriptor_sets_ size=swapchainImageCount
     // end perframe
 
     BufferHandle m_boundVertexBufferHandle_;
@@ -152,6 +152,9 @@ class VulkanRenderer : public IRenderer {
     BufferHandle ibo_handle_ = 0;
     uint32_t index_count_ = 0;
 
+    // Push Constants를 적용할 StageFlags 지정 (간단히 Vertex/Fragment로 가정)
+    // 혹은 PipelineDesc에서 StageFlags를 받아올 수도 있음. #FIXME 사라질 것
+    vk::ShaderStageFlags m_pushConstantStages = vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment;
     bool initialized_ = false;
 
    private:

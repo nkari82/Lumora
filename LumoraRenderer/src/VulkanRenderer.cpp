@@ -322,7 +322,7 @@ SwapChainHandle VulkanRenderer::CreateSwapChainInternal(const SwapChainDesc& des
         color_attach.storeOp = vk::AttachmentStoreOp::eStore;
         color_attach.initialLayout = vk::ImageLayout::eUndefined;
         color_attach.finalLayout = vk::ImageLayout::ePresentSrcKHR;
-        
+
         // depth attach
         vk::AttachmentDescription depth_attach;
         depth_attach.format = vk::Format::eD32Sfloat;
@@ -863,6 +863,15 @@ PipelineHandle VulkanRenderer::CreatePipeline(const PipelineDesc& desc) {
     plci.setLayoutCount = 1;
     plci.pSetLayouts = &descriptor_set_layout_;
 
+    // PushConstantRange 간단 예시: 최대 128바이트, Vertex+Fragment 단계
+    vk::PushConstantRange pcr;              // #FIXME PushConstant 내부적으로 자동
+    pcr.stageFlags = m_pushConstantStages;  // 예: Vertex|Fragment
+    pcr.offset = 0;
+    pcr.size = 128;  // 원하는 최대 범위
+
+    plci.pushConstantRangeCount = 1;
+    plci.pPushConstantRanges = &pcr;
+
     auto pipeline_layout = device_.createPipelineLayout(plci);
 
     if (swapchains_.size() <= 1) {
@@ -1093,4 +1102,29 @@ void VulkanRenderer::CreateTestDescriptorSet(BufferHandle ubo, TextureHandle tex
     device_.updateDescriptorSets(writes, {});
 }
 
+// 2) 새로 추가된 PushConstants() 함수 구현
+void VulkanRenderer::PushConstants(uint32_t offset, uint32_t size, const void* data) {
+    // 커맨드 버퍼에 pushConstants 기록
+    // (예: 스왑체인 imageIndex 기반으로 m_commandBuffers[imageIndex])
+    if (m_commandBuffers.empty()) {
+        return;  // 혹은 throw
+    }
+
+    uint32_t imageIndex = m_currentSwapchainImageIndex;  // 가정
+    auto cmd = m_commandBuffers[imageIndex];
+
+    // 파이프라인 레이아웃은 pipelines_[활성화된 handle].pipeline_layout 이나
+    // 혹은 "현재 파이프라인" 등에서 가져와야 함. 간단히 pipelines_[1]이라 가정:
+    if (pipelines_.size() <= 1 || !pipelines_[1].pipeline_layout) {
+        return;
+    }
+    vk::PipelineLayout layout = pipelines_[1].pipeline_layout;
+
+    // 커맨드 버퍼에 push
+    cmd.pushConstants(layout,
+                      m_pushConstantStages,  // 보통 Vertex|Fragment
+                      offset,                // 0
+                      size,                  // 사용자 지정
+                      data);
+}
 }  // namespace Lumora
