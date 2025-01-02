@@ -53,10 +53,37 @@ enum class Format {
 enum class MemoryUsage { kAuto, kGpuOnly, kCpuToGpu };
 
 struct SwapChainDesc {
-    void* window_handle = nullptr;
+    // 공용체를 사용하여 플랫폼별 윈도우 핸들링
+    union WindowHandle {
+        void* generic = nullptr;  // 기본: nullptr
+#ifdef _WIN32
+        struct {
+            void* hwnd;
+            void* hinstance;
+        } win32;
+#endif
+#ifdef __linux__
+        struct {
+            void* display;
+            void* window;
+        } xlib;  // 예: Xlib
+                 // Wayland 지원을 추가할 수 있습니다.
+#endif
+#ifdef __ANDROID__
+        struct {
+            void* window;  // ANativeWindow*
+        } android;
+#endif
+#ifdef __APPLE__
+        struct {
+            void* view;  // NSView* for macOS, UIView* for iOS
+        } cocoa;
+#endif
+    } window_handle;
+
     int32_t width = 1280;
     int32_t height = 720;
-    Format format;
+    Format format = Format::kSRGBA8Unorm;
     int32_t buffer_count = 2;
     bool vsync = true;
 };

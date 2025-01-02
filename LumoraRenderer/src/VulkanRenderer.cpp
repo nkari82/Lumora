@@ -110,7 +110,7 @@ class VulkanRenderer : public IRenderer {
     void CreateInstance(const char* app_name);
     void PickPhysicalDevice();
     void CreateLogicalDevice();
-    void CreateSurface(void* window);
+    void CreateSurface(const SwapChainDesc& desc);
     void CreateSwapChainInternal(const SwapChainDesc& desc);
     void CreateImageViews();
     void CreateRenderPass(const RenderPassDesc& desc);
@@ -232,8 +232,14 @@ void VulkanRenderer::CreateInstance(const char* app_name) {
 
     // Enable necessary extensions
     std::vector<const char*> extensions = {VK_KHR_SURFACE_EXTENSION_NAME,
-#ifdef VK_USE_PLATFORM_WIN32_KHR
+#ifdef _WIN32
                                            VK_KHR_WIN32_SURFACE_EXTENSION_NAME
+#elif defined(__linux__)
+        VK_KHR_XLIB_SURFACE_EXTENSION_NAME // 또는 VK_KHR_WAYLAND_SURFACE_EXTENSION_NAME
+#elif defined(__ANDROID__)
+        VK_KHR_ANDROID_SURFACE_EXTENSION_NAME
+#elif defined(__APPLE__)
+        VK_MVK_MACOS_SURFACE_EXTENSION_NAME
 #endif
     };
     createInfo.enabledExtensionCount = static_cast<uint32_t>(extensions.size());
@@ -286,9 +292,8 @@ void VulkanRenderer::CreateLogicalDevice() {
 }
 
 SwapChainHandle VulkanRenderer::CreateSwapChain(const SwapChainDesc& desc) {
-    // For simplicity, assume window_handle is a HWND
-    HWND hwnd = static_cast<HWND>(desc.window_handle);
-    CreateSurface(hwnd);
+    // Create surface based on platform
+    CreateSurface(desc);
 
     CreateSwapChainInternal(desc);
     CreateImageViews();
@@ -300,18 +305,56 @@ SwapChainHandle VulkanRenderer::CreateSwapChain(const SwapChainDesc& desc) {
     return handle;
 }
 
-void VulkanRenderer::CreateSurface(void* window) {
-    HWND hwnd = static_cast<HWND>(window);
+void VulkanRenderer::CreateSurface(const SwapChainDesc& desc) {
+#ifdef _WIN32
+    // Win32 Surface
     VkWin32SurfaceCreateInfoKHR createInfo = {};
     createInfo.sType = VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR;
-    createInfo.hwnd = hwnd;
-    createInfo.hinstance = GetModuleHandle(nullptr);
+    createInfo.hwnd = static_cast<HWND>(desc.window_handle.win32.hwnd);
+    createInfo.hinstance = static_cast<HINSTANCE>(desc.window_handle.win32.hinstance);
 
     VkSurfaceKHR rawSurface;
     if (vkCreateWin32SurfaceKHR(static_cast<VkInstance>(instance), &createInfo, nullptr, &rawSurface) != VK_SUCCESS) {
-        throw std::runtime_error("Failed to create window surface.");
+        throw std::runtime_error("Failed to create Win32 surface.");
     }
     surface = vk::SurfaceKHR(rawSurface);
+#elif defined(__linux__)
+    // Xlib Surface (예시)
+    VkXlibSurfaceCreateInfoKHR createInfo = {};
+    createInfo.sType = VK_STRUCTURE_TYPE_XLIB_SURFACE_CREATE_INFO_KHR;
+    createInfo.dpy = static_cast<Display*>(desc.window_handle.xlib.display);
+    createInfo.window = static_cast<Window>(desc.window_handle.xlib.window);
+
+    VkSurfaceKHR rawSurface;
+    if (vkCreateXlibSurfaceKHR(static_cast<VkInstance>(instance), &createInfo, nullptr, &rawSurface) != VK_SUCCESS) {
+        throw std::runtime_error("Failed to create Xlib surface.");
+    }
+    surface = vk::SurfaceKHR(rawSurface);
+#elif defined(__ANDROID__)
+    // Android Surface
+    VkAndroidSurfaceCreateInfoKHR createInfo = {};
+    createInfo.sType = VK_STRUCTURE_TYPE_ANDROID_SURFACE_CREATE_INFO_KHR;
+    createInfo.window = static_cast<ANativeWindow*>(desc.window_handle.android.window);
+
+    VkSurfaceKHR rawSurface;
+    if (vkCreateAndroidSurfaceKHR(static_cast<VkInstance>(instance), &createInfo, nullptr, &rawSurface) != VK_SUCCESS) {
+        throw std::runtime_error("Failed to create Android surface.");
+    }
+    surface = vk::SurfaceKHR(rawSurface);
+#elif defined(__APPLE__)
+    // MoltenVK Surface (macOS/iOS)
+    VkMetalSurfaceCreateInfoEXT createInfo = {};
+    createInfo.sType = VK_STRUCTURE_TYPE_METAL_SURFACE_CREATE_INFO_EXT;
+    createInfo.pLayer = static_cast<CAMetalLayer*>(desc.window_handle.cocoa.view);
+
+    VkSurfaceKHR rawSurface;
+    if (vkCreateMetalSurfaceEXT(static_cast<VkInstance>(instance), &createInfo, nullptr, &rawSurface) != VK_SUCCESS) {
+        throw std::runtime_error("Failed to create Metal surface.");
+    }
+    surface = vk::SurfaceKHR(rawSurface);
+#else
+    throw std::runtime_error("Unsupported platform for surface creation.");
+#endif
 }
 
 void VulkanRenderer::CreateSwapChainInternal(const SwapChainDesc& desc) {
@@ -323,47 +366,103 @@ void VulkanRenderer::CreateSwapChainInternal(const SwapChainDesc& desc) {
     //     int32_t buffer_count = 2;
     //     bool vsync = true; // unused
     //  };
-    if (!surface || !physicalDevice || !device) {
-        throw std::runtime_error("Surface, physicalDevice, or device is not initialized.");
-    }
+    vk::SurfaceCapabilitiesKHR capabilities = physicalDevice.getSurfaceCapabilitiesKHR(surface);
+    std::vector<vk::SurfaceFormatKHR> formats = physicalDevice.getSurfaceFormatsKHR(surface);
+    std::vector<vk::PresentModeKHR> presentModes = physicalDevice.getSurfacePresentModesKHR(surface);
 
-    // desc.format의 unknown이라면 첫번째 값으로 초기화 하고 desc.format과 일치하는 format이 있는지 찾아보고 없으면
-    // 첫번째 값
-    auto capabilities = physicalDevice.getSurfaceCapabilitiesKHR(surface);
-    auto formats = physicalDevice.getSurfaceFormatsKHR(surface);
-    if (formats.empty()) {
-        throw std::runtime_error("No surface formats available.");
-    }
-
+    // Choose surface format
     vk::SurfaceFormatKHR surfaceFormat = formats[0];
-    swapchainExtent.width =
-        std::clamp<uint32_t>(desc.width, capabilities.minImageExtent.width, capabilities.maxImageExtent.width);
-    swapchainExtent.height =
-        std::clamp<uint32_t>(desc.height, capabilities.minImageExtent.height, capabilities.maxImageExtent.height);
+    for (const auto& availableFormat : formats) {
+        if (availableFormat.format == vk::Format::eB8G8R8A8Unorm &&
+            availableFormat.colorSpace == vk::ColorSpaceKHR::eSrgbNonlinear) {
+            surfaceFormat = availableFormat;
+            break;
+        }
+    }
 
+    // Choose present mode
+    vk::PresentModeKHR presentMode = vk::PresentModeKHR::eFifo;  // Default
+    for (const auto& availablePresentMode : presentModes) {
+        if (availablePresentMode == vk::PresentModeKHR::eMailbox) {
+            presentMode = availablePresentMode;
+            break;
+        }
+    }
+
+    // Choose swap extent
+    if (capabilities.currentExtent.width != UINT32_MAX) {
+        swapchainExtent = capabilities.currentExtent;
+    } else {
+        swapchainExtent.width = std::max<uint32_t>(
+            capabilities.minImageExtent.width,
+            std::min<uint32_t>(static_cast<uint32_t>(desc.width), capabilities.maxImageExtent.width));
+        swapchainExtent.height = std::max<uint32_t>(
+            capabilities.minImageExtent.height,
+            std::min<uint32_t>(static_cast<uint32_t>(desc.height), capabilities.maxImageExtent.height));
+    }
+
+    // Choose number of images
+    uint32_t imageCount = desc.buffer_count;
+    if (imageCount < capabilities.minImageCount) {
+        imageCount = capabilities.minImageCount;
+    }
+    if (capabilities.maxImageCount > 0 && imageCount > capabilities.maxImageCount) {
+        imageCount = capabilities.maxImageCount;
+    }
+
+    // Determine image usage
+    vk::ImageUsageFlags imageUsage = vk::ImageUsageFlagBits::eColorAttachment;
+    if (desc.vsync) {
+        // If vsync is desired, eFifo present mode is used, which is already selected
+    }
+
+    // Check if graphics and present queue families are the same
+    uint32_t queueFamilyIndices[] = {graphicsQueueFamily};
+    vk::SharingMode sharingMode = vk::SharingMode::eExclusive;
+
+    // Create SwapChainCreateInfo
     vk::SwapchainCreateInfoKHR createInfo;
     createInfo.surface = surface;
-    createInfo.minImageCount = std::max<uint32_t>(static_cast<uint32_t>(desc.buffer_count), capabilities.minImageCount);
+    createInfo.minImageCount = imageCount;
     createInfo.imageFormat = surfaceFormat.format;
     createInfo.imageColorSpace = surfaceFormat.colorSpace;
     createInfo.imageExtent = swapchainExtent;
-    createInfo.imageUsage = vk::ImageUsageFlagBits::eColorAttachment;
-    createInfo.preTransform = capabilities.currentTransform;
-    createInfo.compositeAlpha = vk::CompositeAlphaFlagBitsKHR::eOpaque;
-    createInfo.presentMode = vk::PresentModeKHR::eFifo;
-    createInfo.clipped = VK_TRUE;
-
-    uint32_t queueFamilyIndices[] = {graphicsQueueFamily};
+    createInfo.imageArrayLayers = 1;
+    createInfo.imageUsage = imageUsage;
+    createInfo.imageSharingMode = sharingMode;
     createInfo.queueFamilyIndexCount = 1;
     createInfo.pQueueFamilyIndices = queueFamilyIndices;
-    createInfo.imageSharingMode = vk::SharingMode::eExclusive;
+    createInfo.preTransform = capabilities.currentTransform;
+    createInfo.compositeAlpha = vk::CompositeAlphaFlagBitsKHR::eOpaque;
+    createInfo.presentMode = presentMode;
+    createInfo.clipped = VK_TRUE;
+    createInfo.oldSwapchain = swapchain;
 
-    if (!(capabilities.supportedUsageFlags & createInfo.imageUsage)) {
-        throw std::runtime_error("Color attachment is not supported.");
-    }
-
-    swapchain = device.createSwapchainKHR(createInfo);  // #FIXME access violation
+    swapchain = device.createSwapchainKHR(createInfo);
     swapchainImages = device.getSwapchainImagesKHR(swapchain);
+    swapchainImageFormat = surfaceFormat.format;  // Mapping 필요
+}
+
+void VulkanRenderer::CreateImageViews() {
+    swapchainImageViews.resize(swapchainImages.size());
+
+    for (size_t i = 0; i < swapchainImages.size(); i++) {
+        vk::ImageViewCreateInfo viewInfo;
+        viewInfo.image = swapchainImages[i];
+        viewInfo.viewType = vk::ImageViewType::e2D;
+        viewInfo.format = swapchainImageFormat;  // Mapping 필요
+        viewInfo.components.r = vk::ComponentSwizzle::eIdentity;
+        viewInfo.components.g = vk::ComponentSwizzle::eIdentity;
+        viewInfo.components.b = vk::ComponentSwizzle::eIdentity;
+        viewInfo.components.a = vk::ComponentSwizzle::eIdentity;
+        viewInfo.subresourceRange.aspectMask = vk::ImageAspectFlagBits::eColor;
+        viewInfo.subresourceRange.baseMipLevel = 0;
+        viewInfo.subresourceRange.levelCount = 1;
+        viewInfo.subresourceRange.baseArrayLayer = 0;
+        viewInfo.subresourceRange.layerCount = 1;
+
+        swapchainImageViews[i] = device.createImageView(viewInfo);
+    }
 }
 
 BufferHandle VulkanRenderer::CreateBuffer(const BufferDesc& desc) {
@@ -846,9 +945,6 @@ Format VulkanRenderer::FromVulkanFormat(vk::Format vk_format) {
             return Format::kUnknown;
     }
 }
-
-// #FIXME temp
-void VulkanRenderer::CreateImageViews() {}
 
 // Factory method
 std::unique_ptr<IRenderer> IRenderer::Create() { return std::make_unique<VulkanRenderer>(); }

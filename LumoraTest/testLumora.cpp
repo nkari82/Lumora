@@ -43,7 +43,8 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow) {
 
     // Create SwapChain
     lumora::SwapChainDesc swapDesc;
-    swapDesc.window_handle = hwnd;
+    swapDesc.window_handle.win32.hwnd = hwnd;
+    swapDesc.window_handle.win32.hinstance = hInstance;
     swapDesc.width = 1280;
     swapDesc.height = 720;
     swapDesc.format = lumora::Format::kSRGBA8Unorm;
