@@ -599,7 +599,7 @@ void VulkanRenderer::UpdateBuffer(BufferHandle handle, const void* data, size_t 
     UploadDataToBuffer(data, size, vb.buffer);
 }
 
-void VulkanRenderer::BindBuffer(BufferHandle handle, uint32_t bind_point) {
+void VulkanRenderer::BindBuffer(BufferHandle handle, uint32_t bind_point, uint32_t dynamicOffset) {
     if (handle == 0 || handle >= buffers_.size()) {
         throw std::runtime_error("Invalid buffer handle in BindBuffer");
     }
@@ -707,29 +707,23 @@ TextureHandle VulkanRenderer::CreateTexture(const TextureDesc& desc, const void*
     return handle;
 }
 
-void VulkanRenderer::BindTexture(TextureHandle handle, uint32_t bind_point) {
+void VulkanRenderer::BindTexture(TextureHandle handle, uint32_t bind_point, bool isStorage) {
     if (handle == 0 || handle >= textures_.size()) {
         throw std::runtime_error("Invalid texture handle in BindTexture");
     }
-    const auto& tex = textures_[handle];
+    auto& tex = textures_[handle];
 
-    // descriptor set(binding=bind_point)에 CombinedImageSampler를 업데이트
-    // (Sampler는 BindSampler에서 할 수도 있지만, 여기서는 Texture+Sampler 합쳐서 처리 가능)
-
-    // 임시로 sampler는 별도로, 또는 하나로 처리
-    // 여기서는 Sampler를 미리 m_boundSamplerHandle_에 저장해둘 수도 있음
-    // ...
-
+    // descriptor set 업데이트
     vk::DescriptorImageInfo dii;
-    dii.imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
+    dii.imageLayout = vk::ImageLayout::eGeneral;  // 또는 eShaderReadOnlyOptimal
     dii.imageView = tex.image_view;
-    // sampler는 BindSampler()에서 업데이트 or m_boundSamplerHandle_ 참고
+    dii.sampler = (isStorage ? VK_NULL_HANDLE : /*sampler*/ VK_NULL_HANDLE);
 
     vk::WriteDescriptorSet wds;
-    wds.dstSet = descriptor_sets_[0];
+    // wds.dstSet          = m_currentDescriptorSet; // 예: 내부적으로 관리 중
     wds.dstBinding = bind_point;
     wds.descriptorCount = 1;
-    wds.descriptorType = vk::DescriptorType::eCombinedImageSampler;
+    wds.descriptorType = (isStorage ? vk::DescriptorType::eStorageImage : vk::DescriptorType::eCombinedImageSampler);
     wds.pImageInfo = &dii;
 
     device_.updateDescriptorSets(wds, {});
@@ -1110,6 +1104,11 @@ void VulkanRenderer::EndFrame() {
     si.commandBufferCount = 1;
     si.pCommandBuffers = &m_commandBuffers[m_currentSwapchainImageIndex];
 
+    if (render_callback_) {
+        // render_callback_(const_cast<IRenderer*>(this));
+        //  여기서 “BindVertexBuffer -> BindIndexBuffer -> DrawIndexed” 등 호출 가능
+    }
+
     vk::Semaphore signalSemaphores[] = {m_renderFinished[m_currentFrame]};
     si.signalSemaphoreCount = 1;
     si.pSignalSemaphores = signalSemaphores;
@@ -1343,6 +1342,142 @@ void VulkanRenderer::ResourceBarrier(uint64_t resource_handle, ResourceLayout ol
         cmd.pipelineBarrier(vk::PipelineStageFlagBits::eComputeShader, vk::PipelineStageFlagBits::eFragmentShader,
                             vk::DependencyFlags{}, nullptr, nullptr, imb);
     }
+}
+
+// 1) DescriptorSet 생성 함수
+uint64_t VulkanRenderer::CreateDescriptorSet(const DescriptorSetDesc& desc) {
+    // #TODO
+    // 1. DescriptorSet Layout 관리
+    // 2. DescriptorSet Update(WriteDescriptorSet)
+    // 3. Dynamic DescriptorSet / Multiple Frames
+    // 4. 중첩된 DescriptorSet(DescriptorSet of DescriptorSets) or “Bindless” 기법
+
+    // 1) Vulkan에서 descriptor set layout을 식별해야 함
+    //    여기서는 desc.layoutHandle을 "pipeline layout"이나 "descriptor set layout" 중 하나로 매핑할 필요가 있음
+
+    // 간단 예시: pipelines_[desc.layoutHandle].pipeline_layout or descriptor_set_layout
+    // 실제로는 "layoutHandle" 자체가 "descriptorSetLayout handle" 일 수도 있습니다.
+    // 여기서는 예시로 "desc.layoutHandle"를 "descriptor_set_layout_" 중 하나로 가정
+    if (desc.layoutHandle == 0) {
+        throw std::runtime_error("Invalid layoutHandle in CreateDescriptorSet");
+    }
+
+    // descriptor pool은 이미 만들어졌다고 가정 (descriptor_pool_)
+    vk::DescriptorSetLayout layout;  // =  ... somehow get layout from desc.layoutHandle ... ;
+
+    vk::DescriptorSetAllocateInfo dsai;
+    dsai.descriptorPool = descriptor_pool_;
+    dsai.descriptorSetCount = 1;
+    dsai.pSetLayouts = &layout;
+
+    auto sets = device_.allocateDescriptorSets(dsai);
+    if (sets.empty()) {
+        throw std::runtime_error("allocateDescriptorSets failed");
+    }
+    vk::DescriptorSet ds = sets[0];
+
+    // 핸들 발급
+    uint64_t handle = m_nextDescriptorSetHandle++;
+    m_descriptorSets[handle] = ds;
+    return handle;
+}
+// 2) DescriptorSet 바인딩 함수
+void VulkanRenderer::BindDescriptorSet(uint64_t pipelineHandle, uint64_t descriptorSetHandle, uint32_t index) {
+#if 0
+    // pipelineHandle -> pipeline_layout
+    if (pipelineHandle >= pipelines_.size()) {
+        throw std::runtime_error("Invalid pipeline handle in BindDescriptorSet");
+    }
+    auto& pipe = pipelines_[pipelineHandle];
+    if (!pipe.pipeline) {
+        throw std::runtime_error("Invalid pipeline (destroyed or not created)");
+    }
+    vk::PipelineLayout pipelineLayout = pipe.pipeline_layout;
+
+    // descriptorSetHandle -> vk::DescriptorSet
+    auto it = m_descriptorSets.find(descriptorSetHandle);
+    if (it == m_descriptorSets.end()) {
+        throw std::runtime_error("Invalid descriptorSetHandle in BindDescriptorSet");
+    }
+    vk::DescriptorSet ds = it->second;
+
+    // 실제 커맨드 버퍼에 바인딩 (그래픽스/컴퓨트 구분 가능)
+    // 예: 그래픽스 파이프라인 바인딩일 경우
+    uint32_t imageIndex = m_currentSwapchainImageIndex;  // 예시
+    auto cmd = m_commandBuffers[imageIndex];             // 이미 할당된 커맨드 버퍼
+
+    cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics,  // 혹은 eCompute
+                           pipelineLayout,
+                           index,  // firstSet
+                           ds, {}  // dynamicOffsets
+    );
+#endif
+}
+
+bool VulkanRenderer::ReloadShader(ShaderHandle handle, const ShaderDesc& new_desc) {
+    // 1) 해당 shaderHandle 이 유효한지 체크
+    auto it = shaders_.find(handle);
+    if (it == shaders_.end()) {
+        // LOG(ERROR) << "ReloadShader failed: invalid handle=" << handle;
+        return false;
+    }
+
+    VulkanShader& old_shader = it->second;
+    // 2) Vulkan shader module 새로 생성
+    //    (기존 CreateShader 로직을 재활용)
+    std::vector<char> code;
+    try {
+        code = ReadFile(new_desc.file_path);
+    } catch (std::exception& e) {
+        // LOG(ERROR) << "ReloadShader: failed to read file " << new_desc.file_path << " err=" << e.what();
+        return false;
+    }
+
+    vk::ShaderModuleCreateInfo smci;
+    smci.codeSize = code.size();
+    smci.pCode = reinterpret_cast<const uint32_t*>(code.data());
+
+    vk::ShaderModule new_module;
+    try {
+        new_module = device_.createShaderModule(smci);
+    } catch (std::exception& e) {
+        // LOG(ERROR) << "ReloadShader: createShaderModule failed: " << e.what();
+        return false;
+    }
+
+    // 3) 기존 shader module 파괴
+    if (old_shader.shader_module) {
+        device_.destroyShaderModule(old_shader.shader_module);
+    }
+    // 4) 새로 교체
+    old_shader.shader_module = new_module;
+
+    // 5) 파이프라인 재생성
+    //    (핫 리로드 시, 해당 shaderHandle을 사용 중인 파이프라인도 갱신이 필요)
+    //    예: pipelines_ 를 모두 확인, 이 handle이 vertex_shader나 fragment_shader로 쓰이면 recreate.
+    for (size_t ph = 1; ph < pipelines_.size(); ++ph) {
+        auto& pipe = pipelines_[ph];
+        // 예: pipelineDesc에 vertex_shader==handle이면 recreate
+        //     compute_shader==handle이면 recreate
+        //     fragment_shader==handle이면 recreate
+        // etc. (실제로는 pipelineDesc를 보관해야 함)
+    }
+
+    // LOG(INFO) << "ReloadShader: handle=" << handle << " reloaded with new file=" << new_desc.file_path;
+    return true;
+}
+
+void VulkanRenderer::SetRenderCallback(RenderCallbackFn callback) { render_callback_ = callback; }
+
+void VulkanRenderer::DrawIndexed(uint32_t indexCount, uint32_t instanceCount, uint32_t firstIndex, int32_t vertexOffset,
+                                 uint32_t firstInstance) {
+    // cmd.drawIndexed(...)
+    if (m_commandBuffers.empty()) {
+        // LOG(ERROR) << "No command buffers allocated to record draw.";
+        return;
+    }
+    // auto cmd = m_commandBuffers[currentSwapchainImageIndex];
+    // cmd.drawIndexed(indexCount, instanceCount, firstIndex, vertexOffset, firstInstance);
 }
 
 }  // namespace Lumora

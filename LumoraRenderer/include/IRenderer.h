@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <string>
 
@@ -52,6 +53,9 @@ struct TextureDesc {
         RGBA8_SRGB,
         // ...
     } format = Format::RGBA8_Unorm;
+
+    bool usage_color_attachment = false;
+    bool usage_storage_image = false;  // 새로 추가
 };
 
 // 샘플러 생성 파라미터
@@ -117,6 +121,17 @@ enum class ResourceLayout {
     // etc. Vulkan Layout 전부 매핑 가능
 };
 
+struct DescriptorSetDesc {
+    // Vulkan에서는 "DescriptorSetLayout" 개념이 필요.
+    // 여기서는 간단히 LayoutHandle 같은 핸들을 매핑할 수도 있음.
+    // 사용 예) 하나의 descriptor set에 UBO 1개, 샘플러 1개 등의 구성을 담을 수 있음.
+    // 실제 구조는 프로젝트 상황에 맞게 설계하세요.
+    uint64_t layoutHandle = 0;  // 예: VulkanRenderer 내부에서 pipelineLayout 등과 대응
+                                // 추가 확장이 필요하면 여기서 계속 필드를 늘릴 수 있음
+};
+
+using RenderCallbackFn = std::function<void(IRenderer*)>;
+
 // 렌더러 인터페이스
 class IRenderer {
    public:
@@ -128,11 +143,11 @@ class IRenderer {
     // 버퍼
     virtual BufferHandle CreateBuffer(const BufferDesc& desc) = 0;
     virtual void UpdateBuffer(BufferHandle handle, const void* data, size_t size) = 0;
-    virtual void BindBuffer(BufferHandle handle, uint32_t bind_point) = 0;
+    virtual void BindBuffer(BufferHandle handle, uint32_t bind_point, uint32_t dynamicOffset = 0) = 0;
 
     // 텍스처
     virtual TextureHandle CreateTexture(const TextureDesc& desc, const void* initial_data = nullptr) = 0;
-    virtual void BindTexture(TextureHandle handle, uint32_t bind_point) = 0;
+    virtual void BindTexture(TextureHandle handle, uint32_t bind_point, bool isStorage = false) = 0;
 
     // 샘플러
     virtual SamplerHandle CreateSampler(const SamplerDesc& desc) = 0;
@@ -160,6 +175,20 @@ class IRenderer {
 
     virtual void ResourceBarrier(uint64_t resource_handle, ResourceLayout old_layout,
                                  ResourceLayout new_layout) = 0;  // #FIXME 사라질 것(내부에서 자동으로 관리.)
+
+    // DescriptorSet 생성 함수
+    virtual uint64_t CreateDescriptorSet(const DescriptorSetDesc& desc) = 0;
+
+    // DescriptorSet 업데이트 or 바인딩 함수
+    virtual void BindDescriptorSet(uint64_t pipelineHandle, uint64_t descriptorSetHandle, uint32_t index /*=0*/) = 0;
+
+    // 파라미터: 기존 shaderHandle, 새 파일 경로 or Desc
+    virtual bool ReloadShader(ShaderHandle handle, const ShaderDesc& new_desc) = 0;
+
+    virtual void SetRenderCallback(RenderCallbackFn callback) = 0;
+
+    virtual void DrawIndexed(uint32_t indexCount, uint32_t instanceCount = 1, uint32_t firstIndex = 0,
+                             int32_t vertexOffset = 0, uint32_t firstInstance = 0) = 0;
     // 정적 생성 함수
     static std::unique_ptr<IRenderer> Create();
 };

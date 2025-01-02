@@ -11,10 +11,10 @@ class VulkanRenderer : public IRenderer {
     SwapChainHandle CreateSwapChain(const SwapChainDesc& desc) override;
     BufferHandle CreateBuffer(const BufferDesc& desc) override;
     void UpdateBuffer(BufferHandle handle, const void* data, size_t size) override;
-    void BindBuffer(BufferHandle handle, uint32_t bind_point) override;
+    void BindBuffer(BufferHandle handle, uint32_t bind_point, uint32_t dynamicOffset) override;
 
     TextureHandle CreateTexture(const TextureDesc& desc, const void* initial_data) override;
-    void BindTexture(TextureHandle handle, uint32_t bind_point) override;
+    void BindTexture(TextureHandle handle, uint32_t bind_point, bool isStorage) override;
 
     SamplerHandle CreateSampler(const SamplerDesc& desc) override;
     void BindSampler(SamplerHandle handle, uint32_t bind_point) override;
@@ -39,6 +39,17 @@ class VulkanRenderer : public IRenderer {
     void DispatchCompute(uint32_t group_x, uint32_t group_y, uint32_t group_z) override;
 
     void ResourceBarrier(uint64_t resource_handle, ResourceLayout old_layout, ResourceLayout new_layout) override;
+
+    // 새로 추가: DescriptorSet 관련 함수
+    uint64_t CreateDescriptorSet(const DescriptorSetDesc& desc) override;
+    void BindDescriptorSet(uint64_t pipelineHandle, uint64_t descriptorSetHandle, uint32_t index) override;
+
+    bool ReloadShader(ShaderHandle handle, const ShaderDesc& new_desc) override;
+
+    void SetRenderCallback(RenderCallbackFn callback) override;
+
+    void DrawIndexed(uint32_t indexCount, uint32_t instanceCount, uint32_t firstIndex, int32_t vertexOffset,
+                     uint32_t firstInstance) override;
 
    private:
     // 내부 구조체
@@ -92,6 +103,17 @@ class VulkanRenderer : public IRenderer {
         // etc.
     };
 
+    struct BoundBufferInfo {
+        BufferHandle handle = 0;
+        uint32_t dynamicOffset = 0;
+    };
+
+    // DescriptorSet을 보관할 자료구조
+    // 예: descriptorSetHandle -> vk::DescriptorSet 매핑
+    std::unordered_map<uint64_t, vk::DescriptorSet> m_descriptorSets;
+    uint64_t m_nextDescriptorSetHandle = 1;
+
+    RenderCallbackFn render_callback_ = nullptr;
     // 리소스 배열
     std::vector<VulkanSwapChain> swapchains_;
     std::vector<VulkanBuffer> buffers_;
