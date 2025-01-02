@@ -101,6 +101,22 @@ struct PipelineDesc {
     // etc. (srcColorBlendFactor, dstColorBlendFactor, blendOp 등도 확장 가능)
 };
 
+struct ComputePipelineDesc {
+    ShaderHandle compute_shader = 0;
+    // 필요 시, 스페셜라이제이션 상수, 워크그룹 크기 등 확장 가능
+};
+
+enum class ResourceLayout {
+    Undefined,
+    General,
+    ColorAttachmentOptimal,
+    DepthStencilAttachmentOptimal,
+    ShaderReadOnlyOptimal,
+    TransferSrcOptimal,
+    TransferDstOptimal,
+    // etc. Vulkan Layout 전부 매핑 가능
+};
+
 // 렌더러 인터페이스
 class IRenderer {
    public:
@@ -128,6 +144,8 @@ class IRenderer {
 
     // 파이프라인
     virtual PipelineHandle CreatePipeline(const PipelineDesc& desc) = 0;
+    virtual PipelineHandle CreateComputePipeline(
+        const ComputePipelineDesc& desc) = 0;  // #FIXME CreatePipeline 오버로딩
     virtual void BindPipeline(PipelineHandle handle) = 0;
 
     // 리소스 해제
@@ -138,7 +156,10 @@ class IRenderer {
     virtual void EndFrame() = 0;
 
     virtual void PushConstants(uint32_t offset, uint32_t size, const void* data) = 0;  // #FIXME 사라질 것
+    virtual void DispatchCompute(uint32_t group_x, uint32_t group_y, uint32_t group_z) = 0;
 
+    virtual void ResourceBarrier(uint64_t resource_handle, ResourceLayout old_layout,
+                                 ResourceLayout new_layout) = 0;  // #FIXME 사라질 것(내부에서 자동으로 관리.)
     // 정적 생성 함수
     static std::unique_ptr<IRenderer> Create();
 };

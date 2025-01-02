@@ -25,6 +25,9 @@ class VulkanRenderer : public IRenderer {
     PipelineHandle CreatePipeline(const PipelineDesc& desc) override;
     void BindPipeline(PipelineHandle handle) override;
 
+    // Compute 파이프라인
+    PipelineHandle CreateComputePipeline(const ComputePipelineDesc& desc) override;
+
     void ReleaseResource(uint64_t handle) override;
 
     void BeginFrame() override;
@@ -32,6 +35,10 @@ class VulkanRenderer : public IRenderer {
 
     // PushConstants 구현
     void PushConstants(uint32_t offset, uint32_t size, const void* data) override;  // #FIXME 사라질 것
+
+    void DispatchCompute(uint32_t group_x, uint32_t group_y, uint32_t group_z) override;
+
+    void ResourceBarrier(uint64_t resource_handle, ResourceLayout old_layout, ResourceLayout new_layout) override;
 
    private:
     // 내부 구조체
@@ -155,6 +162,8 @@ class VulkanRenderer : public IRenderer {
     // Push Constants를 적용할 StageFlags 지정 (간단히 Vertex/Fragment로 가정)
     // 혹은 PipelineDesc에서 StageFlags를 받아올 수도 있음. #FIXME 사라질 것
     vk::ShaderStageFlags m_pushConstantStages = vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment;
+    bool enable_multiple_subpass_ = false;  // 예: 디버그 용도 / 파이프라인 생성 시 참고
+
     bool initialized_ = false;
 
    private:

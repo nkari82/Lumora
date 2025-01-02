@@ -312,6 +312,70 @@ SwapChainHandle VulkanRenderer::CreateSwapChainInternal(const SwapChainDesc& des
         sc.image_views[i] = device_.createImageView(ivci);
     }
 
+    // 아래는 멀티 서브패스 예시
+    // Subpass #0: G-Buffer처럼 color0 attachment
+    // Subpass #1: Lighting처럼 color1 attachment
+    // Depth Attachment은 두 서브패스에서 공용 사용
+    if (enable_multiple_subpass_) {
+        // #TODO
+        // 1. 프로그래매틱 서브패스 설정
+        // 2. 서브패스 입력 어태치먼트
+        // 3. MSAA + Resolve
+        // 4. HDR / float 텍스처
+        // 예: color_attach0, color_attach1, depth_attach 등
+        vk::AttachmentDescription color_attach0;
+        color_attach0.format = ci.imageFormat;
+        color_attach0.samples = vk::SampleCountFlagBits::e1;
+        color_attach0.loadOp = vk::AttachmentLoadOp::eClear;
+        color_attach0.storeOp = vk::AttachmentStoreOp::eStore;
+        color_attach0.initialLayout = vk::ImageLayout::eUndefined;
+        color_attach0.finalLayout = vk::ImageLayout::eColorAttachmentOptimal;
+        vk::AttachmentDescription color_attach1 = color_attach0;
+        // storeOp/loadOp 등 필요 시 조정
+        // finalLayout= ePresentSrcKHR 할 수도 있음
+        vk::AttachmentDescription depth_attach;
+        // depth_attach format = eD32Sfloat, etc.
+        // Subpass0
+        vk::AttachmentReference color_ref0;
+        color_ref0.attachment = 0;
+        color_ref0.layout = vk::ImageLayout::eColorAttachmentOptimal;
+        vk::AttachmentReference depth_ref;
+        depth_ref.attachment = 2;  // depth
+        depth_ref.layout = vk::ImageLayout::eDepthStencilAttachmentOptimal;
+        vk::SubpassDescription subpass0;
+        subpass0.pipelineBindPoint = vk::PipelineBindPoint::eGraphics;
+        subpass0.colorAttachmentCount = 1;
+        subpass0.pColorAttachments = &color_ref0;
+        subpass0.pDepthStencilAttachment = &depth_ref;
+        // Subpass1
+        vk::AttachmentReference color_ref1;
+        color_ref1.attachment = 1;
+        color_ref1.layout = vk::ImageLayout::eColorAttachmentOptimal;
+        vk::SubpassDescription subpass1;
+        subpass1.pipelineBindPoint = vk::PipelineBindPoint::eGraphics;
+        subpass1.colorAttachmentCount = 1;
+        subpass1.pColorAttachments = &color_ref1;
+        subpass1.pDepthStencilAttachment = &depth_ref;  // 공유 depth
+        std::vector<vk::AttachmentDescription> attaches = {color_attach0, color_attach1, depth_attach};
+        std::vector<vk::SubpassDescription> subpasses = {subpass0, subpass1};
+        // 서브패스 의존성
+        // subpass0 -> subpass1
+        vk::SubpassDependency dep;
+        dep.srcSubpass = 0;
+        dep.dstSubpass = 1;
+        dep.srcStageMask = vk::PipelineStageFlagBits::eColorAttachmentOutput;
+        dep.dstStageMask = vk::PipelineStageFlagBits::eColorAttachmentOutput;
+        dep.srcAccessMask = vk::AccessFlagBits::eColorAttachmentWrite;
+        dep.dstAccessMask = vk::AccessFlagBits::eColorAttachmentRead | vk::AccessFlagBits::eColorAttachmentWrite;
+        vk::RenderPassCreateInfo rpci;
+        rpci.attachmentCount = (uint32_t)attaches.size();
+        rpci.pAttachments = attaches.data();
+        rpci.subpassCount = (uint32_t)subpasses.size();
+        rpci.pSubpasses = subpasses.data();
+        rpci.dependencyCount = 1;
+        rpci.pDependencies = &dep;
+        sc.render_pass = device_.createRenderPass(rpci);
+    } else
     // renderpass with depth
     {
         // color attach
@@ -909,6 +973,49 @@ PipelineHandle VulkanRenderer::CreatePipeline(const PipelineDesc& desc) {
     return ph;
 }
 
+PipelineHandle VulkanRenderer::CreateComputePipeline(const ComputePipelineDesc& desc) {
+    // #TODO
+    // 1. 컴퓨트 디스패치
+    // 2. 컴퓨트 전용 디스크립터 레이아웃
+    // 3. 컴퓨트 + 그래픽스 연동
+    // 4. PushConstants 또는 SpecializationConstants
+    // 5. ThreadGroup 크기 & Dispatch 최적화
+
+    // 1. 셰이더 핸들 -> ShaderModule 찾기
+    auto it = shaders_.find(desc.compute_shader);
+    if (it == shaders_.end()) {
+        throw std::runtime_error("Invalid compute shader handle in CreateComputePipeline");
+    }
+    vk::ShaderModule compute_module = it->second.shader_module;
+    // 2. 파이프라인 스테이지: COMPUTE
+    vk::PipelineShaderStageCreateInfo stage_info;
+    stage_info.stage = vk::ShaderStageFlagBits::eCompute;
+    stage_info.module = compute_module;
+    stage_info.pName = "main";  // 엔트리 포인트 (셰이더 쪽과 맞춰야 함)
+    // 3. Pipeline Layout (디스크립터 레이아웃, push constants 등)
+    //    - 그래픽스 파이프라인과 달리, Compute는 하나의 stage만
+    vk::PipelineLayoutCreateInfo plci;
+    // 필요하면 pushConstantRange, descriptor set layout 등 설정
+    auto pipeline_layout = device_.createPipelineLayout(plci);
+    // 4. Compute 파이프라인 생성
+    vk::ComputePipelineCreateInfo cpci;
+    cpci.stage = stage_info;
+    cpci.layout = pipeline_layout;
+    auto res = device_.createComputePipeline(nullptr, cpci);
+    if (res.result != vk::Result::eSuccess) {
+        throw std::runtime_error("Failed to create compute pipeline");
+    }
+    VulkanPipeline cpipe;
+    cpipe.pipeline = res.value;
+    cpipe.pipeline_layout = pipeline_layout;
+    PipelineHandle ph = next_pipeline_handle_++;
+    if (ph >= pipelines_.size()) {
+        pipelines_.resize(ph + 1);
+    }
+    pipelines_[ph] = cpipe;
+    return ph;
+}
+
 void VulkanRenderer::BindPipeline(PipelineHandle handle) {
     // RecordCommandBuffer()에서 실제 bind
 }
@@ -1127,4 +1234,115 @@ void VulkanRenderer::PushConstants(uint32_t offset, uint32_t size, const void* d
                       size,                  // 사용자 지정
                       data);
 }
+
+// DispatchCompute 구현
+void VulkanRenderer::DispatchCompute(uint32_t group_x, uint32_t group_y, uint32_t group_z) {
+    // #TODO
+    // 1. Barrier / Memory Dependency
+    // 2. Separate Command Pools
+    // 3. Async Compute Queue
+    // 4. Compute Resource Examples
+
+    // 1) 커맨드 버퍼(Compute) 확보 (예: m_commandBuffers[m_currentSwapchainImageIndex])
+    //    실제로는 그래픽스/컴퓨트 별로 command pool을 분리하기도 함
+    if (m_commandBuffers.empty()) {
+        return;  // 혹은 throw
+    }
+    uint32_t image_index = m_currentSwapchainImageIndex;  // 예
+    auto cmd = m_commandBuffers[image_index];
+    // 2) 커맨드 버퍼에 기록: vkCmdBindPipeline(eCompute, pipeline)은
+    //    BindPipeline()에서 이미 했다고 가정.
+
+    // PushConstants, BindXXX(SSBO 등)로 자원 연결이 끝났다고 가정
+
+    // 3) dispatch
+    cmd.dispatch(group_x, group_y, group_z);
+}
+
+void VulkanRenderer::ResourceBarrier(uint64_t resource_handle, ResourceLayout old_layout, ResourceLayout new_layout) {
+    // #TODO
+    // 1. **srcStageMask, dstStageMask, srcAccessMask, dstAccessMask**를 “old_layout, new_layout” 조합에 따라 자동
+    // 계산하도록 하는 로직을 추가해 보세요.
+    // 2. 큐 패밀리 전환
+    // 3. 그래픽스/컴퓨트 분리
+    // 4. Depth/Stencil aspect
+
+    // 1) 리소스가 버퍼인가, 텍스처인가 구분
+    //    예: buffers_[handle]? textures_[handle]?  판단
+    bool is_buffer = false;
+    if (resource_handle < buffers_.size() && buffers_[resource_handle].buffer) {
+        is_buffer = true;
+    } else if (resource_handle < textures_.size() && textures_[resource_handle].image) {
+        is_buffer = false;
+    } else {
+        // invalid handle
+        throw std::runtime_error("Invalid resource handle in ResourceBarrier");
+    }
+
+    // 2) 커맨드 버퍼 선택
+    uint32_t image_index = m_currentSwapchainImageIndex;  // 예
+    auto cmd = m_commandBuffers[image_index];
+
+    // 3) old_layout / new_layout -> vk::ImageLayout 변환
+    auto toVkImageLayout = [&](ResourceLayout l) {
+        switch (l) {
+            case ResourceLayout::Undefined:
+                return vk::ImageLayout::eUndefined;
+            case ResourceLayout::General:
+                return vk::ImageLayout::eGeneral;
+            case ResourceLayout::ColorAttachmentOptimal:
+                return vk::ImageLayout::eColorAttachmentOptimal;
+            case ResourceLayout::DepthStencilAttachmentOptimal:
+                return vk::ImageLayout::eDepthStencilAttachmentOptimal;
+            case ResourceLayout::ShaderReadOnlyOptimal:
+                return vk::ImageLayout::eShaderReadOnlyOptimal;
+            case ResourceLayout::TransferSrcOptimal:
+                return vk::ImageLayout::eTransferSrcOptimal;
+            case ResourceLayout::TransferDstOptimal:
+                return vk::ImageLayout::eTransferDstOptimal;
+            default:
+                return vk::ImageLayout::eUndefined;
+        }
+    };
+
+    if (is_buffer) {
+        // --- Buffer Memory Barrier ---
+        auto& buf = buffers_[resource_handle];
+        vk::BufferMemoryBarrier bmb;
+        bmb.srcAccessMask = vk::AccessFlagBits::eShaderWrite;  // 예시
+        bmb.dstAccessMask = vk::AccessFlagBits::eShaderRead;   // 예시
+        bmb.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        bmb.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        bmb.buffer = buf.buffer;
+        bmb.offset = 0;
+        bmb.size = buf.size_in_bytes;
+
+        cmd.pipelineBarrier(vk::PipelineStageFlagBits::eComputeShader,   // 예 srcStage
+                            vk::PipelineStageFlagBits::eFragmentShader,  // 예 dstStage
+                            vk::DependencyFlags{}, nullptr, bmb, nullptr);
+
+    } else {
+        // --- Image Memory Barrier ---
+        auto& tex = textures_[resource_handle];
+        vk::ImageMemoryBarrier imb;
+        imb.oldLayout = toVkImageLayout(old_layout);
+        imb.newLayout = toVkImageLayout(new_layout);
+        imb.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        imb.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        imb.image = tex.image;
+        imb.subresourceRange.aspectMask = vk::ImageAspectFlagBits::eColor;
+        // depth면 eDepth 등
+        imb.subresourceRange.levelCount = 1;
+        imb.subresourceRange.layerCount = 1;
+
+        // 간단히 srcAccessMask/dstAccessMask 예시
+        // 실제론 old/new layout에 따라 다르게 설정해야 함
+        imb.srcAccessMask = vk::AccessFlagBits::eShaderWrite;
+        imb.dstAccessMask = vk::AccessFlagBits::eShaderRead;
+
+        cmd.pipelineBarrier(vk::PipelineStageFlagBits::eComputeShader, vk::PipelineStageFlagBits::eFragmentShader,
+                            vk::DependencyFlags{}, nullptr, nullptr, imb);
+    }
+}
+
 }  // namespace Lumora
