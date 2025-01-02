@@ -225,6 +225,14 @@ struct DepthStencilState {
     bool stencil_test_enable = false;
 };
 
+enum class MultiSamples {
+    k1,
+    k2,
+    k4,
+    k6,
+    k8,
+};
+
 struct PipelineDesc {
     ShaderHandle vertex_shader;
     ShaderHandle fragment_shader;
@@ -234,7 +242,7 @@ struct PipelineDesc {
     RasterizationState rasterization;
     std::vector<ColorBlendState> color_blends;
     DepthStencilState depth_stencil;
-    int32_t sample_count = 1;
+    MultiSamples sample_count = MultiSamples::k1;
     PolygonMode polygon_mode = PolygonMode::kFill;
 };
 
@@ -299,7 +307,7 @@ struct RenderPassDesc {
 // pass_desc.color_targets = {render_target};
 // pass_desc.clear_colors = {{0.2f, 0.3f, 0.4f, 1.0f}};
 // pass_desc.depth_target = depth_target;
-//
+// subpassese가 채워지지 않았을 경우 기본은 내부적으로 kWrite로 하나의 subpassese가 만들어진다.
 // pass_desc.subpasses = {{
 //     {
 //         .color_attachments = {{render_target, AttachmentAccess::kWrite}},
@@ -308,10 +316,10 @@ struct RenderPassDesc {
 // }};
 //
 // renderer->Render(swapchain, [&]() {
-//     renderer->BeginRenderPass(pass_desc);
+//     renderer->BindPass(pass_desc);
 //     renderer->BindPipeline(my_pipeline);
 //     renderer->DrawIndexed(36);
-//     renderer->EndRenderPass();
+//     renderer->EndPass();
 // });
 
 // 멀티 서브패스
@@ -338,7 +346,7 @@ struct RenderPassDesc {
 //    renderer->DrawIndexed(36);
 //    renderer->BindPipeline(my_pipeline2);
 //    renderer->DrawIndexed(36);
-//    renderer->EndRenderPass();
+//    renderer->EndPass();
 //});
 
 class IRenderer {
@@ -364,18 +372,18 @@ class IRenderer {
     virtual void DispatchCompute(uint32_t group_x, uint32_t group_y, uint32_t group_z) = 0;
 
     // renderer->Render(swapchain, {[](){
-    //   renderer->BeginRenderPass(desc0); // BeginRenderPass를 지정하지 않을 경우 내부적으로 스왑체인과 연관된
+    //   renderer->BeginPass(desc0); // BeginPass 지정하지 않을 경우 내부적으로 스왑체인과 연관된
     //   렌더패스를 호출한다.
     //   renderer->BindPipeline(myPipeline);
     //   renderer->BindBuffer(myVbo);
     //   renderer->BindBuffer(myIbo);
     //   renderer->BindTexture(...);
     //   renderer->DrawIndexed(36); // e.g. a cube with 36 indices
-    //   renderer->EndRenderPass();
+    //   renderer->EndPass();
     //}});
 
-    virtual void BeginRenderPass(const RenderPassDesc& desc) = 0;
-    virtual void EndRenderPass() = 0;
+    virtual void BeginPass(const RenderPassDesc& desc) = 0;
+    virtual void EndPass() = 0;
     virtual void Render(const SwapChainHandle& handle, std::function<void()> callback) = 0;
     virtual void DrawIndexed(uint32_t index_count, uint32_t instance_count = 1, uint32_t first_index = 0,
                              int32_t vertex_offset = 0, uint32_t first_instance = 0) = 0;
