@@ -154,6 +154,7 @@ class VulkanRenderer : public IRenderer {
     Format FromVulkanFormat(vk::Format vk_format);
 
     vk::Format ToVulkanFormat(Format format);
+    vk::Format MapFormat(Format format) { return ToVulkanFormat(format); }
     vk::PolygonMode ToVulkanPolygonMode(PolygonMode mode);
     vk::CullModeFlags ToVulkanCullMode(CullMode mode);
     vk::FrontFace ToVulkanFrontFace(FrontFace face);
