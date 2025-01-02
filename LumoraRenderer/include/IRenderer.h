@@ -62,13 +62,15 @@ struct SwapChainDesc {
 };
 
 enum class BufferUsage {
-    kNone = 0x0,       // 기본값: 아무 용도도 없음
-    kVertex = 0x1,     // Vertex Buffer
-    kIndex = 0x2,      // Index Buffer
-    kUniform = 0x4,    // Uniform Buffer
-    kStorage = 0x8,    // Storage Buffer
-    kIndirect = 0x10,  // Indirect Draw/Dispatch Buffer
-    kDynamic = 0x20    // 동적 버퍼
+    kNone = 0x0,        // 기본값: 아무 용도도 없음
+    kVertex = 0x1,      // Vertex Buffer
+    kIndex = 0x2,       // Index Buffer (32비트가 기본)
+    kIndex16 = 0x40,    // 16비트 Index Buffer
+    kIndex32 = kIndex,  // 32비트 Index Buffer (기본값)
+    kUniform = 0x4,     // Uniform Buffer
+    kStorage = 0x8,     // Storage Buffer
+    kIndirect = 0x10,   // Indirect Draw/Dispatch Buffer
+    kDynamic = 0x20     // 동적 버퍼
 };
 
 inline BufferUsage operator|(BufferUsage lhs, BufferUsage rhs) {
@@ -232,7 +234,7 @@ struct PipelineDesc {
     RasterizationState rasterization;
     std::vector<ColorBlendState> color_blends;
     DepthStencilState depth_stencil;
-    int sample_count = 1;
+    int32_t sample_count = 1;
     PolygonMode polygon_mode = PolygonMode::kFill;
 };
 
@@ -292,18 +294,19 @@ struct RenderPassDesc {
 };
 
 // example
+// 단일 서브패스
 // RenderPassDesc pass_desc{};
 // pass_desc.color_targets = {render_target};
 // pass_desc.clear_colors = {{0.2f, 0.3f, 0.4f, 1.0f}};
 // pass_desc.depth_target = depth_target;
-
+//
 // pass_desc.subpasses = {{
 //     {
 //         .color_attachments = {{render_target, AttachmentAccess::kWrite}},
 //         .depth_attachment = {depth_target, AttachmentAccess::kWrite},
 //     },
 // }};
-
+//
 // renderer->Render(swapchain, [&]() {
 //     renderer->BeginRenderPass(pass_desc);
 //     renderer->BindPipeline(my_pipeline);
@@ -311,9 +314,39 @@ struct RenderPassDesc {
 //     renderer->EndRenderPass();
 // });
 
+// 멀티 서브패스
+// RenderPassDesc pass_desc{};
+// pass_desc.color_targets = {render_target1, render_target2};
+// pass_desc.clear_colors = {{0.2f, 0.3f, 0.4f, 1.0f}, {0.0f, 0.0f, 0.0f, 1.0f}};
+// pass_desc.depth_target = depth_target;
+//
+// pass_desc.subpasses = {
+//    {
+//        .color_attachments = {{render_target1, AttachmentAccess::kWrite}},
+//        .depth_attachment = {depth_target, AttachmentAccess::kWrite},
+//    },
+//    {
+//        .color_attachments = {{render_target2, AttachmentAccess::kWrite}},
+//        .input_attachments = {{render_target1, AttachmentAccess::kRead}},
+//        .depth_attachment = {depth_target, AttachmentAccess::kRead},
+//    },
+//};
+//
+// renderer->Render(swapchain, [&]() {
+//    renderer->BindPass(pass_desc);
+//    renderer->BindPipeline(my_pipeline1);
+//    renderer->DrawIndexed(36);
+//    renderer->BindPipeline(my_pipeline2);
+//    renderer->DrawIndexed(36);
+//    renderer->EndRenderPass();
+//});
+
 class IRenderer {
    public:
     virtual ~IRenderer() = default;
+
+    virtual void Open(const char* app_name) = 0;
+    virtual void Close() = 0;
 
     virtual SwapChainHandle CreateSwapChain(const SwapChainDesc& desc) = 0;
     virtual BufferHandle CreateBuffer(const BufferDesc& desc) = 0;
@@ -333,7 +366,8 @@ class IRenderer {
     // renderer->Render(swapchain, {[](){
     //   renderer->BeginRenderPass(desc0); // BeginRenderPass를 지정하지 않을 경우 내부적으로 스왑체인과 연관된
     //   렌더패스를 호출한다.
-    //   renderer->BindPipeline(myPipeline); renderer->BindBuffer(myVbo);
+    //   renderer->BindPipeline(myPipeline);
+    //   renderer->BindBuffer(myVbo);
     //   renderer->BindBuffer(myIbo);
     //   renderer->BindTexture(...);
     //   renderer->DrawIndexed(36); // e.g. a cube with 36 indices
