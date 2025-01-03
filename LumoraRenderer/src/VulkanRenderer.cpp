@@ -96,18 +96,19 @@ struct FrameBufferDesc {
 };
 
 // Resource Structs
-struct VulkanBuffer {
+struct VulkanResource {
+    uint32_t refCount = 1;
+};
+
+struct VulkanBuffer : VulkanResource {
     vk::Buffer buffer;
     VmaAllocation allocation;
     vk::DeviceSize size;
     vk::BufferUsageFlags usage;
     MemoryUsage memoryUsage;
-    uint32_t refCount;
-
-    VulkanBuffer() : refCount(1) {}
 };
 
-struct VulkanTexture {
+struct VulkanTexture : VulkanResource {
     vk::Image image;
     VmaAllocation allocation;
     vk::ImageView imageView;
@@ -116,54 +117,37 @@ struct VulkanTexture {
     uint32_t mipLevels;
     uint32_t arrayLayers;
     TextureUsage usage;
-    uint32_t refCount;
-
-    VulkanTexture() : refCount(1) {}
 };
 
-struct VulkanSampler {
+struct VulkanSampler : VulkanResource {
     vk::Sampler sampler;
     SamplerDesc desc;  // To store sampler configuration
-    uint32_t refCount;
-
-    VulkanSampler() : refCount(1) {}
 };
 
-struct VulkanShader {
+struct VulkanShader : VulkanResource {
     vk::ShaderModule shaderModule;
     ShaderDesc desc;  // To store shader metadata
-    uint32_t refCount;
-
-    VulkanShader() : refCount(1) {}
 };
 
-struct VulkanPipeline {
+struct VulkanPipeline : VulkanResource {
     vk::Pipeline pipeline;
     vk::PipelineLayout layout;
     PipelineDesc desc;  // To store pipeline configuration
-    uint32_t refCount;
-
-    VulkanPipeline() : refCount(1) {}
 };
 
 // New Structs for Framebuffer and Render Pass
-struct VulkanFrameBuffer {
+struct VulkanFrameBuffer : VulkanResource {
     vk::Framebuffer framebuffer;
+    RenderPassHandle renderPassHandle;
     FrameBufferDesc desc;  // To store framebuffer description
-    uint32_t refCount;
-
-    VulkanFrameBuffer() : refCount(1) {}
 };
 
-struct VulkanRenderPass {
+struct VulkanRenderPass : VulkanResource {
     vk::RenderPass renderPass;
     RenderPassDesc desc;  // To store render pass description
-    uint32_t refCount;
-
-    VulkanRenderPass() : refCount(1) {}
 };
 
-struct VulkanSwapChain {
+struct VulkanSwapChain : VulkanResource {
     vk::SwapchainKHR swapchain;
     std::vector<vk::Image> images;
     vk::Format imageFormat;
@@ -176,7 +160,6 @@ struct VulkanSwapChain {
     std::vector<vk::Semaphore> renderFinishedSemaphores;
     std::vector<vk::Fence> inFlightFences;
     size_t currentFrame;
-    uint32_t refCount;
 };
 
 // Descriptor Set Management Structures
@@ -268,7 +251,6 @@ class VulkanRenderer : public IRenderer {
     void PickPhysicalDevice();
     void CreateLogicalDevice();
     void CreateSurface(const SwapChainDesc& desc);
-    SwapChainHandle CreateSwapChainInternal(const SwapChainDesc& desc);
     RenderPassHandle CreateRenderPassInternal(const RenderPassDesc& desc);
     FrameBufferHandle CreateFrameBufferInternal(const FrameBufferDesc& desc);
     void CreateCommandPool();
@@ -656,14 +638,29 @@ SwapChainHandle VulkanRenderer::CreateSwapChain(const SwapChainDesc& desc) {
 
     // Create internal swapchain data
     SwapChainHandle handle;
-    handle.id = GenerateUniqueID();
-#if 0
-    VulkanSwapChain scData = CreateSwapChainInternal(desc);
-    scData.refCount = 1;
 
-    // Store the swapchain data
-    swapChains[handle] = scData;
-#endif
+    handle.id = GenerateUniqueID();
+
+    VulkanSwapChain swapChain;
+
+    // Create textures based on SwapChainDesc
+    // VulkanTexture colorTexture = CreateTexture(desc.colorAttachmentOptions);
+    // VulkanTexture depthTexture = CreateTexture(desc.depthAttachmentOptions);
+
+    // Create render pass and frame buffer
+    RenderPassDesc renderPassDesc;
+    RenderPassHandle renderPassHandle = CreateRenderPassInternal(renderPassDesc);
+    FrameBufferDesc frameBufferDesc;
+    // frameBufferDesc.renderPassHandle = renderPassHandle;
+    // frameBufferDesc.colorAttachments.push_back(colorTexture.handle);
+    // frameBufferDesc.depthAttachment = depthTexture.handle;
+
+    FrameBufferHandle frameBufferHandle = CreateFrameBufferInternal(frameBufferDesc);
+
+    swapChain.renderPassHandle = renderPassHandle;
+    swapChain.frameBufferHandle = frameBufferHandle;
+    swapChains[handle] = swapChain;
+
     return handle;
 }
 
@@ -717,115 +714,6 @@ void VulkanRenderer::CreateSurface(const SwapChainDesc& desc) {
 #else
     throw std::runtime_error("Unsupported platform for surface creation.");
 #endif
-}
-
-//  struct SwapChainDesc {
-//     void* window_handle = nullptr;
-//     int32_t width = 1280;
-//     int32_t height = 720;
-//     Format format; // unused
-//     int32_t buffer_count = 2;
-//     bool vsync = true; // unused
-//  };
-SwapChainHandle VulkanRenderer::CreateSwapChainInternal(const SwapChainDesc& desc) {
-    VulkanSwapChain scData;
-    scData.refCount = 1;
-
-    vk::SurfaceCapabilitiesKHR capabilities = physicalDevice.getSurfaceCapabilitiesKHR(surface);
-    std::vector<vk::SurfaceFormatKHR> formats = physicalDevice.getSurfaceFormatsKHR(surface);
-    std::vector<vk::PresentModeKHR> presentModes = physicalDevice.getSurfacePresentModesKHR(surface);
-
-    // Choose surface format
-    vk::SurfaceFormatKHR surfaceFormat = formats[0];
-    for (const auto& availableFormat : formats) {
-        if (availableFormat.format == vk::Format::eB8G8R8A8Unorm &&
-            availableFormat.colorSpace == vk::ColorSpaceKHR::eSrgbNonlinear) {
-            surfaceFormat = availableFormat;
-            break;
-        }
-    }
-
-    // Choose present mode
-    vk::PresentModeKHR presentMode = vk::PresentModeKHR::eFifo;  // Default
-    for (const auto& availablePresentMode : presentModes) {
-        if (availablePresentMode == vk::PresentModeKHR::eMailbox) {
-            presentMode = availablePresentMode;
-            break;
-        }
-    }
-
-    // Choose swap extent
-    if (capabilities.currentExtent.width != UINT32_MAX) {
-        scData.extent = capabilities.currentExtent;
-    } else {
-        scData.extent.width = std::max<uint32_t>(
-            capabilities.minImageExtent.width,
-            std::min<uint32_t>(static_cast<uint32_t>(desc.width), capabilities.maxImageExtent.width));
-        scData.extent.height = std::max<uint32_t>(
-            capabilities.minImageExtent.height,
-            std::min<uint32_t>(static_cast<uint32_t>(desc.height), capabilities.maxImageExtent.height));
-    }
-
-    // Choose number of images
-    uint32_t imageCount = desc.buffer_count;
-    if (imageCount < capabilities.minImageCount) {
-        imageCount = capabilities.minImageCount;
-    }
-    if (capabilities.maxImageCount > 0 && imageCount > capabilities.maxImageCount) {
-        imageCount = capabilities.maxImageCount;
-    }
-
-// Determine image usage
-#if 0
-    vk::ImageUsageFlags imageUsage = vk::ImageUsageFlagBits::eColorAttachment;
-    if (desc.usage & SwapChainUsage::kSampled)
-        imageUsage |= vk::ImageUsageFlagBits::eSampled;
-    if (desc.usage & SwapChainUsage::kStorage)
-        imageUsage |= vk::ImageUsageFlagBits::eStorage;
-#endif
-
-    // Sharing mode
-    bool sameQueueFamily = true;  // Assuming same family for simplicity
-
-    if (sameQueueFamily) {
-        vk::SharingMode sharingMode = vk::SharingMode::eExclusive;
-        uint32_t queueFamilyIndices[] = {graphicsQueueFamily};
-
-        vk::SwapchainCreateInfoKHR createInfo{};
-        createInfo.surface = surface;
-        createInfo.minImageCount = imageCount;
-        createInfo.imageFormat = surfaceFormat.format;
-        scData.imageFormat = surfaceFormat.format;
-        createInfo.imageColorSpace = surfaceFormat.colorSpace;
-        createInfo.imageExtent = scData.extent;
-        createInfo.imageArrayLayers = 1;
-        // createInfo.imageUsage = imageUsage;
-        createInfo.imageSharingMode = sharingMode;
-        createInfo.queueFamilyIndexCount = 1;
-        createInfo.pQueueFamilyIndices = queueFamilyIndices;
-        createInfo.preTransform = capabilities.currentTransform;
-        createInfo.compositeAlpha = vk::CompositeAlphaFlagBitsKHR::eOpaque;
-        createInfo.presentMode = presentMode;
-        createInfo.clipped = VK_TRUE;
-        createInfo.oldSwapchain = nullptr;  // Handle old swapchain if recreating
-
-        try {
-            scData.swapchain = device.createSwapchainKHR(createInfo);
-        } catch (const std::exception& e) {
-            throw std::runtime_error(std::string("Failed to create swapchain: ") + e.what());
-        }
-    } else {
-        // Handle different queue families if needed
-        throw std::runtime_error("Different queue families for graphics and present not supported in this example.");
-    }
-
-    // Retrieve swapchain images
-    scData.images = device.getSwapchainImagesKHR(scData.swapchain);
-
-    // Initialize synchronization primitives
-    SetupSynchronization(scData);
-
-    return SwapChainHandle{9999};
 }
 
 RenderPassHandle VulkanRenderer::CreateRenderPassInternal(const RenderPassDesc& desc) {
@@ -987,14 +875,16 @@ FrameBufferHandle VulkanRenderer::CreateFrameBufferInternal(const FrameBufferDes
     }
 
     // Retrieve the appropriate render pass based on desc
-    auto renderPassIt = renderPasses.find(RenderPassHandle{55});
+    RenderPassDesc renderPassDesc;
+
+    // #FIXME 생각해 볼 문제..
+    RenderPassHandle renderPassHandle = CreateRenderPassInternal(renderPassDesc);
+    auto renderPassIt = renderPasses.find(renderPassHandle);
     if (renderPassIt == renderPasses.end()) {
         throw std::runtime_error("RenderPassHandle not found for FrameBufferDesc.");
     }
-    VulkanRenderPass& vRenderPass = renderPassIt->second;
-
     vk::FramebufferCreateInfo framebufferInfo{};
-    framebufferInfo.renderPass = vRenderPass.renderPass;
+    framebufferInfo.renderPass = renderPassIt->second.renderPass;
     framebufferInfo.attachmentCount = static_cast<uint32_t>(attachments.size());
     framebufferInfo.pAttachments = attachments.data();
     framebufferInfo.width = desc.width;
@@ -1009,6 +899,7 @@ FrameBufferHandle VulkanRenderer::CreateFrameBufferInternal(const FrameBufferDes
         throw std::runtime_error(std::string("Failed to create framebuffer: ") + e.what());
     }
 
+    vFrameBuffer.renderPassHandle = renderPassHandle;
     vFrameBuffer.desc = desc;
     vFrameBuffer.refCount = 1;
 
