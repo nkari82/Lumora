@@ -514,7 +514,7 @@ class VulkanRenderer : public IRenderer {
         TextureHandle handle;
         handle.id = GenerateUniqueID();
         {
-            std::lock_guard<std::mutex> lock(resourceMutex);
+            std::lock_guard<std::mutex> lock(resourceMutex);  // #FIXME recursive lock
             textures[handle] = vTexture;
         }
 
@@ -891,7 +891,9 @@ class VulkanRenderer : public IRenderer {
         vk::Fence inFlightFence = scData.inFlightFences[frame];
 
         // Wait for the previous frame
-        device.waitForFences(inFlightFence, VK_TRUE, UINT64_MAX);
+        {
+            std::ignore = device.waitForFences(inFlightFence, VK_TRUE, UINT64_MAX);
+        }
 
         // Reset the fence
         device.resetFences(inFlightFence);
@@ -1440,14 +1442,9 @@ class VulkanRenderer : public IRenderer {
             bool hasGraphics = false;
             for (size_t i = 0; i < queueFamilies.size(); ++i) {
                 if (queueFamilies[i].queueFlags & vk::QueueFlagBits::eGraphics) {
-                    // Check if the device supports the surface
-                    auto surfaceFormats = deviceCandidate.getSurfaceFormatsKHR(surface);
-                    auto presentModes = deviceCandidate.getSurfacePresentModesKHR(surface);
-                    if (!surfaceFormats.empty() && !presentModes.empty()) {
-                        graphicsQueueFamily = static_cast<uint32_t>(i);
-                        hasGraphics = true;
-                        break;
-                    }
+                    graphicsQueueFamily = static_cast<uint32_t>(i);
+                    hasGraphics = true;
+                    break;
                 }
             }
             if (hasGraphics) {
@@ -1972,7 +1969,7 @@ class VulkanRenderer : public IRenderer {
         const char** glfwExtensions;
 
         // Platform-specific extensions
-        std::vector<const char*> extensions = {VK_EXT_DEBUG_UTILS_EXTENSION_NAME};
+        std::vector<const char*> extensions = {VK_EXT_DEBUG_UTILS_EXTENSION_NAME, VK_KHR_SURFACE_EXTENSION_NAME};
 
 #ifdef _WIN32
         // Win32 requires VK_KHR_WIN32_SURFACE_EXTENSION_NAME

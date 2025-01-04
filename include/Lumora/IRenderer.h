@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -11,7 +12,9 @@ namespace lumora {
 // Resource handle definition
 struct ResourceHandle {
     uint64_t id = 0;
+    bool operator==(const ResourceHandle& other) const { return id == other.id; }
 };
+
 struct SwapChainHandle : ResourceHandle {};
 struct BufferHandle : ResourceHandle {};
 struct TextureHandle : ResourceHandle {};
