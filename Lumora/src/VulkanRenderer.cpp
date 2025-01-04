@@ -35,6 +35,24 @@ namespace lumora {
 // Constants
 const int MAX_FRAMES_IN_FLIGHT = 2;
 
+// Internal Resource Handle
+struct FrameBufferHandle : ResourceHandle {
+    uint64_t id;
+};
+
+struct RenderPassHandle : ResourceHandle {
+    uint64_t id;
+};
+
+// Internal
+struct FrameBufferDesc {
+    std::vector<TextureHandle> color_targets;
+    TextureHandle depth_target;
+    uint32_t width;
+    uint32_t height;
+    RenderPassHandle renderpass_handle;
+};
+
 // #TODO xxHash로 교체
 inline void hash_combine(std::size_t& seed) {}
 
@@ -76,24 +94,6 @@ static uint64_t GenerateUniqueID() {
     return current_id++;
 }
 
-// Internal Resource Handle
-struct FrameBufferHandle : ResourceHandle {
-    uint64_t id;
-};
-
-struct RenderPassHandle : ResourceHandle {
-    uint64_t id;
-};
-
-// Internal Descs
-struct FrameBufferDesc {
-    std::vector<TextureHandle> color_targets;
-    TextureHandle depth_target;
-    uint32_t width;
-    uint32_t height;
-    RenderPassHandle renderpass_handle;
-};
-
 // Resource Structs
 struct VulkanRef {
     uint32_t ref_count = 1;
@@ -110,6 +110,7 @@ struct VulkanBuffer : VulkanRef {
 enum class TextureCreationType { kRegular, kSwapChain };
 
 struct VulkanTexture : VulkanRef {
+    TextureDesc desc;
     vk::Image image;
     VmaAllocation allocation;
     vk::ImageView image_view;
@@ -124,34 +125,35 @@ struct VulkanTexture : VulkanRef {
 };
 
 struct VulkanSampler : VulkanRef {
-    vk::Sampler sampler;
     SamplerDesc desc;  // To store sampler configuration
+    vk::Sampler sampler;
 };
 
 struct VulkanShader : VulkanRef {
-    vk::ShaderModule shader_module;
     ShaderDesc desc;  // To store shader metadata
+    vk::ShaderModule shader_module;
 };
 
 struct VulkanPipeline : VulkanRef {
+    PipelineDesc desc;  // To store pipeline configuration
     vk::Pipeline pipeline;
     vk::PipelineLayout layout;
-    PipelineDesc desc;  // To store pipeline configuration
 };
 
 // New Structs for Framebuffer and Render Pass
 struct VulkanFrameBuffer : VulkanRef {
-    vk::Framebuffer framebuffer;
     FrameBufferDesc desc;  // To store framebuffer description
+    vk::Framebuffer framebuffer;
 };
 
 struct VulkanRenderPass : VulkanRef {
-    vk::RenderPass renderpass;
     RenderPassDesc desc;
+    vk::RenderPass renderpass;
     FrameBufferHandle framebuffer_handle;
 };
 
 struct VulkanSwapChain : VulkanRef {
+    SwapChainDesc desc;
     uint32_t width;
     uint32_t height;
     vk::SwapchainKHR swapchain;
@@ -1170,13 +1172,6 @@ class VulkanRenderer : public IRenderer {
     vk::PipelineLayout pipelineLayout;  // #TODO 내부적으로 자동 관리
 
     // Internal methods
-    void InitVulkan(const char* app_name);
-    void CleanupVulkan();
-    void CreateInstance(const char* app_name);
-    void SetupDebugMessenger();
-    void PickPhysicalDevice();
-    void CreateLogicalDevice();
-
     void InitVulkan(const char* app_name) {
         // Create Vulkan Instance
         CreateInstance(app_name);
@@ -1805,26 +1800,6 @@ class VulkanRenderer : public IRenderer {
             commandBuffer = commandBuffers[0];
         } catch (const std::exception& e) {
             throw std::runtime_error(std::string("Failed to allocate command buffer: ") + e.what());
-        }
-    }
-
-    void CreateDescriptorPool() {
-        std::lock_guard<std::mutex> lock(descriptorMutex);
-
-        std::vector<vk::DescriptorPoolSize> poolSizes = {
-            {vk::DescriptorType::eUniformBuffer, 100}, {vk::DescriptorType::eCombinedImageSampler, 100}
-            // Add more pool sizes as needed
-        };
-
-        vk::DescriptorPoolCreateInfo poolInfo{};
-        poolInfo.poolSizeCount = static_cast<uint32_t>(poolSizes.size());
-        poolInfo.pPoolSizes = poolSizes.data();
-        poolInfo.maxSets = 100;  // Adjust based on application needs
-
-        try {
-            descriptorPool = device.createDescriptorPool(poolInfo);
-        } catch (const std::exception& e) {
-            throw std::runtime_error(std::string("Failed to create descriptor pool: ") + e.what());
         }
     }
 

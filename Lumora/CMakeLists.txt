@@ -14,13 +14,13 @@ endif()
 find_package(Vulkan REQUIRED)
 
 # 라이브러리 프로젝트: 정적 or 동적
-add_library(LumoraRenderer STATIC
+add_library(Lumora STATIC
     src/VulkanRenderer.cpp
     # VulkanRenderer.h는 자동 포함
 )
 
 # include 디렉토리 설정
-target_include_directories(LumoraRenderer
+target_include_directories(Lumora
     PUBLIC
         ../include  # IRenderer.h가 들어있는 경로
     PRIVATE
@@ -30,7 +30,7 @@ target_include_directories(LumoraRenderer
 )
 
 # Vulkan
-target_link_libraries(LumoraRenderer PRIVATE Vulkan::Vulkan)
+target_link_libraries(Lumora PRIVATE Vulkan::Vulkan)
 
 # 필요하다면 VMA 소스도 포함 or external로 연결
 # target_sources(LumoraRenderer PRIVATE path/to/vk_mem_alloc.cpp)
