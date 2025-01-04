@@ -22,9 +22,9 @@ add_library(LumoraRenderer STATIC
 # include 디렉토리 설정
 target_include_directories(LumoraRenderer
     PUBLIC
-        ${CMAKE_CURRENT_SOURCE_DIR}/include  # IRenderer.h가 들어있는 경로
+        ../include  # IRenderer.h가 들어있는 경로
     PRIVATE
-        ${CMAKE_CURRENT_SOURCE_DIR}/src      # VulkanRenderer.h는 내부에서만 사용
+        ${CMAKE_CURRENT_SOURCE_DIR}/src
 		../external/VulkanMemoryAllocator/include 
 		../external/Vulkan-Hpp/include 
 )

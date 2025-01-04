@@ -17,9 +17,8 @@
 #endif
 
 #define VMA_IMPLEMENTATION
+#include <Lumora/IRenderer.h>
 #include <vk_mem_alloc.h>
-
-#include "../include/IRenderer.h"
 
 // For debug messenger
 VKAPI_ATTR VkBool32 VKAPI_CALL debugCallback(VkDebugUtilsMessageSeverityFlagBitsEXT messageSeverity,

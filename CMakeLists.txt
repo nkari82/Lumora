@@ -9,5 +9,5 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 find_package(Vulkan REQUIRED)
 
 # 하위 디렉토리 빌드
-add_subdirectory(LumoraRenderer)
-add_subdirectory(LumoraTest)
+add_subdirectory(Lumora)
+add_subdirectory(Test)
