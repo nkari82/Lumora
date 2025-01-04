@@ -115,6 +115,7 @@ struct VulkanTexture : VulkanRef {
     uint32_t mipLevels;
     uint32_t arrayLayers;
     TextureUsage usage;
+    SamplerHandle samplerHandle;
 };
 
 struct VulkanSampler : VulkanRef {
@@ -160,6 +161,12 @@ struct VulkanSwapChain : VulkanRef {
     size_t currentFrame;
 };
 
+struct DescriptorSet {
+    vk::DescriptorSet descriptorSet;
+    std::vector<vk::DescriptorBufferInfo> bufferInfos;
+    std::vector<vk::DescriptorImageInfo> imageInfos;
+};
+
 class VulkanRenderer : public IRenderer {
    public:
     VulkanRenderer() {
@@ -173,6 +180,7 @@ class VulkanRenderer : public IRenderer {
     void Close() { CleanupVulkan(); }
 
     // public
+    // #FIXME CreateSwapChain
     SwapChainHandle CreateSwapChain(const SwapChainDesc& desc) {
         std::lock_guard<std::mutex> lock(resourceMutex);
 
@@ -181,29 +189,117 @@ class VulkanRenderer : public IRenderer {
             CreateSurface(desc);
         }
 
-        // Create internal swapchain data
-        SwapChainHandle handle;
+        // Choose surface format, present mode, and swap extent
+        auto surfaceFormats = physicalDevice.getSurfaceFormatsKHR(surface);
+        vk::SurfaceFormatKHR chosenFormat = surfaceFormats[0];
+        for (const auto& availableFormat : surfaceFormats) {
+            if (availableFormat.format == vk::Format::eB8G8R8A8Unorm &&
+                availableFormat.colorSpace == vk::ColorSpaceKHR::eSrgbNonlinear) {
+                chosenFormat = availableFormat;
+                break;
+            }
+        }
 
-        handle.id = GenerateUniqueID();
+        auto presentModes = physicalDevice.getSurfacePresentModesKHR(surface);
+        vk::PresentModeKHR chosenPresentMode = vk::PresentModeKHR::eFifo;
+        for (const auto& availablePresentMode : presentModes) {
+            if (availablePresentMode == vk::PresentModeKHR::eMailbox) {
+                chosenPresentMode = availablePresentMode;
+                break;
+            }
+        }
+
+        auto capabilities = physicalDevice.getSurfaceCapabilitiesKHR(surface);
+        vk::Extent2D chosenExtent = {};
+        if (capabilities.currentExtent.width != UINT32_MAX) {
+            chosenExtent = capabilities.currentExtent;
+        } else {
+            chosenExtent.width = std::clamp(static_cast<uint32_t>(desc.width), capabilities.minImageExtent.width,
+                                            capabilities.maxImageExtent.width);
+            chosenExtent.height = std::clamp(static_cast<uint32_t>(desc.height), capabilities.minImageExtent.height,
+                                             capabilities.maxImageExtent.height);
+        }
+
+        uint32_t imageCount = desc.buffer_count;
+        if (capabilities.maxImageCount > 0 && imageCount > capabilities.maxImageCount) {
+            imageCount = capabilities.maxImageCount;
+        }
+
+        vk::SwapchainCreateInfoKHR swapChainInfo{};
+        swapChainInfo.surface = surface;
+        swapChainInfo.minImageCount = imageCount;
+        swapChainInfo.imageFormat = chosenFormat.format;
+        swapChainInfo.imageColorSpace = chosenFormat.colorSpace;
+        swapChainInfo.imageExtent = chosenExtent;
+        swapChainInfo.imageArrayLayers = 1;
+        swapChainInfo.imageUsage = vk::ImageUsageFlagBits::eColorAttachment;
+
+        // Handle queue families
+        uint32_t queueFamilyIndices[] = {graphicsQueueFamily};
+        if (graphicsQueueFamily != graphicsQueueFamily) {
+            swapChainInfo.imageSharingMode = vk::SharingMode::eConcurrent;
+            swapChainInfo.queueFamilyIndexCount = 1;
+            swapChainInfo.pQueueFamilyIndices = queueFamilyIndices;
+        } else {
+            swapChainInfo.imageSharingMode = vk::SharingMode::eExclusive;
+        }
+
+        swapChainInfo.preTransform = capabilities.currentTransform;
+        swapChainInfo.compositeAlpha = vk::CompositeAlphaFlagBitsKHR::eOpaque;
+        swapChainInfo.presentMode = chosenPresentMode;
+        swapChainInfo.clipped = VK_TRUE;
+        swapChainInfo.oldSwapchain = nullptr;
 
         VulkanSwapChain swapChain;
 
-        // Create textures based on SwapChainDesc
-        // VulkanTexture colorTexture = CreateTexture(desc.colorAttachmentOptions);
-        // VulkanTexture depthTexture = CreateTexture(desc.depthAttachmentOptions);
+        try {
+            swapChain.swapchain = device.createSwapchainKHR(swapChainInfo);
+        } catch (const std::exception& e) {
+            throw std::runtime_error(std::string("Failed to create swap chain: ") + e.what());
+        }
 
-        // Create render pass and frame buffer
-        RenderPassDesc renderPassDesc;
-        RenderPassHandle renderPassHandle = CreateRenderPassInternal(renderPassDesc);
-        FrameBufferDesc frameBufferDesc;
-        // frameBufferDesc.renderPassHandle = renderPassHandle;
-        // frameBufferDesc.colorAttachments.push_back(colorTexture.handle);
-        // frameBufferDesc.depthAttachment = depthTexture.handle;
+        swapChain.imageFormat = chosenFormat.format;
+        swapChain.extent = chosenExtent;
 
-        FrameBufferHandle frameBufferHandle = CreateFrameBufferInternal(frameBufferDesc);
+        // Retrieve swap chain images
+        swapChain.images = device.getSwapchainImagesKHR(swapChain.swapchain);
+        swapChain.imageViews.resize(swapChain.images.size());
 
-        swapChain.renderPassHandle = renderPassHandle;
-        swapChain.frameBufferHandle = frameBufferHandle;
+        for (size_t i = 0; i < swapChain.images.size(); i++) {
+            vk::ImageViewCreateInfo viewInfo{};
+            viewInfo.image = swapChain.images[i];
+            viewInfo.viewType = vk::ImageViewType::e2D;
+            viewInfo.format = swapChain.imageFormat;
+            viewInfo.components.r = vk::ComponentSwizzle::eIdentity;
+            viewInfo.components.g = vk::ComponentSwizzle::eIdentity;
+            viewInfo.components.b = vk::ComponentSwizzle::eIdentity;
+            viewInfo.components.a = vk::ComponentSwizzle::eIdentity;
+            viewInfo.subresourceRange.aspectMask = vk::ImageAspectFlagBits::eColor;
+            viewInfo.subresourceRange.baseMipLevel = 0;
+            viewInfo.subresourceRange.levelCount = 1;
+            viewInfo.subresourceRange.baseArrayLayer = 0;
+            viewInfo.subresourceRange.layerCount = 1;
+
+            try {
+                swapChain.imageViews[i] = device.createImageView(viewInfo);
+            } catch (const std::exception& e) {
+                throw std::runtime_error(std::string("Failed to create image view: ") + e.what());
+            }
+        }
+
+        // Create Framebuffers for each swap chain image
+        // #FIXME CreateFrameBufferInternal in CreateSwapChain
+        swapChain.frameBufferHandle =
+            CreateFrameBufferInternal(FrameBufferDesc{.color_targets = {},  // Populate with actual color targets
+                                                      .depth_target = TextureHandle{0},
+                                                      .width = chosenExtent.width,
+                                                      .height = chosenExtent.height});
+
+        // Create synchronization primitives
+        SetupSynchronization(swapChain);
+
+        SwapChainHandle handle;
+        handle.id = GenerateUniqueID();
         swapChains[handle] = swapChain;
 
         return handle;
@@ -280,8 +376,19 @@ class VulkanRenderer : public IRenderer {
     }
 
     void BindBuffer(BufferHandle handle, uint32_t bind_point, uint32_t dynamic_offset) {
-        // Binding logic depends on pipeline and descriptor sets
-        // This needs to be implemented based on descriptor set layout
+        std::lock_guard<std::mutex> lock(resourceMutex);
+        auto bufferIt = buffers.find(handle);
+        if (bufferIt == buffers.end()) {
+            throw std::runtime_error("Invalid BufferHandle provided to BindBuffer.");
+        }
+
+        // Allocate or retrieve a descriptor set
+        DescriptorSet ds = AllocateDescriptorSet();
+        UpdateDescriptorSet(handle, TextureHandle{0}, ds);  // Assuming no texture binding here
+
+        // Bind descriptor set
+        commandBuffer.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, pipelineLayout, 0, ds.descriptorSet,
+                                         nullptr);
     }
 
     TextureHandle CreateTexture(const TextureDesc& desc) {
@@ -359,8 +466,19 @@ class VulkanRenderer : public IRenderer {
     }
 
     void BindTexture(TextureHandle handle, uint32_t bind_point) {
-        // Placeholder: Implement descriptor set binding logic here
-        // Descriptor sets are managed internally; this method should update the appropriate descriptor sets
+        std::lock_guard<std::mutex> lock(resourceMutex);
+        auto textureIt = textures.find(handle);
+        if (textureIt == textures.end()) {
+            throw std::runtime_error("Invalid TextureHandle provided to BindTexture.");
+        }
+
+        // Allocate or retrieve a descriptor set
+        DescriptorSet ds = AllocateDescriptorSet();
+        UpdateDescriptorSet(BufferHandle{0}, handle, ds);  // Assuming no buffer binding here
+
+        // Bind descriptor set
+        commandBuffer.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, pipelineLayout, 0, ds.descriptorSet,
+                                         nullptr);
     }
 
     SamplerHandle CreateSampler(const SamplerDesc& desc) {
@@ -398,8 +516,14 @@ class VulkanRenderer : public IRenderer {
     }
 
     void BindSampler(SamplerHandle handle, uint32_t bind_point) {
-        // Placeholder: Implement descriptor set binding logic here
-        // Descriptor sets are managed internally; this method should update the appropriate descriptor sets
+        std::lock_guard<std::mutex> lock(resourceMutex);
+        auto samplerIt = samplers.find(handle);
+        if (samplerIt == samplers.end()) {
+            throw std::runtime_error("Invalid SamplerHandle provided to BindSampler.");
+        }
+
+        // For simplicity, assume sampler is already bound via descriptor sets when binding textures
+        // Additional implementation may be required based on specific use cases
     }
 
     ShaderHandle CreateShader(const ShaderDesc& desc) {
@@ -749,7 +873,7 @@ class VulkanRenderer : public IRenderer {
             throw std::runtime_error(std::string("Failed to begin command buffer: ") + e.what());
         }
 
-        // Begin render pass using the cached RenderPassHandle and FrameBufferHandle
+        // Begin render pass using the current framebuffer
         VulkanRenderPass& vRenderPass = renderPasses[scData.renderPassHandle];
         VulkanFrameBuffer& vFrameBuffer = frameBuffers[scData.frameBufferHandle];
 
@@ -769,8 +893,8 @@ class VulkanRenderer : public IRenderer {
         }
         if (passDesc.clear_depth) {
             vk::ClearDepthStencilValue depthClear = {};
-            depthClear.depth = 1.0f;
-            depthClear.stencil = 0;
+            depthClear.depth = passDesc.clear_depth_value;
+            depthClear.stencil = passDesc.clear_stencil_value;
             clearValues.emplace_back(depthClear);
         }
 
@@ -814,7 +938,8 @@ class VulkanRenderer : public IRenderer {
         submitInfo.pSignalSemaphores = signalSemaphores;
 
         try {
-            graphicsQueue.submit(submitInfo, inFlightFence);
+            vk::SubmitInfo submitInfoLocal = submitInfo;
+            graphicsQueue.submit(submitInfoLocal, inFlightFence);
         } catch (const std::exception& e) {
             throw std::runtime_error(std::string("Failed to submit command buffer: ") + e.what());
         }
@@ -839,7 +964,7 @@ class VulkanRenderer : public IRenderer {
         }
 
         // Advance to the next frame
-        scData.currentFrame = (scData.currentFrame + 1) % scData.inFlightFences.size();
+        scData.currentFrame = (scData.currentFrame + 1) % MAX_FRAMES_IN_FLIGHT;
     }
 
     void DrawIndexed(uint32_t index_count, uint32_t instance_count, uint32_t first_index, int32_t vertex_offset,
@@ -951,9 +1076,28 @@ class VulkanRenderer : public IRenderer {
         }
     }
 
-    void ReleaseResource(const RenderPassHandle& handle) {}
+    void ReleaseResource(const RenderPassHandle& handle) {
+        std::lock_guard<std::mutex> lock(resourceMutex);
+        auto it = renderPasses.find(handle);
+        if (it != renderPasses.end()) {
+            if (--it->second.refCount == 0) {
+                device.destroyRenderPass(it->second.renderPass);
+                renderPasses.erase(it);
+            }
+        }
+    }
 
-    void ReleaseResource(const FrameBufferHandle& handle) {}
+    void ReleaseResource(const FrameBufferHandle& handle) {
+        std::lock_guard<std::mutex> lock(resourceMutex);
+        auto it = frameBuffers.find(handle);
+        if (it != frameBuffers.end()) {
+            if (--it->second.refCount == 0) {
+                device.destroyFramebuffer(it->second.framebuffer);
+                ReleaseResource(it->second.renderPassHandle);
+                frameBuffers.erase(it);
+            }
+        }
+    }
 
    private:
     // Vulkan core components
@@ -988,10 +1132,12 @@ class VulkanRenderer : public IRenderer {
 
     // Descriptor Set Management
     vk::DescriptorPool descriptorPool;
+    vk::DescriptorSetLayout descriptorSetLayout;  // #TODO 내부적으로 자동 관리
     std::mutex descriptorMutex;
 
     // Current pipeline handle
     vk::Pipeline currentPipeline;
+    vk::PipelineLayout pipelineLayout;  // #TODO 내부적으로 자동 관리
 
     // Internal methods
     void InitVulkan(const char* app_name);
@@ -1029,12 +1175,7 @@ class VulkanRenderer : public IRenderer {
         // Create Descriptor Pool
         CreateDescriptorPool();
 
-        // Create Render Pass with default settings
-        RenderPassDesc defaultPassDesc;
-        // Initialize defaultPassDesc as needed
-        // VulkanRenderPass vRenderPass = CreateRenderPassInternal(defaultPassDesc);
-        // renderPasses[hashDesc(defaultPassDesc)] = vRenderPass;
-        // renderPass = vRenderPass.renderPass;
+        CreateDescriptorSetLayouts();
     }
 
     void CleanupVulkan() {
@@ -1388,14 +1529,15 @@ class VulkanRenderer : public IRenderer {
         throw std::runtime_error("Unsupported platform for surface creation.");
 #endif
     }
+
     RenderPassHandle CreateRenderPassInternal(const RenderPassDesc& desc) {
         // Hash the RenderPassDesc to use as a key
         uint64_t hashKey = hashDesc(desc);
 
         // Check if render pass already exists
-        auto it = renderPasses.find(RenderPassHandle{hashKey});
+        RenderPassHandle handle{hashKey};
+        auto it = renderPasses.find(handle);
         if (it != renderPasses.end()) {
-            // Increment refCount and return existing render pass
             it->second.refCount++;
             return it->first;
         }
@@ -1448,8 +1590,7 @@ class VulkanRenderer : public IRenderer {
                 throw std::runtime_error("Invalid DepthTargetHandle in RenderPassDesc.");
             }
 
-            attachments[desc.color_targets.size()].format =
-                vk::Format::eD32Sfloat;  // Example format, map appropriately
+            attachments[desc.color_targets.size()].format = textureIt->second.format;
             attachments[desc.color_targets.size()].samples = vk::SampleCountFlagBits::e1;
             attachments[desc.color_targets.size()].loadOp =
                 (desc.depth_attachment_options.load_op == AttachmentLoadOp::kClear)  ? vk::AttachmentLoadOp::eClear
@@ -1482,17 +1623,19 @@ class VulkanRenderer : public IRenderer {
             subpass.pDepthStencilAttachment = nullptr;
         }
 
-        // Define subpass dependencies
+        // Define subpass dependencies (if any)
         std::vector<vk::SubpassDependency> dependencies;
-        vk::SubpassDependency dependency{};
-        dependency.srcSubpass = VK_SUBPASS_EXTERNAL;
-        dependency.dstSubpass = 0;
-        dependency.srcStageMask = vk::PipelineStageFlagBits::eColorAttachmentOutput;
-        dependency.srcAccessMask = vk::AccessFlags();
-        dependency.dstStageMask = vk::PipelineStageFlagBits::eColorAttachmentOutput;
-        dependency.dstAccessMask = vk::AccessFlagBits::eColorAttachmentWrite;
+        for (const auto& subDesc : desc.subpasses) {
+            vk::SubpassDependency dependency{};
+            dependency.srcSubpass = VK_SUBPASS_EXTERNAL;
+            dependency.dstSubpass = 0;
+            dependency.srcStageMask = vk::PipelineStageFlagBits::eColorAttachmentOutput;
+            dependency.srcAccessMask = vk::AccessFlagBits::eNone;
+            dependency.dstStageMask = vk::PipelineStageFlagBits::eColorAttachmentOutput;
+            dependency.dstAccessMask = vk::AccessFlagBits::eColorAttachmentWrite;
 
-        dependencies.push_back(dependency);
+            dependencies.push_back(dependency);
+        }
 
         // Create render pass
         vk::RenderPassCreateInfo renderPassInfo{};
@@ -1514,7 +1657,6 @@ class VulkanRenderer : public IRenderer {
         vRenderPass.desc = desc;
         vRenderPass.refCount = 1;
 
-        RenderPassHandle handle{hashKey};
         renderPasses[handle] = vRenderPass;
 
         return handle;
@@ -1525,9 +1667,9 @@ class VulkanRenderer : public IRenderer {
         uint64_t hashKey = hashDesc(desc);
 
         // Check if framebuffer already exists
-        auto it = frameBuffers.find(FrameBufferHandle{hashKey});
+        FrameBufferHandle handle{hashKey};
+        auto it = frameBuffers.find(handle);
         if (it != frameBuffers.end()) {
-            // Increment refCount and return existing framebuffer
             it->second.refCount++;
             return it->first;
         }
@@ -1551,13 +1693,22 @@ class VulkanRenderer : public IRenderer {
 
         // Retrieve the appropriate render pass based on desc
         RenderPassDesc renderPassDesc;
+        renderPassDesc.color_targets = desc.color_targets;
+        renderPassDesc.depth_target = desc.depth_target;
+        renderPassDesc.clear_colors = {};   // Populate as needed
+        renderPassDesc.clear_depth = true;  // Example
+        renderPassDesc.clear_depth_value = 1.0f;
+        renderPassDesc.clear_stencil_value = 0;
+        renderPassDesc.color_attachment_options = {};  // Populate as needed
+        renderPassDesc.depth_attachment_options = {};  // Populate as needed
+        renderPassDesc.subpasses = {};                 // Populate as needed
 
-        // #FIXME 생각해 볼 문제..
         RenderPassHandle renderPassHandle = CreateRenderPassInternal(renderPassDesc);
         auto renderPassIt = renderPasses.find(renderPassHandle);
         if (renderPassIt == renderPasses.end()) {
             throw std::runtime_error("RenderPassHandle not found for FrameBufferDesc.");
         }
+
         vk::FramebufferCreateInfo framebufferInfo{};
         framebufferInfo.renderPass = renderPassIt->second.renderPass;
         framebufferInfo.attachmentCount = static_cast<uint32_t>(attachments.size());
@@ -1578,7 +1729,6 @@ class VulkanRenderer : public IRenderer {
         vFrameBuffer.desc = desc;
         vFrameBuffer.refCount = 1;
 
-        FrameBufferHandle handle{hashKey};
         frameBuffers[handle] = vFrameBuffer;
 
         return handle;
@@ -1666,13 +1816,8 @@ class VulkanRenderer : public IRenderer {
         scData.currentFrame = 0;
     }
 
-    void TransitionImageLayout(vk::Image image, vk::Format format, vk::ImageLayout oldLayout,
-                               vk::ImageLayout newLayout) {
-        vk::CommandBufferBeginInfo beginInfo{};
-        beginInfo.flags = vk::CommandBufferUsageFlagBits::eOneTimeSubmit;
-
-        commandBuffer.begin(beginInfo);
-
+    void TransitionImageLayout(vk::CommandBuffer cmdBuffer, vk::Image image, vk::Format format,
+                               vk::ImageLayout oldLayout, vk::ImageLayout newLayout) {
         vk::ImageMemoryBarrier barrier{};
         barrier.oldLayout = oldLayout;
         barrier.newLayout = newLayout;
@@ -1722,28 +1867,12 @@ class VulkanRenderer : public IRenderer {
             throw std::invalid_argument("Unsupported layout transition!");
         }
 
-        commandBuffer.pipelineBarrier(sourceStage, destinationStage, {},  // dependency flags
-                                      0, nullptr,                         // memory barriers
-                                      0, nullptr,                         // buffer memory barriers
-                                      1, &barrier                         // image memory barriers
+        cmdBuffer.pipelineBarrier(sourceStage, destinationStage, {},  // dependency flags
+                                  0, nullptr,                         // memory barriers
+                                  0, nullptr,                         // buffer memory barriers
+                                  1, &barrier                         // image memory barriers
         );
-
-        commandBuffer.end();
-
-        vk::SubmitInfo submitInfo{};
-        submitInfo.commandBufferCount = 1;
-        submitInfo.pCommandBuffers = &commandBuffer;
-
-        vk::FenceCreateInfo fenceInfo{};
-        fenceInfo.flags = vk::FenceCreateFlagBits::eSignaled;
-
-        vk::Fence fence = device.createFence(fenceInfo);
-
-        graphicsQueue.submit(submitInfo, fence);
-        device.waitForFences(fence, VK_TRUE, UINT64_MAX);
-        device.destroyFence(fence);
     }
-
     void InsertImageMemoryBarrier(vk::CommandBuffer& cmdBuffer, vk::Image image, vk::Format format,
                                   vk::ImageLayout oldLayout, vk::ImageLayout newLayout, vk::PipelineStageFlags srcStage,
                                   vk::PipelineStageFlags dstStage) {
@@ -1843,6 +1972,114 @@ class VulkanRenderer : public IRenderer {
         }
 
         return extensions;
+    }
+
+    void CreateDescriptorSetLayouts() {
+        // Example: Create a simple descriptor set layout with uniform buffers and sampled images
+        std::vector<vk::DescriptorSetLayoutBinding> bindings = {
+            // Binding 0: Uniform Buffer
+            vk::DescriptorSetLayoutBinding{0, vk::DescriptorType::eUniformBuffer, 1, vk::ShaderStageFlagBits::eVertex},
+            // Binding 1: Combined Image Sampler
+            vk::DescriptorSetLayoutBinding{1, vk::DescriptorType::eCombinedImageSampler, 1,
+                                           vk::ShaderStageFlagBits::eFragment}};
+
+        vk::DescriptorSetLayoutCreateInfo layoutInfo{};
+        layoutInfo.bindingCount = static_cast<uint32_t>(bindings.size());
+        layoutInfo.pBindings = bindings.data();
+
+        try {
+            descriptorSetLayout = device.createDescriptorSetLayout(layoutInfo);
+        } catch (const std::exception& e) {
+            throw std::runtime_error(std::string("Failed to create descriptor set layout: ") + e.what());
+        }
+
+        // Create Pipeline Layout with Descriptor Set Layout
+        vk::PipelineLayoutCreateInfo pipelineLayoutInfo{};
+        pipelineLayoutInfo.setLayoutCount = 1;
+        pipelineLayoutInfo.pSetLayouts = &descriptorSetLayout;
+
+        try {
+            pipelineLayout = device.createPipelineLayout(pipelineLayoutInfo);
+        } catch (const std::exception& e) {
+            throw std::runtime_error(std::string("Failed to create pipeline layout: ") + e.what());
+        }
+    }
+
+    void CreateDescriptorPool() {
+        std::lock_guard<std::mutex> lock(descriptorMutex);
+
+        std::vector<vk::DescriptorPoolSize> poolSizes = {
+            {vk::DescriptorType::eUniformBuffer, 100}, {vk::DescriptorType::eCombinedImageSampler, 100}
+            // Add more pool sizes as needed
+        };
+
+        vk::DescriptorPoolCreateInfo poolInfo{};
+        poolInfo.poolSizeCount = static_cast<uint32_t>(poolSizes.size());
+        poolInfo.pPoolSizes = poolSizes.data();
+        poolInfo.maxSets = 100;  // Adjust based on application needs
+
+        try {
+            descriptorPool = device.createDescriptorPool(poolInfo);
+        } catch (const std::exception& e) {
+            throw std::runtime_error(std::string("Failed to create descriptor pool: ") + e.what());
+        }
+    }
+
+    DescriptorSet AllocateDescriptorSet() {
+        vk::DescriptorSetAllocateInfo allocInfo{};
+        allocInfo.descriptorPool = descriptorPool;
+        allocInfo.descriptorSetCount = 1;
+        allocInfo.pSetLayouts = &descriptorSetLayout;
+
+        vk::DescriptorSet descriptorSet;
+        try {
+            descriptorSet = device.allocateDescriptorSets(allocInfo).front();
+        } catch (const std::exception& e) {
+            throw std::runtime_error(std::string("Failed to allocate descriptor set: ") + e.what());
+        }
+
+        DescriptorSet ds;
+        ds.descriptorSet = descriptorSet;
+        // descriptorSets[descriptorSet] = ds; // #FIXME hashing
+
+        return ds;
+    }
+
+    void UpdateDescriptorSet(BufferHandle bufferHandle, TextureHandle textureHandle, DescriptorSet& ds) {
+        auto bufferIt = buffers.find(bufferHandle);
+        if (bufferIt == buffers.end()) {
+            throw std::runtime_error("Invalid BufferHandle provided to UpdateDescriptorSet.");
+        }
+
+        auto textureIt = textures.find(textureHandle);
+        if (textureIt == textures.end()) {
+            throw std::runtime_error("Invalid TextureHandle provided to UpdateDescriptorSet.");
+        }
+
+        // Update uniform buffer
+        vk::DescriptorBufferInfo bufferInfo{};
+        bufferInfo.buffer = bufferIt->second.buffer;
+        bufferInfo.offset = 0;
+        bufferInfo.range = VK_WHOLE_SIZE;
+        ds.bufferInfos.push_back(bufferInfo);
+
+        // Update image sampler
+        vk::DescriptorImageInfo imageInfo{};
+        imageInfo.imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
+        imageInfo.imageView = textureIt->second.imageView;
+        imageInfo.sampler = samplers.find(textureIt->second.samplerHandle)->second.sampler;
+        ds.imageInfos.push_back(imageInfo);
+
+        // Write descriptor sets
+        std::vector<vk::WriteDescriptorSet> descriptorWrites = {
+            // Binding 0: Uniform Buffer
+            vk::WriteDescriptorSet{ds.descriptorSet, 0, 0, 1, vk::DescriptorType::eUniformBuffer, nullptr,
+                                   &ds.bufferInfos.back(), nullptr},
+            // Binding 1: Combined Image Sampler
+            vk::WriteDescriptorSet{ds.descriptorSet, 1, 0, 1, vk::DescriptorType::eCombinedImageSampler,
+                                   &ds.imageInfos.back(), nullptr, nullptr}};
+
+        device.updateDescriptorSets(descriptorWrites, {});
     }
 
     vk::Format MapFormat(Format format) {
