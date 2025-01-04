@@ -1,9 +1,8 @@
 // testVulkanRenderer.cpp
+#include <Lumora/IRenderer.h>
 #include <windows.h>
 
 #include <thread>
-
-#include "../LumoraRenderer/include/IRenderer.h"
 
 // Window Procedure
 LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
@@ -47,11 +46,13 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow) {
     swapDesc.window_handle.win32.hinstance = hInstance;
     swapDesc.width = 1280;
     swapDesc.height = 720;
-    swapDesc.format = lumora::Format::kSRGBA8Unorm;
+    swapDesc.color_format = lumora::Format::kSRGBA8Unorm;
     swapDesc.buffer_count = 2;
     swapDesc.vsync = true;
 
-    lumora::SwapChainHandle swapchain = renderer->CreateSwapChain(swapDesc);
+    lumora::RenderPassDesc def;
+
+    lumora::SwapChainHandle swapchain = renderer->CreateSwapChain(swapDesc, def);
 
     // Main Loop
     MSG msg = {};
@@ -72,9 +73,9 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow) {
         // Rendering callback
         renderer->Render(swapchain, [&]() {
             // Begin Render Pass
-            lumora::RenderPassDesc passDesc;
+            // lumora::RenderPassDesc passDesc;
             // Setup passDesc as needed
-            renderer->BeginPass(passDesc);
+            renderer->BeginPass(def);
 
             // Bind pipeline, buffers, textures, etc.
             // For example:

@@ -81,10 +81,10 @@ struct SwapChainDesc {
 #endif
     } window_handle;
 
-    int32_t width = 1280;
-    int32_t height = 720;
-    Format format = Format::kSRGBA8Unorm;
-    Format depth = Format::kDepth24Stencil8;
+    uint32_t width = 1280;
+    uint32_t height = 720;
+    Format color_format = Format::kSRGBA8Unorm;
+    Format depth_format = Format::kDepth24Stencil8;
     int32_t buffer_count = 2;
     bool vsync = true;
 };
@@ -149,6 +149,7 @@ struct TextureDesc {
     uint32_t array_layers = 1;
     Format format = Format::kSRGBA8Unorm;
     TextureUsage usage = TextureUsage::kSampled;
+    MemoryUsage memory_usage = MemoryUsage::kAuto;
 };
 
 enum class Filter { kNearest, kLinear };
@@ -309,6 +310,7 @@ struct SubpassDesc {
     std::vector<SubpassAttachment> input_attachments;  // Input 첨부
 };
 
+// #TODO RenderPass랑 FrameBuffer랑 합쳐버림.
 struct RenderPassDesc {
     std::vector<TextureHandle> color_targets;  // MRT를 위한 컬러 타겟 리스트
     TextureHandle depth_target;                // Depth 타겟 (optional)
@@ -382,23 +384,23 @@ class IRenderer {
     virtual void Open(const char* app_name) = 0;
     virtual void Close() = 0;
 
-    virtual SwapChainHandle CreateSwapChain(const SwapChainDesc& desc) = 0;
+    virtual SwapChainHandle CreateSwapChain(const SwapChainDesc& desc, RenderPassDesc& outDesc) = 0;
     virtual BufferHandle CreateBuffer(const BufferDesc& desc) = 0;
-    virtual void UpdateBuffer(BufferHandle handle, const void* data, size_t size) = 0;
-    virtual void BindBuffer(BufferHandle handle, uint32_t bind_point, uint32_t dynamic_offset = 0) = 0;
+    virtual void UpdateBuffer(const BufferHandle& handle, const void* data, size_t size) = 0;
+    virtual void BindBuffer(const BufferHandle& handle, uint32_t bind_point, uint32_t dynamic_offset = 0) = 0;
     virtual TextureHandle CreateTexture(const TextureDesc& desc) = 0;
-    virtual void BindTexture(TextureHandle handle, uint32_t bind_point) = 0;
+    virtual void BindTexture(const TextureHandle& handle, uint32_t bind_point) = 0;
     virtual SamplerHandle CreateSampler(const SamplerDesc& desc) = 0;
-    virtual void BindSampler(SamplerHandle handle, uint32_t bind_point) = 0;
+    virtual void BindSampler(const SamplerHandle& handle, uint32_t bind_point) = 0;
     virtual ShaderHandle CreateShader(const ShaderDesc& desc) = 0;
     virtual PipelineHandle CreatePipeline(const PipelineDesc& desc) = 0;
     virtual PipelineHandle CreatePipeline(const ComputePipelineDesc& desc) = 0;
-    virtual void BindPipeline(PipelineHandle handle) = 0;
+    virtual void BindPipeline(const PipelineHandle& handle) = 0;
 
     virtual void DispatchCompute(uint32_t group_x, uint32_t group_y, uint32_t group_z) = 0;
 
     // renderer->Render(swapchain, {[](){
-    //   renderer->BeginPass(desc0); // BeginPass 지정하지 않을 경우 내부적으로 스왑체인과 연관된
+    //   renderer->BeginPass(desc0); // BeginPass
     //   렌더패스를 호출한다.
     //   renderer->BindPipeline(myPipeline);
     //   renderer->BindBuffer(myVbo);
@@ -413,13 +415,13 @@ class IRenderer {
     virtual void Render(const SwapChainHandle& handle, std::function<void()> callback) = 0;
     virtual void DrawIndexed(uint32_t index_count, uint32_t instance_count = 1, uint32_t first_index = 0,
                              int32_t vertex_offset = 0, uint32_t first_instance = 0) = 0;
-    virtual bool ReloadShader(ShaderHandle handle, const ShaderDesc& new_desc) = 0;
+    virtual bool ReloadShader(const ShaderHandle& handle, const ShaderDesc& new_desc) = 0;
 
-    virtual void ReleaseResource(SwapChainHandle handle) = 0;
-    virtual void ReleaseResource(TextureHandle handle) = 0;
-    virtual void ReleaseResource(SamplerHandle handle) = 0;
-    virtual void ReleaseResource(PipelineHandle handle) = 0;
-    virtual void ReleaseResource(ShaderHandle handle) = 0;
+    virtual void ReleaseResource(const SwapChainHandle& handle) = 0;
+    virtual void ReleaseResource(const TextureHandle& handle) = 0;
+    virtual void ReleaseResource(const SamplerHandle& handle) = 0;
+    virtual void ReleaseResource(const PipelineHandle& handle) = 0;
+    virtual void ReleaseResource(const ShaderHandle& handle) = 0;
 
     static std::unique_ptr<IRenderer> Create();
 };
