@@ -189,7 +189,7 @@ class VulkanRenderer : public IRenderer {
 
     // public
     SwapChainHandle CreateSwapChain(const SwapChainDesc& desc, RenderPassDesc& outDesc) override {
-        std::lock_guard<std::mutex> lock(resourceMutex);
+        std::lock_guard<std::recursive_mutex> lock(resourceMutex);
 
         // Create surface if not already created
         if (!surface) {
@@ -406,7 +406,7 @@ class VulkanRenderer : public IRenderer {
         BufferHandle handle;
         handle.id = GenerateUniqueID();
         {
-            std::lock_guard<std::mutex> lock(resourceMutex);
+            std::lock_guard<std::recursive_mutex> lock(resourceMutex);
             buffers[handle] = vBuffer;
         }
 
@@ -414,7 +414,7 @@ class VulkanRenderer : public IRenderer {
     }
 
     void UpdateBuffer(const BufferHandle& handle, const void* data, size_t size) override {
-        std::lock_guard<std::mutex> lock(resourceMutex);
+        std::lock_guard<std::recursive_mutex> lock(resourceMutex);
         auto it = buffers.find(handle);
         if (it == buffers.end()) {
             throw std::runtime_error("Invalid BufferHandle provided to UpdateBuffer.");
@@ -429,7 +429,7 @@ class VulkanRenderer : public IRenderer {
     }
 
     void BindBuffer(const BufferHandle& handle, uint32_t bind_point, uint32_t dynamic_offset) override {
-        std::lock_guard<std::mutex> lock(resourceMutex);
+        std::lock_guard<std::recursive_mutex> lock(resourceMutex);
         auto bufferIt = buffers.find(handle);
         if (bufferIt == buffers.end()) {
             throw std::runtime_error("Invalid BufferHandle provided to BindBuffer.");
@@ -514,7 +514,7 @@ class VulkanRenderer : public IRenderer {
         TextureHandle handle;
         handle.id = GenerateUniqueID();
         {
-            std::lock_guard<std::mutex> lock(resourceMutex);  // #FIXME recursive lock
+            std::lock_guard<std::recursive_mutex> lock(resourceMutex);  // #FIXME recursive lock
             textures[handle] = vTexture;
         }
 
@@ -522,7 +522,7 @@ class VulkanRenderer : public IRenderer {
     }
 
     void BindTexture(const TextureHandle& handle, uint32_t bind_point) override {
-        std::lock_guard<std::mutex> lock(resourceMutex);
+        std::lock_guard<std::recursive_mutex> lock(resourceMutex);
         auto textureIt = textures.find(handle);
         if (textureIt == textures.end()) {
             throw std::runtime_error("Invalid TextureHandle provided to BindTexture.");
@@ -564,7 +564,7 @@ class VulkanRenderer : public IRenderer {
         SamplerHandle handle;
         handle.id = GenerateUniqueID();
         {
-            std::lock_guard<std::mutex> lock(resourceMutex);
+            std::lock_guard<std::recursive_mutex> lock(resourceMutex);
             samplers[handle] = vSampler;
         }
 
@@ -572,7 +572,7 @@ class VulkanRenderer : public IRenderer {
     }
 
     void BindSampler(const SamplerHandle& handle, uint32_t bind_point) override {
-        std::lock_guard<std::mutex> lock(resourceMutex);
+        std::lock_guard<std::recursive_mutex> lock(resourceMutex);
         auto samplerIt = samplers.find(handle);
         if (samplerIt == samplers.end()) {
             throw std::runtime_error("Invalid SamplerHandle provided to BindSampler.");
@@ -603,7 +603,7 @@ class VulkanRenderer : public IRenderer {
         ShaderHandle handle;
         handle.id = GenerateUniqueID();
         {
-            std::lock_guard<std::mutex> lock(resourceMutex);
+            std::lock_guard<std::recursive_mutex> lock(resourceMutex);
             shaders[handle] = vShader;
         }
 
@@ -768,7 +768,7 @@ class VulkanRenderer : public IRenderer {
         PipelineHandle handle;
         handle.id = GenerateUniqueID();
         {
-            std::lock_guard<std::mutex> lock(resourceMutex);
+            std::lock_guard<std::recursive_mutex> lock(resourceMutex);
             pipelines[handle] = vPipeline;
         }
 
@@ -821,7 +821,7 @@ class VulkanRenderer : public IRenderer {
         PipelineHandle handle;
         handle.id = GenerateUniqueID();
         {
-            std::lock_guard<std::mutex> lock(resourceMutex);
+            std::lock_guard<std::recursive_mutex> lock(resourceMutex);
             pipelines[handle] = vPipeline;
         }
 
@@ -829,7 +829,7 @@ class VulkanRenderer : public IRenderer {
     }
 
     void BindPipeline(const PipelineHandle& handle) override {
-        std::lock_guard<std::mutex> lock(resourceMutex);
+        std::lock_guard<std::recursive_mutex> lock(resourceMutex);
         auto it = pipelines.find(handle);
         if (it != pipelines.end()) {
             currentPipeline = it->second.pipeline;
@@ -876,7 +876,7 @@ class VulkanRenderer : public IRenderer {
     void EndPass() override { commandBuffer.endRenderPass(); }
 
     void Render(const SwapChainHandle& handle, std::function<void()> callback) override {
-        std::lock_guard<std::mutex> lock(resourceMutex);
+        std::lock_guard<std::recursive_mutex> lock(resourceMutex);
         auto it = swapChains.find(handle);
         if (it == swapChains.end()) {
             throw std::runtime_error("Invalid SwapChainHandle provided to Render.");
@@ -1019,7 +1019,7 @@ class VulkanRenderer : public IRenderer {
     }
 
     bool ReloadShader(const ShaderHandle& handle, const ShaderDesc& new_desc) override {
-        std::lock_guard<std::mutex> lock(resourceMutex);
+        std::lock_guard<std::recursive_mutex> lock(resourceMutex);
         auto it = shaders.find(handle);
         if (it == shaders.end())
             return false;
@@ -1045,7 +1045,7 @@ class VulkanRenderer : public IRenderer {
     }
 
     void ReleaseResource(const SwapChainHandle& handle) override {
-        std::lock_guard<std::mutex> lock(resourceMutex);
+        std::lock_guard<std::recursive_mutex> lock(resourceMutex);
         auto it = swapChains.find(handle);
         if (it != swapChains.end()) {
             VulkanSwapChain& scData = it->second;
@@ -1075,7 +1075,7 @@ class VulkanRenderer : public IRenderer {
     }
 
     void ReleaseResource(const TextureHandle& handle) override {
-        std::lock_guard<std::mutex> lock(resourceMutex);
+        std::lock_guard<std::recursive_mutex> lock(resourceMutex);
         auto it = textures.find(handle);
         if (it != textures.end()) {
             // Decrement ref count
@@ -1097,7 +1097,7 @@ class VulkanRenderer : public IRenderer {
     }
 
     void ReleaseResource(const SamplerHandle& handle) override {
-        std::lock_guard<std::mutex> lock(resourceMutex);
+        std::lock_guard<std::recursive_mutex> lock(resourceMutex);
         auto it = samplers.find(handle);
         if (it != samplers.end()) {
             // Decrement ref count
@@ -1109,7 +1109,7 @@ class VulkanRenderer : public IRenderer {
     }
 
     void ReleaseResource(const PipelineHandle& handle) override {
-        std::lock_guard<std::mutex> lock(resourceMutex);
+        std::lock_guard<std::recursive_mutex> lock(resourceMutex);
         auto it = pipelines.find(handle);
         if (it != pipelines.end()) {
             // Decrement ref count
@@ -1122,7 +1122,7 @@ class VulkanRenderer : public IRenderer {
     }
 
     void ReleaseResource(const ShaderHandle& handle) override {
-        std::lock_guard<std::mutex> lock(resourceMutex);
+        std::lock_guard<std::recursive_mutex> lock(resourceMutex);
         auto it = shaders.find(handle);
         if (it != shaders.end()) {
             // Decrement ref count
@@ -1162,7 +1162,7 @@ class VulkanRenderer : public IRenderer {
     std::unordered_map<RenderPassHandle, VulkanRenderPass, HandleHash> renderPasses;
 
     // Handle to index mapping
-    std::mutex resourceMutex;
+    std::recursive_mutex resourceMutex;
 
     // Descriptor Set Management
     vk::DescriptorPool descriptorPool;
@@ -1206,7 +1206,7 @@ class VulkanRenderer : public IRenderer {
     }
 
     void CleanupVulkan() {
-        std::lock_guard<std::mutex> lock(resourceMutex);
+        std::lock_guard<std::recursive_mutex> lock(resourceMutex);
         bool memoryLeak = false;
 
         // Destroy all pipelines
@@ -1573,7 +1573,7 @@ class VulkanRenderer : public IRenderer {
         std::vector<vk::AttachmentReference> colorAttachmentRefs(desc.color_targets.size());
         std::vector<vk::AttachmentReference> depthAttachmentRef;
 
-        // Setup color attachments
+        // #FIXME 스왑체인 버퍼가 여러개 일 경우 하나만 하면 되는데 잘못 되었다. Setup color attachments
         for (size_t i = 0; i < desc.color_targets.size(); i++) {
             const auto& colorTarget = desc.color_targets[i];
             auto textureIt = textures.find(colorTarget);
@@ -2112,7 +2112,7 @@ class VulkanRenderer : public IRenderer {
     }
 
     void ReleaseResource(const RenderPassHandle& handle) {
-        std::lock_guard<std::mutex> lock(resourceMutex);
+        std::lock_guard<std::recursive_mutex> lock(resourceMutex);
         auto it = renderPasses.find(handle);
         if (it != renderPasses.end()) {
             if (--it->second.ref_count == 0) {
@@ -2123,7 +2123,7 @@ class VulkanRenderer : public IRenderer {
     }
 
     void ReleaseResource(const FrameBufferHandle& handle) {
-        std::lock_guard<std::mutex> lock(resourceMutex);
+        std::lock_guard<std::recursive_mutex> lock(resourceMutex);
         auto it = frameBuffers.find(handle);
         if (it != frameBuffers.end()) {
             if (--it->second.ref_count == 0) {
