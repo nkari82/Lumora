@@ -21,6 +21,7 @@ struct TextureHandle : ResourceHandle {};
 struct SamplerHandle : ResourceHandle {};
 struct PipelineHandle : ResourceHandle {};
 struct ShaderHandle : ResourceHandle {};
+struct FrameBufferHandle : ResourceHandle {};
 
 enum class Format {
     kUnknown,
@@ -274,6 +275,7 @@ struct PipelineDesc {
     DepthStencilState depth_stencil;
     MultiSamples sample_count = MultiSamples::k1;
     PolygonMode polygon_mode = PolygonMode::kFill;
+    uint32_t subindex = 0;
 };
 
 struct ComputePipelineDesc {
@@ -303,8 +305,8 @@ enum class AttachmentAccess {
 };
 
 struct SubpassAttachment {
-    TextureHandle attachment;  // 참조할 렌더 타겟
-    AttachmentAccess access;   // 접근 방식
+    uint32_t attachment;      // 참조할 렌더 타겟
+    AttachmentAccess access;  // 접근 방식
 };
 
 struct SubpassDesc {
@@ -313,10 +315,12 @@ struct SubpassDesc {
     std::vector<SubpassAttachment> input_attachments;  // Input 첨부
 };
 
-// #TODO RenderPass랑 FrameBuffer랑 합쳐버림.
-struct RenderPassDesc {
-    std::vector<TextureHandle> color_targets;  // MRT를 위한 컬러 타겟 리스트
-    TextureHandle depth_target;                // Depth 타겟 (optional)
+struct FrameBufferDesc {
+    std::vector<TextureHandle> color_targets;
+    TextureHandle depth_target;  // Depth 타겟 (optional)
+
+    uint32_t width;
+    uint32_t height;
 
     // 클리어 옵션
     std::vector<std::array<float, 4>> clear_colors;  // 각 컬러 타겟에 대한 클리어 색상
@@ -329,7 +333,7 @@ struct RenderPassDesc {
     AttachmentOptions depth_attachment_options;               // 깊이 타겟의 옵션
 
     // 서브패스
-    std::vector<SubpassDesc> subpasses;  // RenderPass 내의 서브패스 리스트
+    std::vector<SubpassDesc> subpasses;
 };
 
 // example
@@ -375,6 +379,7 @@ struct RenderPassDesc {
 //    renderer->BindPass(pass_desc);
 //    renderer->BindPipeline(my_pipeline1);
 //    renderer->DrawIndexed(36);
+//	  renderer->NextPass();
 //    renderer->BindPipeline(my_pipeline2);
 //    renderer->DrawIndexed(36);
 //    renderer->EndPass();
@@ -387,7 +392,7 @@ class IRenderer {
     virtual void Open(const char* app_name) = 0;
     virtual void Close() = 0;
 
-    virtual SwapChainHandle CreateSwapChain(const SwapChainDesc& desc, RenderPassDesc& outDesc) = 0;
+    virtual SwapChainHandle CreateSwapChain(const SwapChainDesc& desc) = 0;
     virtual BufferHandle CreateBuffer(const BufferDesc& desc) = 0;
     virtual void UpdateBuffer(const BufferHandle& handle, const void* data, size_t size) = 0;
     virtual void BindBuffer(const BufferHandle& handle, uint32_t bind_point, uint32_t dynamic_offset = 0) = 0;
@@ -398,7 +403,8 @@ class IRenderer {
     virtual ShaderHandle CreateShader(const ShaderDesc& desc) = 0;
     virtual PipelineHandle CreatePipeline(const PipelineDesc& desc) = 0;
     virtual PipelineHandle CreatePipeline(const ComputePipelineDesc& desc) = 0;
-    virtual void BindPipeline(const PipelineHandle& handle) = 0;
+    virtual void BindPipeline(const PipelineHandle& handle, const uint8_t* constants, size_t size,
+                              uint32_t subIndex = 0) = 0;
 
     virtual void DispatchCompute(uint32_t group_x, uint32_t group_y, uint32_t group_z) = 0;
 
@@ -413,8 +419,9 @@ class IRenderer {
     //   renderer->EndPass();
     //}});
 
-    virtual void BeginPass(const RenderPassDesc& desc) = 0;
+    virtual void BeginPass(const FrameBufferHandle& handle) = 0;
     virtual void EndPass() = 0;
+    virtual void NextPass() = 0;
     virtual void Render(const SwapChainHandle& handle, std::function<void()> callback) = 0;
     virtual void DrawIndexed(uint32_t index_count, uint32_t instance_count = 1, uint32_t first_index = 0,
                              int32_t vertex_offset = 0, uint32_t first_instance = 0) = 0;
@@ -425,6 +432,7 @@ class IRenderer {
     virtual void ReleaseResource(const SamplerHandle& handle) = 0;
     virtual void ReleaseResource(const PipelineHandle& handle) = 0;
     virtual void ReleaseResource(const ShaderHandle& handle) = 0;
+    virtual void ReleaseResource(const FrameBufferHandle& handle) = 0;
 
     static std::unique_ptr<IRenderer> Create();
 };

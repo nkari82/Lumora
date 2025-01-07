@@ -36,53 +36,26 @@ namespace lumora {
 const int MAX_FRAMES_IN_FLIGHT = 2;
 
 // Internal Resource Handle
-struct FrameBufferHandle : ResourceHandle {
-    uint64_t id;
-};
-
-struct RenderPassHandle : ResourceHandle {
-    uint64_t id;
-};
+struct RenderPassHandle : ResourceHandle {};
 
 // Internal
-struct FrameBufferDesc {
-    std::vector<TextureHandle> color_targets;
-    TextureHandle depth_target;
-    uint32_t width;
-    uint32_t height;
-    RenderPassHandle renderpass_handle;
+struct RenderPassDesc {
+    std::vector<Format> color_formats;  // MRT를 위한 컬러 타겟 리스트
+    Format depth_format;                // Depth 타겟 (optional)
+
+    // 클리어 옵션
+    std::vector<std::array<float, 4>> clear_colors;  // 각 컬러 타겟에 대한 클리어 색상
+    bool clear_depth = true;                         // 깊이 클리어 여부
+    float clear_depth_value = 1.0f;                  // 깊이 클리어 값
+    uint32_t clear_stencil_value = 0;                // 스텐실 클리어 값
+
+    // Attachment 옵션
+    std::vector<AttachmentOptions> color_attachment_options;  // 각 컬러 타겟의 옵션
+    AttachmentOptions depth_attachment_options;               // 깊이 타겟의 옵션
+
+    // 서브패스
+    std::vector<SubpassDesc> subpasses;  // RenderPass 내의 서브패스 리스트
 };
-
-// #TODO xxHash로 교체
-inline void hash_combine(std::size_t& seed) {}
-
-template <typename T, typename... Rest>
-inline void hash_combine(std::size_t& seed, const T& v, Rest... rest) {
-    seed ^= std::hash<T>()(v) + 0x9e3779b9 + (seed << 6) + (seed >> 2);
-    hash_combine(seed, rest...);
-}
-
-// Hash FrameBufferDesc
-inline uint64_t hashDesc(const FrameBufferDesc& desc) {
-    std::size_t seed = 0;
-    for (const auto& target : desc.color_targets) {
-        hash_combine(seed, target.id);
-    }
-    hash_combine(seed, desc.depth_target.id);
-    hash_combine(seed, desc.width);
-    hash_combine(seed, desc.height);
-    return static_cast<uint64_t>(seed);
-}
-
-// Hash RenderPassDesc
-inline uint64_t hashDesc(const RenderPassDesc& desc) {
-    std::size_t seed = 0;
-    for (const auto& target : desc.color_targets) {
-        hash_combine(seed, target.id);
-    }
-    hash_combine(seed, desc.depth_target.id);
-    return static_cast<uint64_t>(seed);
-}
 
 struct HandleHash {
     std::size_t operator()(const ResourceHandle& handle) const { return static_cast<std::size_t>(handle.id); }
@@ -136,7 +109,7 @@ struct VulkanShader : VulkanRef {
 
 struct VulkanPipeline : VulkanRef {
     PipelineDesc desc;  // To store pipeline configuration
-    vk::Pipeline pipeline;
+    std::unordered_map<uint64_t, vk::Pipeline> pipelines;
     vk::PipelineLayout layout;
 };
 
@@ -144,12 +117,14 @@ struct VulkanPipeline : VulkanRef {
 struct VulkanFrameBuffer : VulkanRef {
     FrameBufferDesc desc;  // To store framebuffer description
     vk::Framebuffer framebuffer;
+    RenderPassHandle renderPassHandle;
 };
 
 struct VulkanRenderPass : VulkanRef {
     RenderPassDesc desc;
     vk::RenderPass renderpass;
     FrameBufferHandle framebuffer_handle;
+    uint64_t descHash;
 };
 
 struct VulkanSwapChain : VulkanRef {
@@ -157,12 +132,12 @@ struct VulkanSwapChain : VulkanRef {
     uint32_t width;
     uint32_t height;
     vk::SwapchainKHR swapchain;
-    std::vector<TextureHandle> color_handles;
-    TextureHandle depth_handle;
+    // std::vector<TextureHandle> color_handles;
+    // TextureHandle depth_handle;
     vk::Format color_format;
     vk::Format depth_format;
-    RenderPassHandle renderpass_handle;
-    // Synchronization primitives
+    // RenderPassHandle renderpass_handle;
+    //  Synchronization primitives
     std::vector<vk::Semaphore> imageAvailableSemaphores;
     std::vector<vk::Semaphore> renderFinishedSemaphores;
     std::vector<vk::Fence> inFlightFences;
@@ -188,7 +163,7 @@ class VulkanRenderer : public IRenderer {
     void Close() { CleanupVulkan(); }
 
     // public
-    SwapChainHandle CreateSwapChain(const SwapChainDesc& desc, RenderPassDesc& outDesc) override {
+    SwapChainHandle CreateSwapChain(const SwapChainDesc& desc) override {
         std::lock_guard<std::recursive_mutex> lock(resourceMutex);
 
         // Create surface if not already created
@@ -295,7 +270,7 @@ class VulkanRenderer : public IRenderer {
             textures[textureHandle] = vTexture;
 
             // Add the TextureHandle to the swapchain's colorHandles vector
-            swapChain.color_handles.push_back(textureHandle);
+            // swapChain.color_handles.push_back(textureHandle);
         }
 
         // Handle depth texture if specified
@@ -311,42 +286,22 @@ class VulkanRenderer : public IRenderer {
             depthDesc.usage = TextureUsage::kDepthStencil;
 
             TextureHandle depthHandle = CreateTexture(depthDesc);
-            swapChain.depth_handle = depthHandle;
+            // swapChain.depth_handle = depthHandle;
 
-            // Update RenderPassDesc with depth target
-            outDesc.depth_target = depthHandle;
         } else {
-            swapChain.depth_handle = TextureHandle{0};  // Assuming TextureHandle{0} is invalid
-            outDesc.depth_target = TextureHandle{0};
+            // swapChain.depth_handle = TextureHandle{0};  // Assuming TextureHandle{0} is invalid
         }
-
-        // Populate RenderPassDesc with color targets
-        outDesc.color_targets = swapChain.color_handles;
-
-        // Define clear values based on the description
-        outDesc.clear_colors = {{0.1f, 0.2f, 0.3f, 1.0f}};  // Example clear color
-        outDesc.clear_depth = 0.0f;
-        outDesc.clear_depth_value = 1.0f;
-        outDesc.clear_stencil_value = 0;
 
         // Define attachment options (example; adjust as needed)
         AttachmentOptions colorAttachmentOptions{};
         colorAttachmentOptions.load_op = AttachmentLoadOp::kClear;
         colorAttachmentOptions.store_op = AttachmentStoreOp::kStore;
-        outDesc.color_attachment_options = {colorAttachmentOptions};
 
         if (desc.depth_format != Format::kUnknown) {
             AttachmentOptions depthAttachmentOptions{};
             depthAttachmentOptions.load_op = AttachmentLoadOp::kClear;
             depthAttachmentOptions.store_op = AttachmentStoreOp::kDontCare;
-            outDesc.depth_attachment_options = depthAttachmentOptions;
         }
-
-        // Create Render Pass
-        RenderPassHandle renderPassHandle = CreateRenderPassInternal(outDesc);
-        swapChain.renderpass_handle = renderPassHandle;
-        swapChain.width = desc.width;
-        swapChain.height = desc.height;
 
         // Create synchronization primitives
         SetupSynchronization(swapChain);
@@ -742,7 +697,8 @@ class VulkanRenderer : public IRenderer {
             throw std::runtime_error(std::string("Failed to create pipeline layout: ") + e.what());
         }
 
-        // Pipeline Creation
+        // Pipeline Creation move to BindPipeline
+#if 0
         vk::GraphicsPipelineCreateInfo pipelineInfo{};
         pipelineInfo.stageCount = static_cast<uint32_t>(shaderStages.size());
         pipelineInfo.pStages = shaderStages.data();
@@ -764,7 +720,7 @@ class VulkanRenderer : public IRenderer {
         } catch (const std::exception& e) {
             throw std::runtime_error(std::string("Failed to create graphics pipeline: ") + e.what());
         }
-
+#endif
         PipelineHandle handle;
         handle.id = GenerateUniqueID();
         {
@@ -812,12 +768,13 @@ class VulkanRenderer : public IRenderer {
         pipelineInfo.layout = vPipeline.layout;
         pipelineInfo.basePipelineHandle = nullptr;
 
+#if 0
         try {
-            vPipeline.pipeline = device.createComputePipeline(nullptr, pipelineInfo).value;
+            vPipeline.pipelines = device.createComputePipeline(nullptr, pipelineInfo).value;
         } catch (const std::exception& e) {
             throw std::runtime_error(std::string("Failed to create compute pipeline: ") + e.what());
         }
-
+#endif
         PipelineHandle handle;
         handle.id = GenerateUniqueID();
         {
@@ -828,16 +785,172 @@ class VulkanRenderer : public IRenderer {
         return handle;
     }
 
-    void BindPipeline(const PipelineHandle& handle) override {
+    // BeginPass시 RenderDesc로 CreateFrameBuffer를 생성하고 CreateRenderPass를 생성한다.
+    FrameBufferHandle CreateFrameBuffer(const FrameBufferDesc& desc) {
         std::lock_guard<std::recursive_mutex> lock(resourceMutex);
-        auto it = pipelines.find(handle);
-        if (it != pipelines.end()) {
-            currentPipeline = it->second.pipeline;
-            // Determine bind point based on pipeline type
-            // For simplicity, assuming graphics pipeline
-            commandBuffer.bindPipeline(vk::PipelineBindPoint::eGraphics, it->second.pipeline);
+
+        // Hash the FrameBufferDesc to use as a key
+        uint64_t hashKey;  // = hashDesc(desc);
+
+        // Create a unique handle
+        FrameBufferHandle handle{0};
+
+        // Check if framebuffer already exists
+        auto it = frameBuffers.find(handle);
+        if (it != frameBuffers.end()) {
+            it->second.ref_count++;
+            return it->first;
+        }
+
+        // Populate RenderPassDesc based on FrameBufferDesc
+        RenderPassDesc renderPassDesc;
+        for (const auto& textureHandle : desc.color_targets) {
+            auto textureIt = textures.find(textureHandle);
+            if (textureIt == textures.end()) {
+                throw std::runtime_error("Invalid TextureHandle in FrameBufferDesc.color_targets.");
+            }
+            renderPassDesc.color_formats.push_back(textureIt->second.desc.format);
+        }
+
+        if (desc.depth_target.id != 0) {  // Assuming TextureHandle{0} is invalid
+            auto depthIt = textures.find(desc.depth_target);
+            if (depthIt == textures.end()) {
+                throw std::runtime_error("Invalid TextureHandle in FrameBufferDesc.depth_target.");
+            }
+            renderPassDesc.depth_format = depthIt->second.desc.format;
         } else {
+            renderPassDesc.depth_format = Format::kUnknown;
+        }
+
+        // Assign other members from FrameBufferDesc to RenderPassDesc
+        renderPassDesc.clear_colors = desc.clear_colors;
+        renderPassDesc.clear_depth = desc.clear_depth;
+        renderPassDesc.clear_depth_value = desc.clear_depth_value;
+        renderPassDesc.clear_stencil_value = desc.clear_stencil_value;
+        renderPassDesc.color_attachment_options = desc.color_attachment_options;
+        renderPassDesc.depth_attachment_options = desc.depth_attachment_options;
+        renderPassDesc.subpasses = desc.subpasses;
+
+        // Create or retrieve RenderPass
+        RenderPassHandle renderPassHandle = CreateRenderPassInternal(renderPassDesc);
+
+        // Create Framebuffer
+        VulkanFrameBuffer vFrameBuffer;
+        // Gather image views for attachments
+        std::vector<vk::ImageView> attachments;
+        for (const auto& colorHandle : desc.color_targets) {
+            auto textureIt = textures.find(colorHandle);
+            if (textureIt == textures.end()) {
+                throw std::runtime_error("Invalid TextureHandle in FrameBufferDesc.color_targets.");
+            }
+            attachments.push_back(textureIt->second.image_view);
+        }
+
+        if (desc.depth_target.id != 0) {
+            auto depthIt = textures.find(desc.depth_target);
+            if (depthIt == textures.end()) {
+                throw std::runtime_error("Invalid TextureHandle in FrameBufferDesc.depth_target.");
+            }
+            attachments.push_back(depthIt->second.image_view);
+        }
+
+        // Retrieve the RenderPass
+        auto renderPassIt = renderPasses.find(renderPassHandle);
+        if (renderPassIt == renderPasses.end()) {
+            throw std::runtime_error("RenderPassHandle not found for FrameBufferDesc.");
+        }
+
+        // Use the width and height from FrameBufferDesc
+        uint32_t width = desc.width;
+        uint32_t height = desc.height;
+
+        vk::FramebufferCreateInfo framebufferInfo{};
+        framebufferInfo.renderPass = renderPassIt->second.renderpass;
+        framebufferInfo.attachmentCount = static_cast<uint32_t>(attachments.size());
+        framebufferInfo.pAttachments = attachments.data();
+        framebufferInfo.width = width;
+        framebufferInfo.height = height;
+        framebufferInfo.layers = 1;
+
+        try {
+            vFrameBuffer.framebuffer = device.createFramebuffer(framebufferInfo);
+        } catch (const std::exception& e) {
+            throw std::runtime_error(std::string("Failed to create framebuffer: ") + e.what());
+        }
+
+        vFrameBuffer.renderPassHandle = renderPassHandle;
+        vFrameBuffer.desc = desc;
+        vFrameBuffer.ref_count = 1;
+
+        frameBuffers[handle] = vFrameBuffer;
+
+        return handle;
+    }
+
+    void BindPipeline(const PipelineHandle& handle, const uint8_t* constants, size_t size,
+                      uint32_t subIndex = 0) override {
+        std::lock_guard<std::recursive_mutex> lock(resourceMutex);
+
+        // Retrieve VulkanPipeline
+        auto pipelineIt = pipelines.find(handle);
+        if (pipelineIt == pipelines.end()) {
             throw std::runtime_error("Invalid PipelineHandle provided to BindPipeline.");
+        }
+
+        VulkanPipeline& vPipeline = pipelineIt->second;
+
+        // Retrieve current framebuffer's render pass hash
+        // Assuming current framebuffer is tracked; otherwise, pass it as a parameter or track it globally
+        // For this example, we'll assume a single swapchain/framebuffer is active
+        if (swapChains.empty()) {
+            throw std::runtime_error("No active swapchain found.");
+        }
+
+        VulkanSwapChain& currentSwapChain = swapChains.begin()->second;
+        VulkanRenderPass currentRenderPass;  // = renderPasses[currentSwapChain.renderpass_handle];
+
+        uint64_t renderPassHash = currentRenderPass.descHash;
+        uint32_t currentPass = current_pass;  // Current subpass index
+
+        // Combine render pass hash and subpass index to create a unique key
+        std::hash<uint64_t> hasher;
+        uint64_t combinedHash = hasher(renderPassHash) ^ (static_cast<uint64_t>(currentPass) << 32);
+
+        // Check if pipeline with combinedHash exists
+        auto existingPipelineIt = vPipeline.pipelines.find(combinedHash);
+        if (existingPipelineIt != vPipeline.pipelines.end()) {
+            // Pipeline already exists, bind it
+            commandBuffer.bindPipeline(vk::PipelineBindPoint::eGraphics, existingPipelineIt->second);
+        } else {
+            // Create a new pipeline based on the stored desc
+            vk::GraphicsPipelineCreateInfo pipelineInfo;
+            //= vPipeline.desc.ToVulkanPipelineCreateInfo();  // Assume this method exists
+
+            // Set dynamic states or other states based on subIndex if needed
+            // Modify pipelineInfo based on subIndex
+
+            vk::Pipeline newPipeline;
+            try {
+                newPipeline = device.createGraphicsPipeline(nullptr, pipelineInfo).value;
+            } catch (const std::exception& e) {
+                throw std::runtime_error(std::string("Failed to create graphics pipeline: ") + e.what());
+            }
+
+            // Store the new pipeline in the map
+            vPipeline.pipelines[combinedHash] = newPipeline;
+
+            // Bind the new pipeline
+            commandBuffer.bindPipeline(vk::PipelineBindPoint::eGraphics, newPipeline);
+        }
+
+        // Optionally handle push constants if provided
+        if (constants && size > 0) {
+            // Assuming push constant ranges are defined in pipeline layout
+            commandBuffer.pushConstants(
+                vPipeline.layout,
+                vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment,  // Adjust as needed
+                0,                                                                      // Offset
+                size, constants);
         }
     }
 
@@ -845,35 +958,66 @@ class VulkanRenderer : public IRenderer {
         commandBuffer.dispatch(group_x, group_y, group_z);
     }
 
-    void BeginPass(const RenderPassDesc& desc) override {
-        // This implementation assumes that the current swapchain is set externally
-        // Alternatively, modify to accept a swapchain handle
-        // For this example, assume single render pass setup
+    void BeginPass(const FrameBufferHandle& handle) override {
+        std::lock_guard<std::recursive_mutex> lock(resourceMutex);
 
-        // Define clear values based on RenderPassDesc
+        auto frameBufferIt = frameBuffers.find(handle);
+        if (frameBufferIt == frameBuffers.end()) {
+            throw std::runtime_error("Invalid FrameBufferHandle provided to BeginPass.");
+        }
+
+        VulkanFrameBuffer& vFrameBuffer = frameBufferIt->second;
+        VulkanRenderPass& vRenderPass = renderPasses[vFrameBuffer.renderPassHandle];
+
+        // Reset current_pass
+        current_pass = 0;
+
+        // Begin command buffer recording
+        vk::CommandBufferBeginInfo beginInfo{};
+        beginInfo.flags = vk::CommandBufferUsageFlagBits::eSimultaneousUse;
+
+        try {
+            commandBuffer.begin(beginInfo);
+        } catch (const std::exception& e) {
+            throw std::runtime_error(std::string("Failed to begin command buffer: ") + e.what());
+        }
+
+        // Define clear values
         std::vector<vk::ClearValue> clearValues;
-        for (const auto& color : desc.clear_colors) {
-            clearValues.emplace_back(
-                vk::ClearValue(vk::ClearColorValue(std::array<float, 4>{color[0], color[1], color[2], color[3]})));
+        for (const auto& color : vRenderPass.desc.clear_colors) {
+            vk::ClearColorValue clearColor =
+                vk::ClearColorValue(std::array<float, 4>{color[0], color[1], color[2], color[3]});
+            clearValues.emplace_back(clearColor);
         }
-        if (desc.clear_depth) {
-            vk::ClearDepthStencilValue depthClear = {};
-            depthClear.depth = desc.clear_depth_value;
-            depthClear.stencil = desc.clear_stencil_value;
-            clearValues.emplace_back(vk::ClearValue(depthClear));
+        if (vRenderPass.desc.clear_depth) {
+            vk::ClearDepthStencilValue clearDepth = {};
+            clearDepth.depth = vRenderPass.desc.clear_depth_value;
+            clearDepth.stencil = vRenderPass.desc.clear_stencil_value;
+            clearValues.emplace_back(clearDepth);
         }
 
-        // Retrieve the current swapchain's framebuffer
-        // For simplicity, assume that the Render method sets up the current framebuffer
+        // Begin render pass
+        vk::RenderPassBeginInfo renderPassInfo{};
+        renderPassInfo.renderPass = vRenderPass.renderpass;
+        renderPassInfo.framebuffer = vFrameBuffer.framebuffer;
+        renderPassInfo.renderArea.offset = vk::Offset2D{0, 0};
+        renderPassInfo.renderArea.extent = vk::Extent2D{vFrameBuffer.desc.width, vFrameBuffer.desc.height};
+        renderPassInfo.clearValueCount = static_cast<uint32_t>(clearValues.size());
+        renderPassInfo.pClearValues = clearValues.data();
 
-        // This requires associating the render pass with a specific framebuffer during Render
-        // Modify the Render method accordingly
-
-        // Example:
-        // currentCommandBuffer.beginRenderPass(renderPassInfo, vk::SubpassContents::eInline);
+        try {
+            commandBuffer.beginRenderPass(renderPassInfo, vk::SubpassContents::eInline);
+        } catch (const std::exception& e) {
+            throw std::runtime_error(std::string("Failed to begin render pass: ") + e.what());
+        }
     }
 
     void EndPass() override { commandBuffer.endRenderPass(); }
+
+    void NextPass() override {
+        std::lock_guard<std::recursive_mutex> lock(resourceMutex);
+        current_pass++;
+    }
 
     void Render(const SwapChainHandle& handle, std::function<void()> callback) override {
         std::lock_guard<std::recursive_mutex> lock(resourceMutex);
@@ -920,7 +1064,7 @@ class VulkanRenderer : public IRenderer {
         }
 
         // Begin render pass using the current framebuffer
-        VulkanRenderPass& vRenderPass = renderPasses[scData.renderpass_handle];
+        VulkanRenderPass vRenderPass;  // = renderPasses[scData.renderpass_handle];
         VulkanFrameBuffer& vFrameBuffer = frameBuffers[vRenderPass.framebuffer_handle];
 
         vk::RenderPassBeginInfo renderPassInfo{};
@@ -1052,6 +1196,8 @@ class VulkanRenderer : public IRenderer {
             if (scData.swapchain) {
                 device.destroySwapchainKHR(scData.swapchain);
             }
+
+#if 0
             ReleaseResource(scData.renderpass_handle);
 
             for (auto& texture : scData.color_handles) {
@@ -1059,7 +1205,7 @@ class VulkanRenderer : public IRenderer {
             }
 
             ReleaseResource(scData.depth_handle);
-
+#endif
             // Cleanup synchronization primitives
             for (auto& semaphore : scData.imageAvailableSemaphores) {
                 device.destroySemaphore(semaphore);
@@ -1114,7 +1260,7 @@ class VulkanRenderer : public IRenderer {
         if (it != pipelines.end()) {
             // Decrement ref count
             if (--it->second.ref_count == 0) {
-                device.destroyPipeline(it->second.pipeline);
+                // device.destroyPipeline(it->second.pipeline);
                 device.destroyPipelineLayout(it->second.layout);
                 pipelines.erase(it);
             }
@@ -1132,6 +1278,8 @@ class VulkanRenderer : public IRenderer {
             }
         }
     }
+
+    void ReleaseResource(const FrameBufferHandle& handle) override {}
 
    private:
     // Vulkan core components
@@ -1172,6 +1320,7 @@ class VulkanRenderer : public IRenderer {
     // Current pipeline handle
     vk::Pipeline currentPipeline;
     vk::PipelineLayout pipelineLayout;  // #TODO 내부적으로 자동 관리
+    uint32_t current_pass = 0;
 
     // Internal methods
     void InitVulkan(const char* app_name) {
@@ -1206,12 +1355,14 @@ class VulkanRenderer : public IRenderer {
     }
 
     void CleanupVulkan() {
+        device.waitIdle();
+
         std::lock_guard<std::recursive_mutex> lock(resourceMutex);
         bool memoryLeak = false;
 
         // Destroy all pipelines
         for (auto& [handle, pipeline] : pipelines) {
-            device.destroyPipeline(pipeline.pipeline);
+            // device.destroyPipeline(pipeline.pipeline);
             device.destroyPipelineLayout(pipeline.layout);
             if (pipeline.ref_count != 0) {
                 memoryLeak = true;
@@ -1536,7 +1687,7 @@ class VulkanRenderer : public IRenderer {
         // MoltenVK Surface (macOS/iOS)
         VkMetalSurfaceCreateInfoEXT createInfo = {};
         createInfo.sType = VK_STRUCTURE_TYPE_METAL_SURFACE_CREATE_INFO_EXT;
-        createInfo.pLayer = static_cast<id<CAMetalLayer> >(desc.window_handle.cocoa.view);
+        createInfo.pLayer = static_cast<id<CAMetalLayer>>(desc.window_handle.cocoa.view);
 
         VkSurfaceKHR rawSurface;
         if (vkCreateMetalSurfaceEXT(static_cast<VkInstance>(instance), &createInfo, nullptr, &rawSurface) !=
@@ -1553,35 +1704,29 @@ class VulkanRenderer : public IRenderer {
         // Hash the RenderPassDesc to use as a key
         uint64_t hashKey = hashDesc(desc);
 
-        // Check if render pass already exists
+        // Create a unique handle
         RenderPassHandle handle{hashKey};
+
+        // Check if render pass already exists
         auto it = renderPasses.find(handle);
         if (it != renderPasses.end()) {
             it->second.ref_count++;
             return it->first;
         }
 
-        // Determine number of attachments based on desc.color_targets and depth_target
-        size_t attachmentCount = desc.color_targets.size();
-        bool hasDepth = desc.depth_target.id != 0;  // Assuming TextureHandle{0} is invalid
-
+        size_t attachmentCount = desc.color_formats.size();
+        bool hasDepth = (desc.depth_format != Format::kUnknown);
         if (hasDepth) {
             attachmentCount += 1;
         }
 
         std::vector<vk::AttachmentDescription> attachments(attachmentCount);
-        std::vector<vk::AttachmentReference> colorAttachmentRefs(desc.color_targets.size());
+        std::vector<vk::AttachmentReference> colorAttachmentRefs(desc.color_formats.size());
         std::vector<vk::AttachmentReference> depthAttachmentRef;
 
-        // #FIXME 스왑체인 버퍼가 여러개 일 경우 하나만 하면 되는데 잘못 되었다. Setup color attachments
-        for (size_t i = 0; i < desc.color_targets.size(); i++) {
-            const auto& colorTarget = desc.color_targets[i];
-            auto textureIt = textures.find(colorTarget);
-            if (textureIt == textures.end()) {
-                throw std::runtime_error("Invalid ColorTargetHandle in RenderPassDesc.");
-            }
-
-            attachments[i].format = textureIt->second.format;
+        // Setup color attachments
+        for (size_t i = 0; i < desc.color_formats.size(); i++) {
+            attachments[i].format = MapFormat(desc.color_formats[i]);
             attachments[i].samples = vk::SampleCountFlagBits::e1;
             attachments[i].loadOp = (desc.color_attachment_options[i].load_op == AttachmentLoadOp::kClear)
                                         ? vk::AttachmentLoadOp::eClear
@@ -1602,30 +1747,23 @@ class VulkanRenderer : public IRenderer {
 
         // Setup depth attachment if present
         if (hasDepth) {
-            const auto& depthAttachment = desc.depth_target;
-
-            auto textureIt = textures.find(depthAttachment);
-            if (textureIt == textures.end()) {
-                throw std::runtime_error("Invalid DepthTargetHandle in RenderPassDesc.");
-            }
-
-            attachments[desc.color_targets.size()].format = textureIt->second.format;
-            attachments[desc.color_targets.size()].samples = vk::SampleCountFlagBits::e1;
-            attachments[desc.color_targets.size()].loadOp =
+            attachments[desc.color_formats.size()].format = MapFormat(desc.depth_format);
+            attachments[desc.color_formats.size()].samples = vk::SampleCountFlagBits::e1;
+            attachments[desc.color_formats.size()].loadOp =
                 (desc.depth_attachment_options.load_op == AttachmentLoadOp::kClear)  ? vk::AttachmentLoadOp::eClear
                 : (desc.depth_attachment_options.load_op == AttachmentLoadOp::kLoad) ? vk::AttachmentLoadOp::eLoad
                                                                                      : vk::AttachmentLoadOp::eDontCare;
-            attachments[desc.color_targets.size()].storeOp =
+            attachments[desc.color_formats.size()].storeOp =
                 (desc.depth_attachment_options.store_op == AttachmentStoreOp::kStore)
                     ? vk::AttachmentStoreOp::eStore
                     : vk::AttachmentStoreOp::eDontCare;
-            attachments[desc.color_targets.size()].stencilLoadOp = vk::AttachmentLoadOp::eDontCare;
-            attachments[desc.color_targets.size()].stencilStoreOp = vk::AttachmentStoreOp::eDontCare;
-            attachments[desc.color_targets.size()].initialLayout = vk::ImageLayout::eUndefined;
-            attachments[desc.color_targets.size()].finalLayout = vk::ImageLayout::eDepthStencilAttachmentOptimal;
+            attachments[desc.color_formats.size()].stencilLoadOp = vk::AttachmentLoadOp::eDontCare;
+            attachments[desc.color_formats.size()].stencilStoreOp = vk::AttachmentStoreOp::eDontCare;
+            attachments[desc.color_formats.size()].initialLayout = vk::ImageLayout::eUndefined;
+            attachments[desc.color_formats.size()].finalLayout = vk::ImageLayout::eDepthStencilAttachmentOptimal;
 
             vk::AttachmentReference depthRef{};
-            depthRef.attachment = static_cast<uint32_t>(desc.color_targets.size());
+            depthRef.attachment = static_cast<uint32_t>(desc.color_formats.size());
             depthRef.layout = vk::ImageLayout::eDepthStencilAttachmentOptimal;
 
             depthAttachmentRef.push_back(depthRef);
@@ -1634,7 +1772,7 @@ class VulkanRenderer : public IRenderer {
         // Define subpasses
         vk::SubpassDescription subpass{};
         subpass.pipelineBindPoint = vk::PipelineBindPoint::eGraphics;
-        subpass.colorAttachmentCount = static_cast<uint32_t>(desc.color_targets.size());
+        subpass.colorAttachmentCount = static_cast<uint32_t>(colorAttachmentRefs.size());
         subpass.pColorAttachments = colorAttachmentRefs.data();
         if (hasDepth) {
             subpass.pDepthStencilAttachment = &depthAttachmentRef[0];
@@ -1674,77 +1812,10 @@ class VulkanRenderer : public IRenderer {
 
         vRenderPass.desc = desc;
         vRenderPass.ref_count = 1;
+        vRenderPass.descHash = hashKey;  // Store the hash
 
-        // Create framebuffer
-        FrameBufferDesc frameBufferDesc{};
-        frameBufferDesc.renderpass_handle = handle;  // To be assigned after handle is defined
-        frameBufferDesc.color_targets = desc.color_targets;
-        frameBufferDesc.depth_target = desc.depth_target;
-
-        vRenderPass.framebuffer_handle = CreateFrameBufferInternal(frameBufferDesc);
-
-        // Assign the handle and store the render pass
+        // Store the render pass
         renderPasses[handle] = vRenderPass;
-
-        return handle;
-    }
-
-    // BeginPass시 RenderDesc로 CreateFrameBuffer를 생성하고 CreateRenderPass를 생성한다.
-    FrameBufferHandle CreateFrameBufferInternal(const FrameBufferDesc& desc) {
-        // Hash the FrameBufferDesc to use as a key
-        uint64_t hashKey = hashDesc(desc);
-
-        // Check if framebuffer already exists
-        FrameBufferHandle handle{hashKey};
-        auto it = frameBuffers.find(handle);
-        if (it != frameBuffers.end()) {
-            it->second.ref_count++;
-            return it->first;
-        }
-
-        std::vector<vk::ImageView> attachments;
-        for (const auto& colorHandle : desc.color_targets) {
-            auto textureIt = textures.find(colorHandle);
-            if (textureIt == textures.end()) {
-                throw std::runtime_error("Invalid ColorTargetHandle in FrameBufferDesc.");
-            }
-            attachments.push_back(textureIt->second.image_view);
-        }
-
-        if (desc.depth_target.id != 0) {
-            auto depthIt = textures.find(desc.depth_target);
-            if (depthIt == textures.end()) {
-                throw std::runtime_error("Invalid DepthTargetHandle in FrameBufferDesc.");
-            }
-            attachments.push_back(depthIt->second.image_view);
-        }
-
-        // Retrieve the appropriate render pass
-        auto renderPassIt = renderPasses.find(desc.renderpass_handle);
-        if (renderPassIt == renderPasses.end()) {
-            throw std::runtime_error("RenderPassHandle not found for FrameBufferDesc.");
-        }
-
-        vk::FramebufferCreateInfo framebufferInfo{};
-        framebufferInfo.renderPass = renderPassIt->second.renderpass;
-        framebufferInfo.attachmentCount = static_cast<uint32_t>(attachments.size());
-        framebufferInfo.pAttachments = attachments.data();
-        framebufferInfo.width = desc.width;    // Example; adjust accordingly
-        framebufferInfo.height = desc.height;  // Example; adjust accordingly
-        framebufferInfo.layers = 1;
-
-        VulkanFrameBuffer vFrameBuffer;
-
-        try {
-            vFrameBuffer.framebuffer = device.createFramebuffer(framebufferInfo);
-        } catch (const std::exception& e) {
-            throw std::runtime_error(std::string("Failed to create framebuffer: ") + e.what());
-        }
-
-        vFrameBuffer.desc = desc;
-        vFrameBuffer.ref_count = 1;
-
-        frameBuffers[handle] = vFrameBuffer;
 
         return handle;
     }
@@ -2234,6 +2305,59 @@ class VulkanRenderer : public IRenderer {
             default:
                 throw std::runtime_error("Invalid FrontFace.");
         }
+    }
+
+    // #TODO xxHash로 교체
+    inline void hash_combine(std::size_t& seed) {}
+
+    template <typename T, typename... Rest>
+    inline void hash_combine(std::size_t& seed, const T& v, Rest... rest) {
+        seed ^= std::hash<T>()(v) + 0x9e3779b9 + (seed << 6) + (seed >> 2);
+        hash_combine(seed, rest...);
+    }
+
+    // Hash RenderPassDesc
+    uint64_t hashDesc(const RenderPassDesc& desc) {
+        std::hash<uint64_t> hasher;
+        uint64_t seed = 0;
+
+        for (const auto& format : desc.color_formats) {
+            seed ^= hasher(static_cast<uint64_t>(format)) + 0x9e3779b9 + (seed << 6) + (seed >> 2);
+        }
+
+        seed ^= hasher(static_cast<uint64_t>(desc.depth_format)) + 0x9e3779b9 + (seed << 6) + (seed >> 2);
+
+        for (const auto& clearColor : desc.clear_colors) {
+            for (float value : clearColor) {
+                seed ^= hasher(*reinterpret_cast<const uint32_t*>(&value)) + 0x9e3779b9 + (seed << 6) + (seed >> 2);
+            }
+        }
+
+        seed ^= hasher(static_cast<uint64_t>(desc.clear_depth)) + 0x9e3779b9 + (seed << 6) + (seed >> 2);
+        seed ^= hasher(*reinterpret_cast<const uint64_t*>(&desc.clear_depth_value)) + 0x9e3779b9 + (seed << 6) +
+                (seed >> 2);
+        seed ^= hasher(desc.clear_stencil_value) + 0x9e3779b9 + (seed << 6) + (seed >> 2);
+
+        for (const auto& colorOp : desc.color_attachment_options) {
+            seed ^= hasher(static_cast<uint64_t>(colorOp.load_op)) + 0x9e3779b9 + (seed << 6) + (seed >> 2);
+            seed ^= hasher(static_cast<uint64_t>(colorOp.store_op)) + 0x9e3779b9 + (seed << 6) + (seed >> 2);
+        }
+
+        seed ^= hasher(static_cast<uint64_t>(desc.depth_attachment_options.load_op)) + 0x9e3779b9 + (seed << 6) +
+                (seed >> 2);
+        seed ^= hasher(static_cast<uint64_t>(desc.depth_attachment_options.store_op)) + 0x9e3779b9 + (seed << 6) +
+                (seed >> 2);
+
+        for (const auto& subpass : desc.subpasses) {
+            for (const auto& colorAttachment : subpass.color_attachments) {
+                seed ^= hasher(colorAttachment.attachment) + 0x9e3779b9 + (seed << 6) + (seed >> 2);
+            }
+            if (subpass.depth_attachment.attachment != 0) {
+                seed ^= hasher(subpass.depth_attachment.attachment) + 0x9e3779b9 + (seed << 6) + (seed >> 2);
+            }
+        }
+
+        return seed;
     }
 };
 
