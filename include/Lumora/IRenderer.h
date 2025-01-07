@@ -338,7 +338,7 @@ struct FrameBufferDesc {
 
 // example
 // 단일 서브패스
-// RenderPassDesc pass_desc{};
+// FrameBufeferDesc pass_desc{};
 // pass_desc.color_targets = {render_target};
 // pass_desc.clear_colors = {{0.2f, 0.3f, 0.4f, 1.0f}};
 // pass_desc.depth_target = depth_target;
@@ -351,19 +351,19 @@ struct FrameBufferDesc {
 // }};
 //
 // renderer->Render(swapchain, [&]() {
-//     renderer->BindPass(pass_desc);
+//     renderer->BindPass(framebuffer);
 //     renderer->BindPipeline(my_pipeline);
 //     renderer->DrawIndexed(36);
 //     renderer->EndPass();
 // });
 
 // 멀티 서브패스
-// RenderPassDesc pass_desc{};
+// FrameBufeferDesc pass_desc{};
 // pass_desc.color_targets = {render_target1, render_target2};
 // pass_desc.clear_colors = {{0.2f, 0.3f, 0.4f, 1.0f}, {0.0f, 0.0f, 0.0f, 1.0f}};
 // pass_desc.depth_target = depth_target;
 //
-// pass_desc.subpasses = {
+// framebuffer_desc.subpasses = {
 //    {
 //        .color_attachments = {{render_target1, AttachmentAccess::kWrite}},
 //        .depth_attachment = {depth_target, AttachmentAccess::kWrite},
@@ -376,7 +376,7 @@ struct FrameBufferDesc {
 //};
 //
 // renderer->Render(swapchain, [&]() {
-//    renderer->BindPass(pass_desc);
+//    renderer->BindPass(framebuffer);
 //    renderer->BindPipeline(my_pipeline1);
 //    renderer->DrawIndexed(36);
 //	  renderer->NextPass();
@@ -409,7 +409,7 @@ class IRenderer {
     virtual void DispatchCompute(uint32_t group_x, uint32_t group_y, uint32_t group_z) = 0;
 
     // renderer->Render(swapchain, {[](){
-    //   renderer->BeginPass(desc0); // BeginPass
+    //   renderer->BeginPass(framebuffer); // BeginPass
     //   렌더패스를 호출한다.
     //   renderer->BindPipeline(myPipeline);
     //   renderer->BindBuffer(myVbo);
