@@ -789,19 +789,6 @@ class VulkanRenderer : public IRenderer {
     FrameBufferHandle CreateFrameBuffer(const FrameBufferDesc& desc) {
         std::lock_guard<std::recursive_mutex> lock(resourceMutex);
 
-        // Hash the FrameBufferDesc to use as a key
-        uint64_t hashKey;  // = hashDesc(desc);
-
-        // Create a unique handle
-        FrameBufferHandle handle{0};
-
-        // Check if framebuffer already exists
-        auto it = frameBuffers.find(handle);
-        if (it != frameBuffers.end()) {
-            it->second.ref_count++;
-            return it->first;
-        }
-
         // Populate RenderPassDesc based on FrameBufferDesc
         RenderPassDesc renderPassDesc;
         for (const auto& textureHandle : desc.color_targets) {
@@ -882,6 +869,8 @@ class VulkanRenderer : public IRenderer {
         vFrameBuffer.desc = desc;
         vFrameBuffer.ref_count = 1;
 
+        FrameBufferHandle handle;
+        handle.id = GenerateUniqueID();
         frameBuffers[handle] = vFrameBuffer;
 
         return handle;
@@ -967,12 +956,13 @@ class VulkanRenderer : public IRenderer {
         }
 
         VulkanFrameBuffer& vFrameBuffer = frameBufferIt->second;
-        VulkanRenderPass& vRenderPass = renderPasses[vFrameBuffer.renderPassHandle];
 
-        // Reset current_pass
-        current_pass = 0;
+        // 현재 RenderPassHandle 할당 (단계 3)
+        currentRenderPassHandle = vFrameBuffer.renderPassHandle;
 
-        // Begin command buffer recording
+        VulkanRenderPass& vRenderPass = renderPasses[currentRenderPassHandle];
+
+        // 명령 버퍼 시작
         vk::CommandBufferBeginInfo beginInfo{};
         beginInfo.flags = vk::CommandBufferUsageFlagBits::eSimultaneousUse;
 
@@ -982,7 +972,7 @@ class VulkanRenderer : public IRenderer {
             throw std::runtime_error(std::string("Failed to begin command buffer: ") + e.what());
         }
 
-        // Define clear values
+        // 클리어 값 설정
         std::vector<vk::ClearValue> clearValues;
         for (const auto& color : vRenderPass.desc.clear_colors) {
             vk::ClearColorValue clearColor =
@@ -996,7 +986,7 @@ class VulkanRenderer : public IRenderer {
             clearValues.emplace_back(clearDepth);
         }
 
-        // Begin render pass
+        // RenderPass 시작
         vk::RenderPassBeginInfo renderPassInfo{};
         renderPassInfo.renderPass = vRenderPass.renderpass;
         renderPassInfo.framebuffer = vFrameBuffer.framebuffer;
@@ -1279,7 +1269,17 @@ class VulkanRenderer : public IRenderer {
         }
     }
 
-    void ReleaseResource(const FrameBufferHandle& handle) override {}
+    void ReleaseResource(const FrameBufferHandle& handle) override {
+        std::lock_guard<std::recursive_mutex> lock(resourceMutex);
+        auto it = frameBuffers.find(handle);
+        if (it != frameBuffers.end()) {
+            if (--it->second.ref_count == 0) {
+                device.destroyFramebuffer(it->second.framebuffer);
+                ReleaseResource(it->second.renderPassHandle);
+                frameBuffers.erase(it);
+            }
+        }
+    }
 
    private:
     // Vulkan core components
@@ -1321,6 +1321,7 @@ class VulkanRenderer : public IRenderer {
     vk::Pipeline currentPipeline;
     vk::PipelineLayout pipelineLayout;  // #TODO 내부적으로 자동 관리
     uint32_t current_pass = 0;
+    RenderPassHandle currentRenderPassHandle;
 
     // Internal methods
     void InitVulkan(const char* app_name) {
@@ -2189,17 +2190,6 @@ class VulkanRenderer : public IRenderer {
             if (--it->second.ref_count == 0) {
                 device.destroyRenderPass(it->second.renderpass);
                 renderPasses.erase(it);
-            }
-        }
-    }
-
-    void ReleaseResource(const FrameBufferHandle& handle) {
-        std::lock_guard<std::recursive_mutex> lock(resourceMutex);
-        auto it = frameBuffers.find(handle);
-        if (it != frameBuffers.end()) {
-            if (--it->second.ref_count == 0) {
-                device.destroyFramebuffer(it->second.framebuffer);
-                frameBuffers.erase(it);
             }
         }
     }
