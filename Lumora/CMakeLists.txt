@@ -27,6 +27,7 @@ target_include_directories(Lumora
         ${CMAKE_CURRENT_SOURCE_DIR}/src
 		../external/VulkanMemoryAllocator/include 
 		../external/Vulkan-Hpp/include 
+        ../external/xxHash
 )
 
 # Vulkan

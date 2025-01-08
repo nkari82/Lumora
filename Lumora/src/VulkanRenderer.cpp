@@ -16,9 +16,12 @@
 #include <vulkan/vulkan_win32.h>
 #endif
 
+#define XXH_STATIC_LINKING_ONLY
+#define XXH_IMPLEMENTATION
 #define VMA_IMPLEMENTATION
 #include <Lumora/IRenderer.h>
 #include <vk_mem_alloc.h>
+#include <xxhash.h>
 
 // For debug messenger
 VKAPI_ATTR VkBool32 VKAPI_CALL DebugCallback(VkDebugUtilsMessageSeverityFlagBitsEXT message_severity,
@@ -132,14 +135,6 @@ struct VulkanSwapChain : VulkanRef {
     vk::Format color_format;
     vk::Format depth_format;
 
-    // Each swapchain has its own Physical Device and Logical Device
-    vk::PhysicalDevice physical_device;
-    vk::Device logical_device;
-
-    uint32_t graphics_queue_family;  // Graphics Queue Family Index
-    uint32_t present_queue_family;   // Present Queue Family Index
-    vk::Queue graphics_queue;        // Graphics Queue
-
     // Command Pool
     vk::CommandPool command_pool;
     std::vector<vk::CommandBuffer> command_buffers;
@@ -161,11 +156,15 @@ class VulkanRenderer : public IRenderer {
    public:
     VulkanRenderer() {
         // Constructor
+        hash_state_ = XXH64_createState();
     }
 
-    ~VulkanRenderer() override { Close(); }
+    ~VulkanRenderer() override {
+        XXH64_freeState(hash_state_);
+        Close();
+    }
 
-    void Open(const char* app_name) override { InitVulkan(app_name); }
+    void Open(const char* app_name, const WindowHandle& wh) override { InitVulkan(app_name, wh); }
 
     void Close() override { CleanupVulkan(); }
 
@@ -176,35 +175,15 @@ class VulkanRenderer : public IRenderer {
         VulkanSwapChain swapchain_data;
         swapchain_data.desc = desc;
 
-        // 1. Create Surface
         swapchain_data.surface = CreateSurface(desc.window_handle);
 
-        // 2. Pick Physical Device for this SwapChain
-        swapchain_data.physical_device = PickPhysicalDevice(swapchain_data.surface);
-
-        // Initialize VMA
-        if (!allocator_) {
-            VmaAllocatorCreateInfo allocator_info = {};
-            allocator_info.physicalDevice =
-                static_cast<VkPhysicalDevice>(swapchain_data.physical_device);  // #FIXME physical_device
-            allocator_info.device = static_cast<VkDevice>(device_);
-            allocator_info.instance = static_cast<VkInstance>(instance_);
-            if (vmaCreateAllocator(&allocator_info, &allocator_) != VK_SUCCESS) {
-                throw std::runtime_error("Failed to create VMA allocator.");
-            }
-        }
-
-        // 4. Create Logical Device
-        CreateLogicalDevice(swapchain_data);
-
-        // 5. Select Surface Format, Present Mode, and Extent
-        auto surface_formats = swapchain_data.physical_device.getSurfaceFormatsKHR(swapchain_data.surface);
+        auto surface_formats = physical_device_.getSurfaceFormatsKHR(swapchain_data.surface);
         vk::SurfaceFormatKHR chosen_format = ChooseSurfaceFormat(surface_formats);
 
-        auto present_modes = swapchain_data.physical_device.getSurfacePresentModesKHR(swapchain_data.surface);
+        auto present_modes = physical_device_.getSurfacePresentModesKHR(swapchain_data.surface);
         vk::PresentModeKHR chosen_present_mode = ChoosePresentMode(present_modes);
 
-        auto capabilities = swapchain_data.physical_device.getSurfaceCapabilitiesKHR(swapchain_data.surface);
+        auto capabilities = physical_device_.getSurfaceCapabilitiesKHR(swapchain_data.surface);
         vk::Extent2D chosen_extent = ChooseExtent(capabilities, desc.width, desc.height);
 
         uint32_t image_count = desc.buffer_count;
@@ -212,10 +191,6 @@ class VulkanRenderer : public IRenderer {
             image_count = capabilities.maxImageCount;
         }
 
-        // 6. Set Image Usage Flags
-        vk::ImageUsageFlags image_usage_flags = Convert(desc.image_usage);
-
-        // 7. Create Swapchain
         vk::SwapchainCreateInfoKHR swapchain_info{};
         swapchain_info.sType = vk::StructureType::eSwapchainCreateInfoKHR;
         swapchain_info.surface = swapchain_data.surface;
@@ -224,13 +199,12 @@ class VulkanRenderer : public IRenderer {
         swapchain_info.imageColorSpace = chosen_format.colorSpace;
         swapchain_info.imageExtent = chosen_extent;
         swapchain_info.imageArrayLayers = 1;
-        swapchain_info.imageUsage = image_usage_flags;
+        swapchain_info.imageUsage = vk::ImageUsageFlagBits::eColorAttachment;
 
         // Queue Family Handling
-        if (swapchain_data.graphics_queue_family != swapchain_data.present_queue_family) {
+        if (graphics_queue_family_ != present_queue_family_) {
             swapchain_info.imageSharingMode = vk::SharingMode::eConcurrent;
-            uint32_t queue_family_indices[] = {swapchain_data.graphics_queue_family,
-                                               swapchain_data.present_queue_family};
+            uint32_t queue_family_indices[] = {graphics_queue_family_, present_queue_family_};
             swapchain_info.queueFamilyIndexCount = 2;
             swapchain_info.pQueueFamilyIndices = queue_family_indices;
         } else {
@@ -244,15 +218,13 @@ class VulkanRenderer : public IRenderer {
         swapchain_info.oldSwapchain = nullptr;
 
         try {
-            swapchain_data.swapchain = swapchain_data.logical_device.createSwapchainKHR(swapchain_info);
+            swapchain_data.swapchain = device_.createSwapchainKHR(swapchain_info);
         } catch (const std::exception& e) {
             throw std::runtime_error(std::string("Failed to create swap chain: ") + e.what());
         }
 
-        // 8. Create Command Pool
-        swapchain_data.command_pool = CreateCommandPool(swapchain_data);
+        swapchain_data.command_pool = CreateCommandPool();
 
-        // 8.1 Allocate Command Buffers
         vk::CommandBufferAllocateInfo alloc_info{};
         alloc_info.sType = vk::StructureType::eCommandBufferAllocateInfo;
         alloc_info.commandPool = swapchain_data.command_pool;
@@ -260,15 +232,13 @@ class VulkanRenderer : public IRenderer {
         alloc_info.commandBufferCount = kMaxFramesInFlight;  // 예: 프레임당 하나의 커맨드 버퍼
 
         try {
-            swapchain_data.command_buffers = swapchain_data.logical_device.allocateCommandBuffers(alloc_info);
+            swapchain_data.command_buffers = device_.allocateCommandBuffers(alloc_info);
         } catch (const std::exception& e) {
             throw std::runtime_error(std::string("Failed to allocate command buffers: ") + e.what());
         }
 
-        // 9. Setup Synchronization Primitives
         SetupSynchronization(swapchain_data);
 
-        // 10. Store the SwapChain
         SwapChainHandle handle;
         handle.id = GenerateUniqueID();
         swapchains_.emplace(handle, swapchain_data);
@@ -411,7 +381,7 @@ class VulkanRenderer : public IRenderer {
 
         // Determine aspect mask
         vk::ImageAspectFlags aspect_mask = vk::ImageAspectFlagBits::eColor;
-        if (HasTextureUsage(desc.usage, TextureUsage::kDepthStencil)) {
+        if ((desc.usage & TextureUsage::kDepthStencil) != TextureUsage::kNone) {
             aspect_mask = vk::ImageAspectFlagBits::eDepth;
             if (image_info.format == vk::Format::eD24UnormS8Uint || image_info.format == vk::Format::eD32SfloatS8Uint) {
                 aspect_mask |= vk::ImageAspectFlagBits::eStencil;
@@ -424,7 +394,7 @@ class VulkanRenderer : public IRenderer {
         TextureHandle handle;
         handle.id = GenerateUniqueID();
         {
-            std::lock_guard<std::recursive_mutex> lock_(resource_mutex_);  // #FIXME recursive lock
+            std::lock_guard<std::recursive_mutex> lock_(resource_mutex_);
             textures_.emplace(handle, vtexture);
         }
 
@@ -860,7 +830,7 @@ class VulkanRenderer : public IRenderer {
                 AttachmentOptions{.load_op = AttachmentLoadOp::kClear, .store_op = AttachmentStoreOp::kStore};
         }
 
-        // RenderPass 생성 또는 조회
+        // #FIXME (If pDepthStencilAttachment is not NULL) RenderPass 생성 또는 조회
         RenderPassHandle renderpass_handle = CreateRenderPassInternal(render_pass_desc);
 
         // VulkanFrameBuffer 생성
@@ -1137,7 +1107,7 @@ class VulkanRenderer : public IRenderer {
         submit_info.pSignalSemaphores = signal_semaphores;
 
         try {
-            sc_data.graphics_queue.submit(submit_info, in_flight_fence);
+            graphics_queue_.submit(submit_info, in_flight_fence);
         } catch (const std::exception& e) {
             throw std::runtime_error(std::string("Failed to submit command buffer: ") + e.what());
         }
@@ -1151,7 +1121,7 @@ class VulkanRenderer : public IRenderer {
         present_info.pImageIndices = &image_index;
 
         try {
-            vk::Result present_result = sc_data.graphics_queue.presentKHR(present_info);
+            vk::Result present_result = graphics_queue_.presentKHR(present_info);
             if (present_result == vk::Result::eErrorOutOfDateKHR || present_result == vk::Result::eSuboptimalKHR) {
                 throw std::runtime_error("Swapchain is out of date or suboptimal.");
             } else if (present_result != vk::Result::eSuccess) {
@@ -1203,33 +1173,28 @@ class VulkanRenderer : public IRenderer {
 
             // Synchronization primitives 정리
             for (auto& semaphore : sc_data.image_available_semaphores) {
-                sc_data.logical_device.destroySemaphore(semaphore);
+                device_.destroySemaphore(semaphore);
             }
             for (auto& semaphore : sc_data.render_finished_semaphores) {
-                sc_data.logical_device.destroySemaphore(semaphore);
+                device_.destroySemaphore(semaphore);
             }
             for (auto& fence : sc_data.in_flight_fences) {
-                sc_data.logical_device.destroyFence(fence);
+                device_.destroyFence(fence);
             }
 
             // Command Pool 정리
             if (sc_data.command_pool) {
-                sc_data.logical_device.destroyCommandPool(sc_data.command_pool);
+                device_.destroyCommandPool(sc_data.command_pool);
             }
 
             // Swapchain 정리
             if (sc_data.swapchain) {
-                sc_data.logical_device.destroySwapchainKHR(sc_data.swapchain);
+                device_.destroySwapchainKHR(sc_data.swapchain);
             }
 
             // Surface 정리
             if (sc_data.surface) {
                 instance_.destroySurfaceKHR(sc_data.surface);
-            }
-
-            // 논리 장치 정리
-            if (sc_data.logical_device) {
-                sc_data.logical_device.destroy();
             }
 
             // 스왑체인 맵에서 제거
@@ -1310,12 +1275,16 @@ class VulkanRenderer : public IRenderer {
 
    private:
     // Vulkan core components
+    XXH64_state_t* hash_state_;
     vk::Instance instance_;
     vk::PhysicalDevice physical_device_;
     vk::Device device_;
-    vk::SurfaceKHR surface_;
     vk::RenderPass render_pass_;
     vk::CommandBuffer command_buffer_;  // current command buffer
+
+    uint32_t graphics_queue_family_;  // Graphics Queue Family Index
+    uint32_t present_queue_family_;   // Present Queue Family Index
+    vk::Queue graphics_queue_;        // Graphics Queue
 
     // Debug messenger
     vk::DebugUtilsMessengerEXT debug_messenger_;
@@ -1348,9 +1317,26 @@ class VulkanRenderer : public IRenderer {
     RenderPassHandle current_render_pass_handle_;
 
     // Internal methods
-    void InitVulkan(const char* app_name) {
+    void InitVulkan(const char* app_name, const WindowHandle& wh) {
         // Create Vulkan Instance
         CreateInstance(app_name);
+
+        vk::SurfaceKHR surface = CreateSurface(wh);
+
+        PickPhysicalDevice(surface);
+
+        CreateLogicalDevice(surface);
+
+        instance_.destroySurfaceKHR(surface);
+
+        // Initialize VMA
+        VmaAllocatorCreateInfo allocator_info = {};
+        allocator_info.physicalDevice = static_cast<VkPhysicalDevice>(physical_device_);
+        allocator_info.device = static_cast<VkDevice>(device_);
+        allocator_info.instance = static_cast<VkInstance>(instance_);
+        if (vmaCreateAllocator(&allocator_info, &allocator_) != VK_SUCCESS) {
+            throw std::runtime_error("Failed to create VMA allocator.");
+        }
 
         // Create Descriptor Pool
         CreateDescriptorPool();
@@ -1589,7 +1575,7 @@ class VulkanRenderer : public IRenderer {
         bool isComplete() const { return !graphics_family_indices.empty() && present_family != UINT32_MAX; }
     };
 
-    vk::PhysicalDevice PickPhysicalDevice(vk::SurfaceKHR surface) {
+    void PickPhysicalDevice(vk::SurfaceKHR surface) {
         auto physical_devices = instance_.enumeratePhysicalDevices();
         if (physical_devices.empty()) {
             throw std::runtime_error("Failed to find GPUs with Vulkan support.");
@@ -1597,7 +1583,8 @@ class VulkanRenderer : public IRenderer {
 
         for (const auto& device_candidate : physical_devices) {
             if (IsDeviceSuitable(device_candidate, surface)) {
-                return device_candidate;
+                physical_device_ = device_candidate;
+                return;
             }
         }
 
@@ -1631,21 +1618,21 @@ class VulkanRenderer : public IRenderer {
         return indices;
     }
 
-    void CreateLogicalDevice(VulkanSwapChain& swapchain_data) {
+    void CreateLogicalDevice(vk::SurfaceKHR surface) {
         // Find queue families for this physical device and surface
-        QueueFamilyIndices indices = FindQueueFamilies(swapchain_data.physical_device, swapchain_data.surface);
+        QueueFamilyIndices indices = FindQueueFamilies(physical_device_, surface);
 
         if (indices.graphics_family_indices.empty() || indices.present_family == UINT32_MAX) {
             throw std::runtime_error("Failed to find required queue families.");
         }
 
-        swapchain_data.graphics_queue_family = indices.graphics_family_indices[0];
-        swapchain_data.present_queue_family = indices.present_family;
+        graphics_queue_family_ = indices.graphics_family_indices[0];
+        present_queue_family_ = indices.present_family;
 
         // 큐 패밀리 인덱스의 유일성을 보장
-        std::vector<uint32_t> unique_queue_families = {swapchain_data.graphics_queue_family};
-        if (swapchain_data.present_queue_family != swapchain_data.graphics_queue_family) {
-            unique_queue_families.push_back(swapchain_data.present_queue_family);
+        std::vector<uint32_t> unique_queue_families = {graphics_queue_family_};
+        if (present_queue_family_ != present_queue_family_) {
+            unique_queue_families.push_back(present_queue_family_);
         }
 
         std::vector<vk::DeviceQueueCreateInfo> queue_create_infos;
@@ -1675,17 +1662,17 @@ class VulkanRenderer : public IRenderer {
         create_info.ppEnabledExtensionNames = device_extensions.data();
 
         try {
-            swapchain_data.logical_device = swapchain_data.physical_device.createDevice(create_info);
+            device_ = physical_device_.createDevice(create_info);
         } catch (const std::exception& e) {
             throw std::runtime_error(std::string("Failed to create logical device: ") + e.what());
         }
 
         // 그래픽 큐 가져오기
-        swapchain_data.graphics_queue = swapchain_data.logical_device.getQueue(swapchain_data.graphics_queue_family, 0);
+        graphics_queue_ = device_.getQueue(graphics_queue_family_, 0);
+
         // 프레젠트 큐 가져오기
-        if (swapchain_data.present_queue_family != swapchain_data.graphics_queue_family) {
-            swapchain_data.graphics_queue =
-                swapchain_data.logical_device.getQueue(swapchain_data.present_queue_family, 0);
+        if (present_queue_family_ != graphics_queue_family_) {
+            graphics_queue_ = device_.getQueue(present_queue_family_, 0);
         }
     }
 
@@ -1924,14 +1911,14 @@ class VulkanRenderer : public IRenderer {
         }
     }
 
-    vk::CommandPool CreateCommandPool(VulkanSwapChain& swapchain_data) {
+    vk::CommandPool CreateCommandPool() {
         vk::CommandPoolCreateInfo pool_info{};
         pool_info.sType = vk::StructureType::eCommandPoolCreateInfo;
-        pool_info.queueFamilyIndex = swapchain_data.graphics_queue_family;
+        pool_info.queueFamilyIndex = graphics_queue_family_;
         pool_info.flags = vk::CommandPoolCreateFlagBits::eResetCommandBuffer;  // 필요한 플래그 설정
 
         try {
-            return swapchain_data.logical_device.createCommandPool(pool_info);
+            return device_.createCommandPool(pool_info);
         } catch (const std::exception& e) {
             throw std::runtime_error(std::string("Failed to create command pool: ") + e.what());
         }
@@ -1949,9 +1936,9 @@ class VulkanRenderer : public IRenderer {
 
         for (int i = 0; i < kMaxFramesInFlight; i++) {
             try {
-                sc_data.image_available_semaphores[i] = sc_data.logical_device.createSemaphore(semaphore_info);
-                sc_data.render_finished_semaphores[i] = sc_data.logical_device.createSemaphore(semaphore_info);
-                sc_data.in_flight_fences[i] = sc_data.logical_device.createFence(fence_info);
+                sc_data.image_available_semaphores[i] = device_.createSemaphore(semaphore_info);
+                sc_data.render_finished_semaphores[i] = device_.createSemaphore(semaphore_info);
+                sc_data.in_flight_fences[i] = device_.createFence(fence_info);
             } catch (const std::exception& e) {
                 throw std::runtime_error(std::string("Failed to create synchronization primitives: ") + e.what());
             }
@@ -2382,100 +2369,46 @@ class VulkanRenderer : public IRenderer {
         return vk_usage;
     }
 
-    // #TODO xxHash로 교체
-    inline void HashCombine(std::size_t& seed) {}
-
-    template <typename T, typename... Rest>
-    inline void HashCombine(std::size_t& seed, const T& v, Rest... rest) {
-        seed ^= std::hash<T>()(v) + 0x9e3779b9 + (seed << 6) + (seed >> 2);
-        HashCombine(seed, rest...);
-    }
-
-    // Hash RenderPassDesc
     uint64_t HashDesc(const RenderPassDesc& desc) {
-        std::hash<uint64_t> hasher;
-        uint64_t seed = 0;
+        XXH64_reset(hash_state_, 0);
 
         for (const auto& format : desc.color_formats) {
-            seed ^= hasher(static_cast<uint64_t>(format)) + 0x9e3779b9 + (seed << 6) + (seed >> 2);
+            XXH64_update(hash_state_, &format, sizeof(format));
         }
 
-        seed ^= hasher(static_cast<uint64_t>(desc.depth_format)) + 0x9e3779b9 + (seed << 6) + (seed >> 2);
+        XXH64_update(hash_state_, &desc.depth_format, sizeof(desc.depth_format));
 
         for (const auto& clear_color : desc.clear_colors) {
-            for (float value : clear_color) {
-                seed ^= hasher(*reinterpret_cast<const uint32_t*>(&value)) + 0x9e3779b9 + (seed << 6) + (seed >> 2);
-            }
+            XXH64_update(hash_state_, clear_color.data(), clear_color.size() * sizeof(float));
         }
 
-        seed ^= hasher(static_cast<uint64_t>(desc.clear_depth)) + 0x9e3779b9 + (seed << 6) + (seed >> 2);
-        seed ^= hasher(*reinterpret_cast<const uint64_t*>(&desc.clear_depth_value)) + 0x9e3779b9 + (seed << 6) +
-                (seed >> 2);
-        seed ^= hasher(desc.clear_stencil_value) + 0x9e3779b9 + (seed << 6) + (seed >> 2);
+        XXH64_update(hash_state_, &desc.clear_depth, sizeof(desc.clear_depth));
+        XXH64_update(hash_state_, &desc.clear_depth_value, sizeof(desc.clear_depth_value));
+        XXH64_update(hash_state_, &desc.clear_stencil_value, sizeof(desc.clear_stencil_value));
 
         for (const auto& color_op : desc.color_attachment_options) {
-            seed ^= hasher(static_cast<uint64_t>(color_op.load_op)) + 0x9e3779b9 + (seed << 6) + (seed >> 2);
-            seed ^= hasher(static_cast<uint64_t>(color_op.store_op)) + 0x9e3779b9 + (seed << 6) + (seed >> 2);
+            XXH64_update(hash_state_, &color_op.load_op, sizeof(color_op.load_op));
+            XXH64_update(hash_state_, &color_op.store_op, sizeof(color_op.store_op));
         }
 
-        seed ^= hasher(static_cast<uint64_t>(desc.depth_attachment_options.load_op)) + 0x9e3779b9 + (seed << 6) +
-                (seed >> 2);
-        seed ^= hasher(static_cast<uint64_t>(desc.depth_attachment_options.store_op)) + 0x9e3779b9 + (seed << 6) +
-                (seed >> 2);
+        XXH64_update(hash_state_, &desc.depth_attachment_options.load_op,
+                     sizeof(desc.depth_attachment_options.load_op));
+        XXH64_update(hash_state_, &desc.depth_attachment_options.store_op,
+                     sizeof(desc.depth_attachment_options.store_op));
 
         for (const auto& subpass : desc.subpasses) {
             for (const auto& color_attachment : subpass.color_attachments) {
-                seed ^= hasher(color_attachment.attachment) + 0x9e3779b9 + (seed << 6) + (seed >> 2);
+                XXH64_update(hash_state_, &color_attachment.attachment, sizeof(color_attachment.attachment));
             }
             if (subpass.depth_attachment.attachment != 0) {
-                seed ^= hasher(subpass.depth_attachment.attachment) + 0x9e3779b9 + (seed << 6) + (seed >> 2);
+                XXH64_update(hash_state_, &subpass.depth_attachment.attachment,
+                             sizeof(subpass.depth_attachment.attachment));
             }
         }
 
-        return seed;
+        uint64_t hash = XXH64_digest(hash_state_);
+        return hash;
     }
-
-#if 0  // xxDesc
-uint64_t VulkanRenderer::HashDesc(const RenderPassDesc& desc) {
-    XXH64_state_t* state = XXH64_createState();
-    XXH64_reset(state, 0);
-
-    for (const auto& format : desc.color_formats) {
-        XXH64_update(state, &format, sizeof(format));
-    }
-
-    XXH64_update(state, &desc.depth_format, sizeof(desc.depth_format));
-
-    for (const auto& clear_color : desc.clear_colors) {
-        XXH64_update(state, clear_color.data(), clear_color.size() * sizeof(float));
-    }
-
-    XXH64_update(state, &desc.clear_depth, sizeof(desc.clear_depth));
-    XXH64_update(state, &desc.clear_depth_value, sizeof(desc.clear_depth_value));
-    XXH64_update(state, &desc.clear_stencil_value, sizeof(desc.clear_stencil_value));
-
-    for (const auto& color_op : desc.color_attachment_options) {
-        XXH64_update(state, &color_op.load_op, sizeof(color_op.load_op));
-        XXH64_update(state, &color_op.store_op, sizeof(color_op.store_op));
-    }
-
-    XXH64_update(state, &desc.depth_attachment_options.load_op, sizeof(desc.depth_attachment_options.load_op));
-    XXH64_update(state, &desc.depth_attachment_options.store_op, sizeof(desc.depth_attachment_options.store_op));
-
-    for (const auto& subpass : desc.subpasses) {
-        for (const auto& color_attachment : subpass.color_attachments) {
-            XXH64_update(state, &color_attachment.attachment, sizeof(color_attachment.attachment));
-        }
-        if (subpass.depth_attachment.attachment != 0) {
-            XXH64_update(state, &subpass.depth_attachment.attachment, sizeof(subpass.depth_attachment.attachment));
-        }
-    }
-
-    uint64_t hash = XXH64_digest(state);
-    XXH64_freeState(state);
-    return hash;
-}
-#endif
 };
 
 // Implementation

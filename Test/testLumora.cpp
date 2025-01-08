@@ -36,11 +36,12 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow) {
 
     ShowWindow(hwnd, nCmdShow);
 
+    lumora::WindowHandle wh = {reinterpret_cast<void*>(hwnd), reinterpret_cast<void*>(hInstance)};
+
     // Create Renderer
     std::unique_ptr<lumora::IRenderer> renderer = lumora::IRenderer::Create();
-    renderer->Open("Vulkan Renderer Test");
+    renderer->Open("Vulkan Renderer Test", wh);
 
-    lumora::WindowHandle wh = {reinterpret_cast<void*>(hwnd), reinterpret_cast<void*>(hInstance)};
     // Create SwapChain
     lumora::SwapChainDesc swapDesc;
     swapDesc.window_handle = wh;

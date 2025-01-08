@@ -85,8 +85,6 @@ inline TextureUsage& operator&=(TextureUsage& lhs, TextureUsage rhs) {
     return lhs;
 }
 
-inline bool HasTextureUsage(TextureUsage usage, TextureUsage flag) { return (usage & flag) != TextureUsage::kNone; }
-
 struct WindowHandle {
     void* display;   // 예: HWND, Display*, ANativeWindow*, NSView*, 등
     void* platform;  // 예: HINSTANCE, X11 Window, 추가 정보 등
@@ -100,9 +98,6 @@ struct SwapChainDesc {
     Format depth_format = Format::kDepth24Stencil8;
     int32_t buffer_count = 2;
     bool vsync = true;
-
-    // 이미지 사용 플래그 추가 (TextureUsage 사용)
-    TextureUsage image_usage = TextureUsage::kRenderTarget;
 };
 
 enum class BufferUsage {
@@ -397,7 +392,7 @@ class IRenderer {
    public:
     virtual ~IRenderer() = default;
 
-    virtual void Open(const char* app_name) = 0;
+    virtual void Open(const char* app_name, const WindowHandle& wh) = 0;
     virtual void Close() = 0;
 
     virtual SwapChainHandle CreateSwapChain(const SwapChainDesc& desc) = 0;
