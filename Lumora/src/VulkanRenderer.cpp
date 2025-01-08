@@ -117,13 +117,12 @@ struct VulkanPipeline : VulkanRef {
 struct VulkanFrameBuffer : VulkanRef {
     FrameBufferDesc desc;  // To store framebuffer description
     vk::Framebuffer framebuffer;
-    RenderPassHandle renderPassHandle;
+    RenderPassHandle renderpass_handle;
 };
 
 struct VulkanRenderPass : VulkanRef {
     RenderPassDesc desc;
     vk::RenderPass renderpass;
-    FrameBufferHandle framebuffer_handle;
     uint64_t descHash;
 };
 
@@ -132,16 +131,13 @@ struct VulkanSwapChain : VulkanRef {
     uint32_t width;
     uint32_t height;
     vk::SwapchainKHR swapchain;
-    // std::vector<TextureHandle> color_handles;
-    // TextureHandle depth_handle;
     vk::Format color_format;
     vk::Format depth_format;
-    // RenderPassHandle renderpass_handle;
     //  Synchronization primitives
-    std::vector<vk::Semaphore> imageAvailableSemaphores;
-    std::vector<vk::Semaphore> renderFinishedSemaphores;
-    std::vector<vk::Fence> inFlightFences;
-    size_t currentFrame;
+    std::vector<vk::Semaphore> image_available_semaphores;
+    std::vector<vk::Semaphore> render_finished_semaphores;
+    std::vector<vk::Fence> in_flight_fences;
+    size_t current_frame;
 };
 
 struct DescriptorSet {
@@ -308,7 +304,7 @@ class VulkanRenderer : public IRenderer {
 
         SwapChainHandle handle;
         handle.id = GenerateUniqueID();
-        swapChains[handle] = swapChain;
+        swap_chains[handle] = swapChain;
 
         return handle;
     }
@@ -819,7 +815,7 @@ class VulkanRenderer : public IRenderer {
         renderPassDesc.subpasses = desc.subpasses;
 
         // Create or retrieve RenderPass
-        RenderPassHandle renderPassHandle = CreateRenderPassInternal(renderPassDesc);
+        RenderPassHandle renderpass_handle = CreateRenderPassInternal(renderPassDesc);
 
         // Create Framebuffer
         VulkanFrameBuffer vFrameBuffer;
@@ -842,8 +838,8 @@ class VulkanRenderer : public IRenderer {
         }
 
         // Retrieve the RenderPass
-        auto renderPassIt = renderPasses.find(renderPassHandle);
-        if (renderPassIt == renderPasses.end()) {
+        auto renderPassIt = render_passes.find(renderpass_handle);
+        if (renderPassIt == render_passes.end()) {
             throw std::runtime_error("RenderPassHandle not found for FrameBufferDesc.");
         }
 
@@ -865,17 +861,70 @@ class VulkanRenderer : public IRenderer {
             throw std::runtime_error(std::string("Failed to create framebuffer: ") + e.what());
         }
 
-        vFrameBuffer.renderPassHandle = renderPassHandle;
+        vFrameBuffer.renderpass_handle = renderpass_handle;
         vFrameBuffer.desc = desc;
         vFrameBuffer.ref_count = 1;
 
         FrameBufferHandle handle;
         handle.id = GenerateUniqueID();
-        frameBuffers[handle] = vFrameBuffer;
+        frame_buffers[handle] = vFrameBuffer;
 
         return handle;
     }
 
+    FrameBufferHandle VulkanRenderer::CreateFrameBuffer(const SwapChainHandle& handle) {
+        std::lock_guard<std::recursive_mutex> lock(resource_mutex_);
+
+        // SwapChain 조회
+        auto swap_chain_it = swap_chains_.find(handle);
+        if (swap_chain_it == swap_chains_.end()) {
+            throw std::runtime_error("Invalid SwapChainHandle provided to CreateFrameBuffer.");
+        }
+
+        VulkanSwapChain& swap_chain = swap_chains_.at(handle);
+
+        // FrameBufferDesc 생성
+        FrameBufferDesc framebuffer_desc{};
+        framebuffer_desc.width = swap_chain.width;
+        framebuffer_desc.height = swap_chain.height;
+        // framebuffer_desc.clear_color = {0.0f, 0.0f, 0.0f, 1.0f};
+        framebuffer_desc.clear_depth = swap_chain.desc.depth_format != Format::kUnknown;
+        framebuffer_desc.clear_depth_value = 1.0f;
+        framebuffer_desc.clear_stencil_value = 0;
+        framebuffer_desc.color_attachment_options = {
+            AttachmentOptions{.load_op = AttachmentLoadOp::kClear, .store_op = AttachmentStoreOp::kStore}};
+        // framebuffer_desc.depth_attachment_options = swap_chain.desc.depth_attachment_options;
+
+        // SwapChain의 각 이미지에 대해 텍스처 생성
+        // 단일 FrameBufferHandle에 여러 프레임버퍼를 생성하지 않도록 주의
+        // 여기서는 단일 FrameBufferHandle을 반환하며, 실제 애플리케이션에서는 프레임마다 별도의 FrameBuffer를 생성할 수
+        // 있습니다.
+
+        // FrameBufferDesc에 SwapChain 이미지 기반의 color_targets 추가
+        for (const auto& image : swap_chain_it->second.swapchain.getImages()) {
+            TextureDesc color_texture_desc{
+                .image = image, .format = swap_chain.desc.color_format, .usage = TextureUsage::kRenderTarget,
+                // 기타 필요한 TextureDesc 초기화
+            };
+            // TextureHandle color_handle = CreateTexture(color_texture_desc); // CreateTexture를 사용하지 않음.
+            framebuffer_desc.color_targets.emplace_back(color_handle);
+        }
+
+        // Depth 텍스처 생성 (필요 시)
+        if (framebuffer_desc.depth_attachment_options.load_op != AttachmentLoadOp::kDontCare) {
+            TextureDesc depth_texture_desc{
+                .format = swap_chain.desc.depth_format,
+                .usage = TextureUsage::kDepthStencil,
+                .width = swap_chain.width,
+                .height = swap_chain.height,
+                // 기타 필요한 TextureDesc 초기화
+            };
+            framebuffer_desc.depth_target = CreateTexture(depth_texture_desc);
+        }
+
+        // FrameBuffer 생성
+        return CreateFrameBuffer(framebuffer_desc);
+    }
     void BindPipeline(const PipelineHandle& handle, const uint8_t* constants, size_t size,
                       uint32_t subIndex = 0) override {
         std::lock_guard<std::recursive_mutex> lock(resourceMutex);
@@ -1305,9 +1354,9 @@ class VulkanRenderer : public IRenderer {
     std::unordered_map<SamplerHandle, VulkanSampler, HandleHash> samplers;
     std::unordered_map<ShaderHandle, VulkanShader, HandleHash> shaders;
     std::unordered_map<PipelineHandle, VulkanPipeline, HandleHash> pipelines;
-    std::unordered_map<SwapChainHandle, VulkanSwapChain, HandleHash> swapChains;
-    std::unordered_map<FrameBufferHandle, VulkanFrameBuffer, HandleHash> frameBuffers;
-    std::unordered_map<RenderPassHandle, VulkanRenderPass, HandleHash> renderPasses;
+    std::unordered_map<SwapChainHandle, VulkanSwapChain, HandleHash> swap_chains;
+    std::unordered_map<FrameBufferHandle, VulkanFrameBuffer, HandleHash> frame_buffers;
+    std::unordered_map<RenderPassHandle, VulkanRenderPass, HandleHash> render_passes;
 
     // Handle to index mapping
     std::recursive_mutex resourceMutex;

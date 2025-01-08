@@ -385,6 +385,18 @@ struct FrameBufferDesc {
 //    renderer->EndPass();
 //});
 
+// renderer->Render(swapchain, {[](){
+//   renderer->BeginPass(framebuffer); // BeginPass
+//   렌더패스를 호출한다.
+//   renderer->BindPipeline(myPipeline);
+//   renderer->BindBuffer(myVbo);
+//   renderer->BindBuffer(myIbo);
+//   renderer->BindTexture(...);
+//   renderer->DrawIndexed(36); // e.g. a cube with 36 indices
+//   renderer->EndPass();
+//}});
+
+// Renderer Interface
 class IRenderer {
    public:
     virtual ~IRenderer() = default;
@@ -394,6 +406,8 @@ class IRenderer {
 
     virtual SwapChainHandle CreateSwapChain(const SwapChainDesc& desc) = 0;
     virtual BufferHandle CreateBuffer(const BufferDesc& desc) = 0;
+    virtual FrameBufferHandle CreateFrameBuffer(const FrameBufferDesc& desc) = 0;
+    virtual FrameBufferHandle CreateFrameBuffer(const SwapChainHandle& handle) = 0;
     virtual void UpdateBuffer(const BufferHandle& handle, const void* data, size_t size) = 0;
     virtual void BindBuffer(const BufferHandle& handle, uint32_t bind_point, uint32_t dynamic_offset = 0) = 0;
     virtual TextureHandle CreateTexture(const TextureDesc& desc) = 0;
@@ -404,20 +418,9 @@ class IRenderer {
     virtual PipelineHandle CreatePipeline(const PipelineDesc& desc) = 0;
     virtual PipelineHandle CreatePipeline(const ComputePipelineDesc& desc) = 0;
     virtual void BindPipeline(const PipelineHandle& handle, const uint8_t* constants, size_t size,
-                              uint32_t subIndex = 0) = 0;
+                              uint32_t sub_index = 0) = 0;
 
     virtual void DispatchCompute(uint32_t group_x, uint32_t group_y, uint32_t group_z) = 0;
-
-    // renderer->Render(swapchain, {[](){
-    //   renderer->BeginPass(framebuffer); // BeginPass
-    //   렌더패스를 호출한다.
-    //   renderer->BindPipeline(myPipeline);
-    //   renderer->BindBuffer(myVbo);
-    //   renderer->BindBuffer(myIbo);
-    //   renderer->BindTexture(...);
-    //   renderer->DrawIndexed(36); // e.g. a cube with 36 indices
-    //   renderer->EndPass();
-    //}});
 
     virtual void BeginPass(const FrameBufferHandle& handle) = 0;
     virtual void EndPass() = 0;
