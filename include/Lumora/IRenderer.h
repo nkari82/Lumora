@@ -148,17 +148,17 @@ enum class TextureType {
 };
 
 struct TextureDesc {
+    Format format = Format::kSRGBA8Unorm;
+    TextureUsage usage = TextureUsage::kSampled;
+    uint32_t width = 0;   // 텍스처의 너비
+    uint32_t height = 0;  // 텍스처의 높이
+    uint32_t depth = 1;   // 텍스처 깊이 (3D 텍스처 전용, 기본값: 1)
+    uint32_t mip_levels = 1;
+    uint32_t array_layers = 1;
+    MemoryUsage memory_usage = MemoryUsage::kAuto;
     uint8_t* data = nullptr;              // initial data
     size_t size = 0;                      // initial data size
     TextureType type = TextureType::k2D;  // 텍스처 타입 (기본: 2D)
-    uint32_t width = 0;                   // 텍스처의 너비
-    uint32_t height = 0;                  // 텍스처의 높이
-    uint32_t depth = 1;                   // 텍스처 깊이 (3D 텍스처 전용, 기본값: 1)
-    uint32_t mip_levels = 1;
-    uint32_t array_layers = 1;
-    Format format = Format::kSRGBA8Unorm;
-    TextureUsage usage = TextureUsage::kSampled;
-    MemoryUsage memory_usage = MemoryUsage::kAuto;
 };
 
 enum class Filter { kNearest, kLinear };

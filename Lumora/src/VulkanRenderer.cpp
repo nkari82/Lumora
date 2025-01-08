@@ -127,11 +127,9 @@ struct VulkanRenderPass : VulkanRef {
 
 struct VulkanSwapChain : VulkanRef {
     SwapChainDesc desc;
-    uint32_t width;
-    uint32_t height;
     vk::SwapchainKHR swapchain;
-    vk::Format color_format;
-    vk::Format depth_format;
+    vk::Format color_format;  // refactoring
+    vk::Format depth_format;  // refactoring
     // Synchronization primitives
     std::vector<vk::Semaphore> image_available_semaphores;
     std::vector<vk::Semaphore> render_finished_semaphores;
@@ -233,70 +231,6 @@ class VulkanRenderer : public IRenderer {
             swapchain_data.swapchain = device_.createSwapchainKHR(swapchain_info);
         } catch (const std::exception& e) {
             throw std::runtime_error(std::string("Failed to create swap chain: ") + e.what());
-        }
-
-        swapchain_data.color_format = chosen_format.format;
-        // Determine depth format based on available formats or use a default
-        swapchain_data.depth_format =
-            vk::Format::eD24UnormS8Uint;  // Example format; consider querying supported formats
-
-        // Retrieve swap chain images
-        std::vector<vk::Image> swapchain_images = device_.getSwapchainImagesKHR(swapchain_data.swapchain);
-
-        // For each swapchain image, create a VulkanTexture with creation_type = kSwapChain
-        for (const auto& image : swapchain_images) {
-            VulkanTexture vtexture;
-            vtexture.image = image;
-            vtexture.creation_type = TextureCreationType::kSwapChain;  // Set creation_type
-            // No allocation with VMA for external images
-            vtexture.allocation = VK_NULL_HANDLE;  // Indicate no allocation
-            vtexture.format = swapchain_data.color_format;
-            vtexture.extent = vk::Extent3D{chosen_extent.width, chosen_extent.height, 1};
-            vtexture.mip_levels = 1;
-            vtexture.array_layers = 1;
-            vtexture.usage = TextureUsage::kRenderTarget;  // Example usage; adjust as needed
-
-            // Create image view using the shared CreateView method
-            vk::ImageAspectFlags aspect_mask = vk::ImageAspectFlagBits::eColor;
-            vtexture.image_view = CreateView(vtexture.image, vtexture.format, aspect_mask);
-
-            // Create a TextureHandle for this image
-            TextureHandle texture_handle;
-            texture_handle.id = GenerateUniqueID();
-            textures_.emplace(texture_handle, vtexture);
-
-            // Add the TextureHandle to the swapchain's color_handles vector
-            // swapchain_data.color_handles.push_back(texture_handle);
-        }
-
-        // Handle depth texture if specified
-        if (desc.depth_format != Format::kUnknown) {
-            // Create depth texture
-            TextureDesc depth_desc{};
-            depth_desc.width = chosen_extent.width;
-            depth_desc.height = chosen_extent.height;
-            depth_desc.depth = 1;
-            depth_desc.format = Format::kDepth24Stencil8;  // Example format; ensure it's supported
-            depth_desc.mip_levels = 1;
-            depth_desc.array_layers = 1;
-            depth_desc.usage = TextureUsage::kDepthStencil;
-
-            TextureHandle depth_handle = CreateTexture(depth_desc);
-            // swapchain_data.depth_handle = depth_handle;
-
-        } else {
-            // swapchain_data.depth_handle = TextureHandle{0};  // Assuming TextureHandle{0} is invalid
-        }
-
-        // Define attachment options (example; adjust as needed)
-        AttachmentOptions color_attachment_options{};
-        color_attachment_options.load_op = AttachmentLoadOp::kClear;
-        color_attachment_options.store_op = AttachmentStoreOp::kStore;
-
-        if (desc.depth_format != Format::kUnknown) {
-            AttachmentOptions depth_attachment_options{};
-            depth_attachment_options.load_op = AttachmentLoadOp::kClear;
-            depth_attachment_options.store_op = AttachmentStoreOp::kDontCare;
         }
 
         // Create synchronization primitives
@@ -881,52 +815,66 @@ class VulkanRenderer : public IRenderer {
             throw std::runtime_error("Invalid SwapChainHandle provided to CreateFrameBuffer.");
         }
 
-        VulkanSwapChain& swapchain_data = swapchains_.at(handle);
+        VulkanSwapChain& sc_data = swapchains_.at(handle);
 
-        // FrameBufferDesc 생성
+        // 스왑체인 이미지 가져오기
+        std::vector<vk::Image> swapchain_images = device_.getSwapchainImagesKHR(sc_data.swapchain);
+
+        // FrameBufferDesc 초기화
         FrameBufferDesc framebuffer_desc{};
-        framebuffer_desc.width = swapchain_data.width;
-        framebuffer_desc.height = swapchain_data.height;
-        // framebuffer_desc.clear_color = {0.0f, 0.0f, 0.0f, 1.0f};
-        framebuffer_desc.clear_depth = swapchain_data.desc.depth_format != Format::kUnknown;
+        framebuffer_desc.width = sc_data.desc.width;
+        framebuffer_desc.height = sc_data.desc.height;
+        framebuffer_desc.clear_depth = sc_data.desc.depth_format != Format::kUnknown;
         framebuffer_desc.clear_depth_value = 1.0f;
         framebuffer_desc.clear_stencil_value = 0;
         framebuffer_desc.color_attachment_options = {
             AttachmentOptions{.load_op = AttachmentLoadOp::kClear, .store_op = AttachmentStoreOp::kStore}};
-        // framebuffer_desc.depth_attachment_options = swapchain_data.desc.depth_attachment_options;
 
-        // SwapChain의 각 이미지에 대해 텍스처 생성
-        // 단일 FrameBufferHandle에 여러 프레임버퍼를 생성하지 않도록 주의
-        // 여기서는 단일 FrameBufferHandle을 반환하며, 실제 애플리케이션에서는 프레임마다 별도의 FrameBuffer를 생성할 수
-        // 있습니다.
+        // 스왑체인 이미지에 대한 이미지 뷰 생성 및 TextureHandle 추가
+        for (const auto& image : swapchain_images) {
+            // CreateView 메소드를 사용하여 이미지 뷰 생성
+            vk::ImageView image_view = CreateView(image, sc_data.color_format, vk::ImageAspectFlagBits::eColor);
 
-        // FrameBufferDesc에 SwapChain 이미지 기반의 color_targets 추가
-        for (const auto& image : swapchain_it->second.swapchain.getImages()) {
-            TextureDesc color_texture_desc{
-                // .image = image, // TextureDesc에는 image 멤버가 없음; 이미 SwapChain 이미지가 VulkanTexture에
-                // 포함되어 있음
-                .format = swapchain_it->second.color_format,
-                .usage = TextureUsage::kRenderTarget,
-                // 기타 필요한 TextureDesc 초기화
-            };
-            // TextureHandle color_handle = CreateTexture(color_texture_desc); // CreateTexture를 사용하지 않음.
-            // framebuffer_desc.color_targets.emplace_back(color_handle);
-            // 위의 주석 처리된 코드는 SwapChain의 이미지를 TextureHandle로 관리하지 않으므로 실제 구현에 맞게 수정 필요
+            // TextureHandle 생성
+            TextureHandle texture_handle;
+            texture_handle.id = GenerateUniqueID();
+
+            // VulkanTexture 구조체 채우기
+            VulkanTexture vtexture;
+            vtexture.image = image;
+            vtexture.image_view = image_view;
+            vtexture.format = sc_data.color_format;
+            vtexture.extent = vk::Extent3D{sc_data.desc.width, sc_data.desc.height, 1};
+            vtexture.mip_levels = 1;
+            vtexture.array_layers = 1;
+            vtexture.usage = TextureUsage::kRenderTarget;
+            vtexture.creation_type = TextureCreationType::kSwapChain;
+
+            // textures_ 맵에 추가
+            textures_.emplace(texture_handle, vtexture);
+
+            // FrameBufferDesc의 color_targets에 이미지 뷰 추가
+            framebuffer_desc.color_targets.emplace_back(image_view);
         }
 
-        // Depth 텍스처 생성 (필요 시)
+        // 깊이 텍스처 생성 (필요 시)
         if (framebuffer_desc.clear_depth) {
             TextureDesc depth_texture_desc{
-                .format = swapchain_it->second.depth_format,
+                .format = sc_data.desc.depth_format,
                 .usage = TextureUsage::kDepthStencil,
-                .width = swapchain_data.width,
-                .height = swapchain_data.height,
-                // 기타 필요한 TextureDesc 초기화
+                .width = sc_data.desc.width,
+                .height = sc_data.desc.height,
+                .depth = 1,
+                .mip_levels = 1,
+                .array_layers = 1,
+                .memory_usage = MemoryUsage::kGpuOnly,  // 필요에 따라 조정
             };
             framebuffer_desc.depth_target = CreateTexture(depth_texture_desc);
+        } else {
+            framebuffer_desc.depth_target = TextureHandle{0};  // 유효하지 않은 TextureHandle
         }
 
-        // FrameBuffer 생성
+        // FrameBufferDesc를 사용하여 프레임버퍼 생성
         return CreateFrameBuffer(framebuffer_desc);
     }
 
@@ -1072,21 +1020,19 @@ class VulkanRenderer : public IRenderer {
 
         VulkanSwapChain& sc_data = it->second;
 
-        // Handle synchronization
+        // Synchronization primitives
         size_t frame = sc_data.current_frame;
         vk::Semaphore image_available_semaphore = sc_data.image_available_semaphores[frame];
         vk::Semaphore render_finished_semaphore = sc_data.render_finished_semaphores[frame];
         vk::Fence in_flight_fence = sc_data.in_flight_fences[frame];
 
-        // Wait for the previous frame
-        {
-            device_.waitForFences(in_flight_fence, VK_TRUE, UINT64_MAX);
-        }
+        // 이전 프레임이 완료될 때까지 대기
+        device_.waitForFences(in_flight_fence, VK_TRUE, UINT64_MAX);
 
-        // Reset the fence
+        // 펜스를 리셋
         device_.resetFences(in_flight_fence);
 
-        // Acquire image from swapchain
+        // 스왑체인에서 이미지 획득
         uint32_t image_index;
         vk::Result result = device_.acquireNextImageKHR(sc_data.swapchain, UINT64_MAX, image_available_semaphore,
                                                         nullptr, &image_index);
@@ -1096,7 +1042,14 @@ class VulkanRenderer : public IRenderer {
             throw std::runtime_error("Failed to acquire swapchain image.");
         }
 
-        // Begin command buffer
+#if 0
+        // 이미지 인덱스에 해당하는 프레임버퍼 핸들 조회
+        if (image_index >= sc_data.framebuffer_handles.size()) {
+            throw std::runtime_error("Image index out of range for framebuffer handles.");
+        }
+        FrameBufferHandle framebuffer_handle = sc_data.framebuffer_handles[image_index];
+
+        // 커맨드 버퍼 리셋 및 시작
         command_buffer_.reset({});
         vk::CommandBufferBeginInfo begin_info{};
         begin_info.flags = vk::CommandBufferUsageFlagBits::eOneTimeSubmit;
@@ -1107,58 +1060,24 @@ class VulkanRenderer : public IRenderer {
             throw std::runtime_error(std::string("Failed to begin command buffer: ") + e.what());
         }
 
-        // Begin render pass using the current framebuffer
-        VulkanRenderPass vrender_pass;  // = render_passes_[sc_data.renderpass_handle];
-        VulkanFrameBuffer& vframebuffer = framebuffers_.at(vrender_pass.renderpass_handle);
+        // 렌더 패스 시작
+        BeginPass(framebuffer_handle);
 
-        vk::RenderPassBeginInfo render_pass_info{};
-        render_pass_info.renderPass = vrender_pass.renderpass;
-        render_pass_info.framebuffer = vframebuffer.framebuffer;
-        render_pass_info.renderArea.offset = vk::Offset2D{0, 0};
-        render_pass_info.renderArea.extent = vk::Extent2D{sc_data.width, sc_data.height};
-
-        // Define clear values based on RenderPassDesc
-        RenderPassDesc pass_desc = vrender_pass.desc;
-        std::vector<vk::ClearValue> clear_values;
-        for (const auto& color : pass_desc.clear_colors) {
-            vk::ClearColorValue clear_color =
-                vk::ClearColorValue(std::array<float, 4>{color[0], color[1], color[2], color[3]});
-            clear_values.emplace_back(clear_color);
-        }
-        if (pass_desc.clear_depth) {
-            vk::ClearDepthStencilValue depth_clear = {};
-            depth_clear.depth = pass_desc.clear_depth_value;
-            depth_clear.stencil = pass_desc.clear_stencil_value;
-            clear_values.emplace_back(depth_clear);
-        }
-
-        render_pass_info.clearValueCount = static_cast<uint32_t>(clear_values.size());
-        render_pass_info.pClearValues = clear_values.data();
-
-        try {
-            command_buffer_.beginRenderPass(render_pass_info, vk::SubpassContents::eInline);
-        } catch (const std::exception& e) {
-            throw std::runtime_error(std::string("Failed to begin render pass: ") + e.what());
-        }
-
-        // Execute user-defined rendering commands
+        // 사용자 정의 렌더링 명령 실행
         callback();
 
-        // End render pass
-        try {
-            command_buffer_.endRenderPass();
-        } catch (const std::exception& e) {
-            throw std::runtime_error(std::string("Failed to end render pass: ") + e.what());
-        }
+        // 렌더 패스 종료
+        EndPass();
 
-        // End command buffer
+        // 커맨드 버퍼 종료
         try {
             command_buffer_.end();
         } catch (const std::exception& e) {
             throw std::runtime_error(std::string("Failed to end command buffer: ") + e.what());
         }
+#endif
 
-        // Submit command buffer
+        // 커맨드 버퍼 제출
         vk::SubmitInfo submit_info{};
         vk::Semaphore wait_semaphores[] = {image_available_semaphore};
         vk::PipelineStageFlags wait_stages[] = {vk::PipelineStageFlagBits::eColorAttachmentOutput};
@@ -1172,13 +1091,12 @@ class VulkanRenderer : public IRenderer {
         submit_info.pSignalSemaphores = signal_semaphores;
 
         try {
-            vk::SubmitInfo submit_info_local = submit_info;
-            graphics_queue_.submit(submit_info_local, in_flight_fence);
+            graphics_queue_.submit(submit_info, in_flight_fence);
         } catch (const std::exception& e) {
             throw std::runtime_error(std::string("Failed to submit command buffer: ") + e.what());
         }
 
-        // Present the image
+        // 이미지 프레젠트
         vk::PresentInfoKHR present_info{};
         present_info.waitSemaphoreCount = 1;
         present_info.pWaitSemaphores = signal_semaphores;
@@ -1197,7 +1115,7 @@ class VulkanRenderer : public IRenderer {
             throw std::runtime_error(std::string("Failed to present swapchain image: ") + e.what());
         }
 
-        // Advance to the next frame
+        // 다음 프레임으로 이동
         sc_data.current_frame = (sc_data.current_frame + 1) % kMaxFramesInFlight;
     }
 
@@ -1627,7 +1545,9 @@ class VulkanRenderer : public IRenderer {
                                                                               "vkCreateDebugUtilsMessengerEXT");
         if (func != nullptr) {
             VkDebugUtilsMessengerEXT messenger;
-            if (func(static_cast<VkInstance>(instance_), &create_info, nullptr, &messenger) != VK_SUCCESS) {
+            if (func(static_cast<VkInstance>(instance_),
+                     reinterpret_cast<const VkDebugUtilsMessengerCreateInfoEXT*>(&create_info), nullptr,
+                     &messenger) != VK_SUCCESS) {
                 throw std::runtime_error("Failed to set up debug messenger!");
             }
             debug_messenger_ = vk::DebugUtilsMessengerEXT(messenger);
