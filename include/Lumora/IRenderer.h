@@ -12,6 +12,7 @@ namespace lumora {
 // Resource handle definition
 struct ResourceHandle {
     uint64_t id = 0;
+
     bool operator==(const ResourceHandle& other) const { return id == other.id; }
 };
 
@@ -60,12 +61,14 @@ struct SwapChainDesc {
     // 공용체를 사용하여 플랫폼별 윈도우 핸들링
     union WindowHandle {
         void* generic = nullptr;  // 기본: nullptr
+
 #ifdef _WIN32
         struct {
             void* hwnd;
             void* hinstance;
         } win32;
 #endif
+
 #ifdef __linux__
         struct {
             void* display;
@@ -73,11 +76,13 @@ struct SwapChainDesc {
         } xlib;  // 예: Xlib
                  // Wayland 지원을 추가할 수 있습니다.
 #endif
+
 #ifdef __ANDROID__
         struct {
             void* window;  // ANativeWindow*
         } android;
 #endif
+
 #ifdef __APPLE__
         struct {
             void* view;  // NSView* for macOS, UIView* for iOS
@@ -338,11 +343,11 @@ struct FrameBufferDesc {
 
 // example
 // 단일 서브패스
-// FrameBufeferDesc pass_desc{};
+// FrameBufferDesc pass_desc{};
 // pass_desc.color_targets = {render_target};
 // pass_desc.clear_colors = {{0.2f, 0.3f, 0.4f, 1.0f}};
 // pass_desc.depth_target = depth_target;
-// subpassese가 채워지지 않았을 경우 기본은 내부적으로 kWrite로 하나의 subpassese가 만들어진다.
+// subpasses가 채워지지 않았을 경우 기본은 내부적으로 kWrite로 하나의 subpass가 만들어진다.
 // pass_desc.subpasses = {{
 //     {
 //         .color_attachments = {{render_target, AttachmentAccess::kWrite}},
@@ -358,12 +363,12 @@ struct FrameBufferDesc {
 // });
 
 // 멀티 서브패스
-// FrameBufeferDesc pass_desc{};
+// FrameBufferDesc pass_desc{};
 // pass_desc.color_targets = {render_target1, render_target2};
 // pass_desc.clear_colors = {{0.2f, 0.3f, 0.4f, 1.0f}, {0.0f, 0.0f, 0.0f, 1.0f}};
 // pass_desc.depth_target = depth_target;
 //
-// framebuffer_desc.subpasses = {
+// pass_desc.subpasses = {
 //    {
 //        .color_attachments = {{render_target1, AttachmentAccess::kWrite}},
 //        .depth_attachment = {depth_target, AttachmentAccess::kWrite},
@@ -373,28 +378,28 @@ struct FrameBufferDesc {
 //        .input_attachments = {{render_target1, AttachmentAccess::kRead}},
 //        .depth_attachment = {depth_target, AttachmentAccess::kRead},
 //    },
-//};
+// };
 //
 // renderer->Render(swapchain, [&]() {
 //    renderer->BindPass(framebuffer);
 //    renderer->BindPipeline(my_pipeline1);
 //    renderer->DrawIndexed(36);
-//	  renderer->NextPass();
+//    renderer->NextPass();
 //    renderer->BindPipeline(my_pipeline2);
 //    renderer->DrawIndexed(36);
 //    renderer->EndPass();
-//});
-
+// });
+//
 // renderer->Render(swapchain, {[](){
 //   renderer->BeginPass(framebuffer); // BeginPass
-//   렌더패스를 호출한다.
-//   renderer->BindPipeline(myPipeline);
-//   renderer->BindBuffer(myVbo);
-//   renderer->BindBuffer(myIbo);
+//   // 렌더패스를 호출한다.
+//   renderer->BindPipeline(my_pipeline);
+//   renderer->BindBuffer(my_vbo);
+//   renderer->BindBuffer(my_ibo);
 //   renderer->BindTexture(...);
 //   renderer->DrawIndexed(36); // e.g. a cube with 36 indices
 //   renderer->EndPass();
-//}});
+// }});
 
 // Renderer Interface
 class IRenderer {

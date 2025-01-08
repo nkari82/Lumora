@@ -21,19 +21,18 @@
 #include <vk_mem_alloc.h>
 
 // For debug messenger
-VKAPI_ATTR VkBool32 VKAPI_CALL debugCallback(VkDebugUtilsMessageSeverityFlagBitsEXT messageSeverity,
-                                             VkDebugUtilsMessageTypeFlagsEXT messageType,
-                                             const VkDebugUtilsMessengerCallbackDataEXT* pCallbackData,
-                                             void* pUserData) {
-    std::cerr << "Validation Layer: " << pCallbackData->pMessage << std::endl;
-
+VKAPI_ATTR VkBool32 VKAPI_CALL DebugCallback(VkDebugUtilsMessageSeverityFlagBitsEXT message_severity,
+                                             VkDebugUtilsMessageTypeFlagsEXT message_type,
+                                             const VkDebugUtilsMessengerCallbackDataEXT* p_callback_data,
+                                             void* p_user_data) {
+    std::cerr << "Validation Layer: " << p_callback_data->pMessage << std::endl;
     return VK_FALSE;
 }
 
 namespace lumora {
 
 // Constants
-const int MAX_FRAMES_IN_FLIGHT = 2;
+const int kMaxFramesInFlight = 2;
 
 // Internal Resource Handle
 struct RenderPassHandle : ResourceHandle {};
@@ -123,7 +122,7 @@ struct VulkanFrameBuffer : VulkanRef {
 struct VulkanRenderPass : VulkanRef {
     RenderPassDesc desc;
     vk::RenderPass renderpass;
-    uint64_t descHash;
+    uint64_t desc_hash;
 };
 
 struct VulkanSwapChain : VulkanRef {
@@ -133,7 +132,7 @@ struct VulkanSwapChain : VulkanRef {
     vk::SwapchainKHR swapchain;
     vk::Format color_format;
     vk::Format depth_format;
-    //  Synchronization primitives
+    // Synchronization primitives
     std::vector<vk::Semaphore> image_available_semaphores;
     std::vector<vk::Semaphore> render_finished_semaphores;
     std::vector<vk::Fence> in_flight_fences;
@@ -141,9 +140,9 @@ struct VulkanSwapChain : VulkanRef {
 };
 
 struct DescriptorSet {
-    vk::DescriptorSet descriptorSet;
-    std::vector<vk::DescriptorBufferInfo> bufferInfos;
-    std::vector<vk::DescriptorImageInfo> imageInfos;
+    vk::DescriptorSet descriptor_set;
+    std::vector<vk::DescriptorBufferInfo> buffer_infos;
+    std::vector<vk::DescriptorImageInfo> image_infos;
 };
 
 class VulkanRenderer : public IRenderer {
@@ -152,237 +151,238 @@ class VulkanRenderer : public IRenderer {
         // Constructor
     }
 
-    ~VulkanRenderer() { Close(); }
+    ~VulkanRenderer() override { Close(); }
 
-    void Open(const char* app_name) { InitVulkan(app_name); }
+    void Open(const char* app_name) override { InitVulkan(app_name); }
 
-    void Close() { CleanupVulkan(); }
+    void Close() override { CleanupVulkan(); }
 
     // public
     SwapChainHandle CreateSwapChain(const SwapChainDesc& desc) override {
-        std::lock_guard<std::recursive_mutex> lock(resourceMutex);
+        std::lock_guard<std::recursive_mutex> lock_(resource_mutex_);
 
         // Create surface if not already created
-        if (!surface) {
+        if (!surface_) {
             CreateSurface(desc);
         }
 
         // Choose surface format, present mode, and swap extent
-        auto surfaceFormats = physicalDevice.getSurfaceFormatsKHR(surface);
-        vk::SurfaceFormatKHR chosenFormat = surfaceFormats[0];
-        for (const auto& availableFormat : surfaceFormats) {
-            if (availableFormat.format == vk::Format::eB8G8R8A8Unorm &&
-                availableFormat.colorSpace == vk::ColorSpaceKHR::eSrgbNonlinear) {
-                chosenFormat = availableFormat;
+        auto surface_formats = physical_device_.getSurfaceFormatsKHR(surface_);
+        vk::SurfaceFormatKHR chosen_format = surface_formats[0];
+        for (const auto& available_format : surface_formats) {
+            if (available_format.format == vk::Format::eB8G8R8A8Unorm &&
+                available_format.colorSpace == vk::ColorSpaceKHR::eSrgbNonlinear) {
+                chosen_format = available_format;
                 break;
             }
         }
 
-        auto presentModes = physicalDevice.getSurfacePresentModesKHR(surface);
-        vk::PresentModeKHR chosenPresentMode = vk::PresentModeKHR::eFifo;
-        for (const auto& availablePresentMode : presentModes) {
-            if (availablePresentMode == vk::PresentModeKHR::eMailbox) {
-                chosenPresentMode = availablePresentMode;
+        auto present_modes = physical_device_.getSurfacePresentModesKHR(surface_);
+        vk::PresentModeKHR chosen_present_mode = vk::PresentModeKHR::eFifo;
+        for (const auto& available_present_mode : present_modes) {
+            if (available_present_mode == vk::PresentModeKHR::eMailbox) {
+                chosen_present_mode = available_present_mode;
                 break;
             }
         }
 
-        auto capabilities = physicalDevice.getSurfaceCapabilitiesKHR(surface);
-        vk::Extent2D chosenExtent = {};
+        auto capabilities = physical_device_.getSurfaceCapabilitiesKHR(surface_);
+        vk::Extent2D chosen_extent = {};
         if (capabilities.currentExtent.width != UINT32_MAX) {
-            chosenExtent = capabilities.currentExtent;
+            chosen_extent = capabilities.currentExtent;
         } else {
-            chosenExtent.width = std::clamp(static_cast<uint32_t>(desc.width), capabilities.minImageExtent.width,
-                                            capabilities.maxImageExtent.width);
-            chosenExtent.height = std::clamp(static_cast<uint32_t>(desc.height), capabilities.minImageExtent.height,
-                                             capabilities.maxImageExtent.height);
+            chosen_extent.width = std::clamp(static_cast<uint32_t>(desc.width), capabilities.minImageExtent.width,
+                                             capabilities.maxImageExtent.width);
+            chosen_extent.height = std::clamp(static_cast<uint32_t>(desc.height), capabilities.minImageExtent.height,
+                                              capabilities.maxImageExtent.height);
         }
 
-        uint32_t imageCount = desc.buffer_count;
-        if (capabilities.maxImageCount > 0 && imageCount > capabilities.maxImageCount) {
-            imageCount = capabilities.maxImageCount;
+        uint32_t image_count = desc.buffer_count;
+        if (capabilities.maxImageCount > 0 && image_count > capabilities.maxImageCount) {
+            image_count = capabilities.maxImageCount;
         }
 
-        vk::SwapchainCreateInfoKHR swapChainInfo{};
-        swapChainInfo.surface = surface;
-        swapChainInfo.minImageCount = imageCount;
-        swapChainInfo.imageFormat = chosenFormat.format;
-        swapChainInfo.imageColorSpace = chosenFormat.colorSpace;
-        swapChainInfo.imageExtent = chosenExtent;
-        swapChainInfo.imageArrayLayers = 1;
-        swapChainInfo.imageUsage = vk::ImageUsageFlagBits::eColorAttachment;
+        vk::SwapchainCreateInfoKHR swapchain_info{};
+        swapchain_info.surface = surface_;
+        swapchain_info.minImageCount = image_count;
+        swapchain_info.imageFormat = chosen_format.format;
+        swapchain_info.imageColorSpace = chosen_format.colorSpace;
+        swapchain_info.imageExtent = chosen_extent;
+        swapchain_info.imageArrayLayers = 1;
+        swapchain_info.imageUsage = vk::ImageUsageFlagBits::eColorAttachment;
 
         // Handle queue families
-        uint32_t queueFamilyIndices[] = {graphicsQueueFamily};
-        if (graphicsQueueFamily != graphicsQueueFamily) {  // This condition is always false; likely a typo
-            swapChainInfo.imageSharingMode = vk::SharingMode::eConcurrent;
-            swapChainInfo.queueFamilyIndexCount = 1;
-            swapChainInfo.pQueueFamilyIndices = queueFamilyIndices;
+        uint32_t queue_family_indices[] = {graphics_queue_family_};
+        if (graphics_queue_family_ != graphics_queue_family_) {  // This condition is always false; likely a typo
+            swapchain_info.imageSharingMode = vk::SharingMode::eConcurrent;
+            swapchain_info.queueFamilyIndexCount = 1;
+            swapchain_info.pQueueFamilyIndices = queue_family_indices;
         } else {
-            swapChainInfo.imageSharingMode = vk::SharingMode::eExclusive;
+            swapchain_info.imageSharingMode = vk::SharingMode::eExclusive;
         }
 
-        swapChainInfo.preTransform = capabilities.currentTransform;
-        swapChainInfo.compositeAlpha = vk::CompositeAlphaFlagBitsKHR::eOpaque;
-        swapChainInfo.presentMode = chosenPresentMode;
-        swapChainInfo.clipped = VK_TRUE;
-        swapChainInfo.oldSwapchain = nullptr;
+        swapchain_info.preTransform = capabilities.currentTransform;
+        swapchain_info.compositeAlpha = vk::CompositeAlphaFlagBitsKHR::eOpaque;
+        swapchain_info.presentMode = chosen_present_mode;
+        swapchain_info.clipped = VK_TRUE;
+        swapchain_info.oldSwapchain = nullptr;
 
-        VulkanSwapChain swapChain;
+        VulkanSwapChain swapchain_data;
 
         try {
-            swapChain.swapchain = device.createSwapchainKHR(swapChainInfo);
+            swapchain_data.swapchain = device_.createSwapchainKHR(swapchain_info);
         } catch (const std::exception& e) {
             throw std::runtime_error(std::string("Failed to create swap chain: ") + e.what());
         }
 
-        swapChain.color_format = chosenFormat.format;
+        swapchain_data.color_format = chosen_format.format;
         // Determine depth format based on available formats or use a default
-        swapChain.depth_format = vk::Format::eD24UnormS8Uint;  // Example format; consider querying supported formats
+        swapchain_data.depth_format =
+            vk::Format::eD24UnormS8Uint;  // Example format; consider querying supported formats
 
         // Retrieve swap chain images
-        std::vector<vk::Image> swapchainImages = device.getSwapchainImagesKHR(swapChain.swapchain);
+        std::vector<vk::Image> swapchain_images = device_.getSwapchainImagesKHR(swapchain_data.swapchain);
 
-        // For each swapchain image, create a VulkanTexture with creationType = kSwapChain
-        for (const auto& image : swapchainImages) {
-            VulkanTexture vTexture;
-            vTexture.image = image;
-            vTexture.creation_type = TextureCreationType::kSwapChain;  // Set creationType
+        // For each swapchain image, create a VulkanTexture with creation_type = kSwapChain
+        for (const auto& image : swapchain_images) {
+            VulkanTexture vtexture;
+            vtexture.image = image;
+            vtexture.creation_type = TextureCreationType::kSwapChain;  // Set creation_type
             // No allocation with VMA for external images
-            vTexture.allocation = VK_NULL_HANDLE;  // Indicate no allocation
-            vTexture.format = swapChain.color_format;
-            vTexture.extent = vk::Extent3D{chosenExtent.width, chosenExtent.height, 1};
-            vTexture.mip_levels = 1;
-            vTexture.array_layers = 1;
-            vTexture.usage = TextureUsage::kRenderTarget;  // Example usage; adjust as needed
+            vtexture.allocation = VK_NULL_HANDLE;  // Indicate no allocation
+            vtexture.format = swapchain_data.color_format;
+            vtexture.extent = vk::Extent3D{chosen_extent.width, chosen_extent.height, 1};
+            vtexture.mip_levels = 1;
+            vtexture.array_layers = 1;
+            vtexture.usage = TextureUsage::kRenderTarget;  // Example usage; adjust as needed
 
             // Create image view using the shared CreateView method
-            vk::ImageAspectFlags aspectMask = vk::ImageAspectFlagBits::eColor;
-            vTexture.image_view = CreateView(vTexture.image, vTexture.format, aspectMask);
+            vk::ImageAspectFlags aspect_mask = vk::ImageAspectFlagBits::eColor;
+            vtexture.image_view = CreateView(vtexture.image, vtexture.format, aspect_mask);
 
             // Create a TextureHandle for this image
-            TextureHandle textureHandle;
-            textureHandle.id = GenerateUniqueID();
-            textures[textureHandle] = vTexture;
+            TextureHandle texture_handle;
+            texture_handle.id = GenerateUniqueID();
+            textures_.emplace(texture_handle, vtexture);
 
-            // Add the TextureHandle to the swapchain's colorHandles vector
-            // swapChain.color_handles.push_back(textureHandle);
+            // Add the TextureHandle to the swapchain's color_handles vector
+            // swapchain_data.color_handles.push_back(texture_handle);
         }
 
         // Handle depth texture if specified
         if (desc.depth_format != Format::kUnknown) {
             // Create depth texture
-            TextureDesc depthDesc{};
-            depthDesc.width = chosenExtent.width;
-            depthDesc.height = chosenExtent.height;
-            depthDesc.depth = 1;
-            depthDesc.format = Format::kDepth24Stencil8;  // Example format; ensure it's supported
-            depthDesc.mip_levels = 1;
-            depthDesc.array_layers = 1;
-            depthDesc.usage = TextureUsage::kDepthStencil;
+            TextureDesc depth_desc{};
+            depth_desc.width = chosen_extent.width;
+            depth_desc.height = chosen_extent.height;
+            depth_desc.depth = 1;
+            depth_desc.format = Format::kDepth24Stencil8;  // Example format; ensure it's supported
+            depth_desc.mip_levels = 1;
+            depth_desc.array_layers = 1;
+            depth_desc.usage = TextureUsage::kDepthStencil;
 
-            TextureHandle depthHandle = CreateTexture(depthDesc);
-            // swapChain.depth_handle = depthHandle;
+            TextureHandle depth_handle = CreateTexture(depth_desc);
+            // swapchain_data.depth_handle = depth_handle;
 
         } else {
-            // swapChain.depth_handle = TextureHandle{0};  // Assuming TextureHandle{0} is invalid
+            // swapchain_data.depth_handle = TextureHandle{0};  // Assuming TextureHandle{0} is invalid
         }
 
         // Define attachment options (example; adjust as needed)
-        AttachmentOptions colorAttachmentOptions{};
-        colorAttachmentOptions.load_op = AttachmentLoadOp::kClear;
-        colorAttachmentOptions.store_op = AttachmentStoreOp::kStore;
+        AttachmentOptions color_attachment_options{};
+        color_attachment_options.load_op = AttachmentLoadOp::kClear;
+        color_attachment_options.store_op = AttachmentStoreOp::kStore;
 
         if (desc.depth_format != Format::kUnknown) {
-            AttachmentOptions depthAttachmentOptions{};
-            depthAttachmentOptions.load_op = AttachmentLoadOp::kClear;
-            depthAttachmentOptions.store_op = AttachmentStoreOp::kDontCare;
+            AttachmentOptions depth_attachment_options{};
+            depth_attachment_options.load_op = AttachmentLoadOp::kClear;
+            depth_attachment_options.store_op = AttachmentStoreOp::kDontCare;
         }
 
         // Create synchronization primitives
-        SetupSynchronization(swapChain);
+        SetupSynchronization(swapchain_data);
 
         SwapChainHandle handle;
         handle.id = GenerateUniqueID();
-        swap_chains[handle] = swapChain;
+        swapchains_.emplace(handle, swapchain_data);
 
         return handle;
     }
 
     BufferHandle CreateBuffer(const BufferDesc& desc) override {
-        VulkanBuffer vBuffer;
+        VulkanBuffer vbuffer;
 
-        vk::BufferCreateInfo bufferInfo{};
-        bufferInfo.size = desc.size;
-        bufferInfo.usage = vk::BufferUsageFlagBits::eVertexBuffer;  // Adjust based on desc.usage
+        vk::BufferCreateInfo buffer_info{};
+        buffer_info.size = desc.size;
+        buffer_info.usage = vk::BufferUsageFlagBits::eVertexBuffer;  // Adjust based on desc.usage
 
         if (desc.usage & BufferUsage::kVertex)
-            bufferInfo.usage |= vk::BufferUsageFlagBits::eVertexBuffer;
+            buffer_info.usage |= vk::BufferUsageFlagBits::eVertexBuffer;
         if (desc.usage & BufferUsage::kIndex)
-            bufferInfo.usage |= vk::BufferUsageFlagBits::eIndexBuffer;
+            buffer_info.usage |= vk::BufferUsageFlagBits::eIndexBuffer;
         if (desc.usage & BufferUsage::kUniform)
-            bufferInfo.usage |= vk::BufferUsageFlagBits::eUniformBuffer;
+            buffer_info.usage |= vk::BufferUsageFlagBits::eUniformBuffer;
         if (desc.usage & BufferUsage::kStorage)
-            bufferInfo.usage |= vk::BufferUsageFlagBits::eStorageBuffer;
+            buffer_info.usage |= vk::BufferUsageFlagBits::eStorageBuffer;
         if (desc.usage & BufferUsage::kIndirect)
-            bufferInfo.usage |= vk::BufferUsageFlagBits::eIndirectBuffer;
+            buffer_info.usage |= vk::BufferUsageFlagBits::eIndirectBuffer;
 
-        VmaAllocationCreateInfo allocInfo = {};
-        vBuffer.memory_usage = desc.memory_usage;
+        VmaAllocationCreateInfo alloc_info = {};
+        vbuffer.memory_usage = desc.memory_usage;
         switch (desc.memory_usage) {
             case MemoryUsage::kGpuOnly:
-                allocInfo.usage = VMA_MEMORY_USAGE_GPU_ONLY;
+                alloc_info.usage = VMA_MEMORY_USAGE_GPU_ONLY;
                 break;
             case MemoryUsage::kCpuToGpu:
-                allocInfo.usage = VMA_MEMORY_USAGE_CPU_TO_GPU;
+                alloc_info.usage = VMA_MEMORY_USAGE_CPU_TO_GPU;
                 break;
             case MemoryUsage::kAuto:
             default:
-                allocInfo.usage = VMA_MEMORY_USAGE_AUTO;
+                alloc_info.usage = VMA_MEMORY_USAGE_AUTO;
                 break;
         }
 
         VkBuffer buffer;
         VmaAllocation allocation;
-        if (vmaCreateBuffer(allocator, reinterpret_cast<const VkBufferCreateInfo*>(&bufferInfo), &allocInfo, &buffer,
+        if (vmaCreateBuffer(allocator_, reinterpret_cast<const VkBufferCreateInfo*>(&buffer_info), &alloc_info, &buffer,
                             &allocation, nullptr) != VK_SUCCESS) {
             throw std::runtime_error("Failed to create buffer.");
         }
 
-        vBuffer.buffer = vk::Buffer(buffer);
-        vBuffer.allocation = allocation;
-        vBuffer.size = desc.size;
-        vBuffer.usage = bufferInfo.usage;
+        vbuffer.buffer = vk::Buffer(buffer);
+        vbuffer.allocation = allocation;
+        vbuffer.size = desc.size;
+        vbuffer.usage = buffer_info.usage;
 
         BufferHandle handle;
         handle.id = GenerateUniqueID();
         {
-            std::lock_guard<std::recursive_mutex> lock(resourceMutex);
-            buffers[handle] = vBuffer;
+            std::lock_guard<std::recursive_mutex> lock_(resource_mutex_);
+            buffers_.emplace(handle, vbuffer);
         }
 
         return handle;
     }
 
     void UpdateBuffer(const BufferHandle& handle, const void* data, size_t size) override {
-        std::lock_guard<std::recursive_mutex> lock(resourceMutex);
-        auto it = buffers.find(handle);
-        if (it == buffers.end()) {
+        std::lock_guard<std::recursive_mutex> lock_(resource_mutex_);
+        auto it = buffers_.find(handle);
+        if (it == buffers_.end()) {
             throw std::runtime_error("Invalid BufferHandle provided to UpdateBuffer.");
         }
 
-        VulkanBuffer& vBuffer = it->second;
+        VulkanBuffer& vbuffer = it->second;
 
-        void* mappedData;
-        vmaMapMemory(allocator, vBuffer.allocation, &mappedData);
-        memcpy(mappedData, data, size);
-        vmaUnmapMemory(allocator, vBuffer.allocation);
+        void* mapped_data;
+        vmaMapMemory(allocator_, vbuffer.allocation, &mapped_data);
+        std::memcpy(mapped_data, data, size);
+        vmaUnmapMemory(allocator_, vbuffer.allocation);
     }
 
-    void BindBuffer(const BufferHandle& handle, uint32_t bind_point, uint32_t dynamic_offset) override {
-        std::lock_guard<std::recursive_mutex> lock(resourceMutex);
-        auto bufferIt = buffers.find(handle);
-        if (bufferIt == buffers.end()) {
+    void BindBuffer(const BufferHandle& handle, uint32_t bind_point, uint32_t dynamic_offset = 0) override {
+        std::lock_guard<std::recursive_mutex> lock_(resource_mutex_);
+        auto buffer_it = buffers_.find(handle);
+        if (buffer_it == buffers_.end()) {
             throw std::runtime_error("Invalid BufferHandle provided to BindBuffer.");
         }
 
@@ -391,91 +391,91 @@ class VulkanRenderer : public IRenderer {
         UpdateDescriptorSet(handle, TextureHandle{0}, ds);  // Assuming no texture binding here
 
         // Bind descriptor set
-        commandBuffer.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, pipelineLayout, 0, ds.descriptorSet,
-                                         nullptr);
+        command_buffer_.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, pipeline_layout_, 0, ds.descriptor_set,
+                                           nullptr);
     }
 
     TextureHandle CreateTexture(const TextureDesc& desc) override {
-        VulkanTexture vTexture;
+        VulkanTexture vtexture;
 
-        vk::ImageCreateInfo imageInfo{};
-        imageInfo.imageType = (desc.type == TextureType::k2D)   ? vk::ImageType::e2D
-                              : (desc.type == TextureType::k3D) ? vk::ImageType::e3D
-                                                                : vk::ImageType::e2D;  // Default to 2D
-        imageInfo.extent.width = desc.width;
-        imageInfo.extent.height = desc.height;
-        imageInfo.extent.depth = desc.depth;
-        imageInfo.mipLevels = desc.mip_levels;
-        imageInfo.arrayLayers = desc.array_layers;
-        imageInfo.format = MapFormat(desc.format);
-        imageInfo.tiling = vk::ImageTiling::eOptimal;
-        imageInfo.initialLayout = vk::ImageLayout::eUndefined;
-        imageInfo.usage = vk::ImageUsageFlagBits::eSampled;
+        vk::ImageCreateInfo image_info{};
+        image_info.imageType = (desc.type == TextureType::k2D)   ? vk::ImageType::e2D
+                               : (desc.type == TextureType::k3D) ? vk::ImageType::e3D
+                                                                 : vk::ImageType::e2D;  // Default to 2D
+        image_info.extent.width = desc.width;
+        image_info.extent.height = desc.height;
+        image_info.extent.depth = desc.depth;
+        image_info.mipLevels = desc.mip_levels;
+        image_info.arrayLayers = desc.array_layers;
+        image_info.format = MapFormat(desc.format);
+        image_info.tiling = vk::ImageTiling::eOptimal;
+        image_info.initialLayout = vk::ImageLayout::eUndefined;
+        image_info.usage = vk::ImageUsageFlagBits::eSampled;
         if (desc.usage & TextureUsage::kRenderTarget)
-            imageInfo.usage |= vk::ImageUsageFlagBits::eColorAttachment;
+            image_info.usage |= vk::ImageUsageFlagBits::eColorAttachment;
         if (desc.usage & TextureUsage::kDepthStencil)
-            imageInfo.usage |= vk::ImageUsageFlagBits::eDepthStencilAttachment;
+            image_info.usage |= vk::ImageUsageFlagBits::eDepthStencilAttachment;
         if (desc.usage & TextureUsage::kStorage)
-            imageInfo.usage |= vk::ImageUsageFlagBits::eStorage;
+            image_info.usage |= vk::ImageUsageFlagBits::eStorage;
         if (desc.usage & TextureUsage::kInputAttachment)
-            imageInfo.usage |= vk::ImageUsageFlagBits::eInputAttachment;
+            image_info.usage |= vk::ImageUsageFlagBits::eInputAttachment;
 
-        VmaAllocationCreateInfo allocInfo = {};
-        vTexture.memory_usage = desc.memory_usage;
+        VmaAllocationCreateInfo alloc_info = {};
+        vtexture.memory_usage = desc.memory_usage;
         switch (desc.memory_usage) {
             case MemoryUsage::kGpuOnly:
-                allocInfo.usage = VMA_MEMORY_USAGE_GPU_ONLY;
+                alloc_info.usage = VMA_MEMORY_USAGE_GPU_ONLY;
                 break;
             case MemoryUsage::kCpuToGpu:
-                allocInfo.usage = VMA_MEMORY_USAGE_CPU_TO_GPU;
+                alloc_info.usage = VMA_MEMORY_USAGE_CPU_TO_GPU;
                 break;
             case MemoryUsage::kAuto:
             default:
-                allocInfo.usage = VMA_MEMORY_USAGE_AUTO;
+                alloc_info.usage = VMA_MEMORY_USAGE_AUTO;
                 break;
         }
 
         VkImage image;
         VmaAllocation allocation;
-        if (vmaCreateImage(allocator, reinterpret_cast<const VkImageCreateInfo*>(&imageInfo), &allocInfo, &image,
+        if (vmaCreateImage(allocator_, reinterpret_cast<const VkImageCreateInfo*>(&image_info), &alloc_info, &image,
                            &allocation, nullptr) != VK_SUCCESS) {
             throw std::runtime_error("Failed to create image.");
         }
 
-        vTexture.image = vk::Image(image);
-        vTexture.allocation = allocation;
-        vTexture.format = imageInfo.format;
-        vTexture.extent = imageInfo.extent;
-        vTexture.mip_levels = imageInfo.mipLevels;
-        vTexture.array_layers = imageInfo.arrayLayers;
-        vTexture.creation_type = TextureCreationType::kRegular;  // Default creationType
+        vtexture.image = vk::Image(image);
+        vtexture.allocation = allocation;
+        vtexture.format = image_info.format;
+        vtexture.extent = image_info.extent;
+        vtexture.mip_levels = image_info.mipLevels;
+        vtexture.array_layers = image_info.arrayLayers;
+        vtexture.creation_type = TextureCreationType::kRegular;  // Default creation_type
 
         // Determine aspect mask
-        vk::ImageAspectFlags aspectMask = vk::ImageAspectFlagBits::eColor;
+        vk::ImageAspectFlags aspect_mask = vk::ImageAspectFlagBits::eColor;
         if (desc.usage & TextureUsage::kDepthStencil) {
-            aspectMask = vk::ImageAspectFlagBits::eDepth;
-            if (imageInfo.format == vk::Format::eD24UnormS8Uint || imageInfo.format == vk::Format::eD32SfloatS8Uint) {
-                aspectMask |= vk::ImageAspectFlagBits::eStencil;
+            aspect_mask = vk::ImageAspectFlagBits::eDepth;
+            if (image_info.format == vk::Format::eD24UnormS8Uint || image_info.format == vk::Format::eD32SfloatS8Uint) {
+                aspect_mask |= vk::ImageAspectFlagBits::eStencil;
             }
         }
 
         // Create image view using the shared CreateView method
-        vTexture.image_view = CreateView(vTexture.image, vTexture.format, aspectMask);
+        vtexture.image_view = CreateView(vtexture.image, vtexture.format, aspect_mask);
 
         TextureHandle handle;
         handle.id = GenerateUniqueID();
         {
-            std::lock_guard<std::recursive_mutex> lock(resourceMutex);  // #FIXME recursive lock
-            textures[handle] = vTexture;
+            std::lock_guard<std::recursive_mutex> lock_(resource_mutex_);  // #FIXME recursive lock
+            textures_.emplace(handle, vtexture);
         }
 
         return handle;
     }
 
     void BindTexture(const TextureHandle& handle, uint32_t bind_point) override {
-        std::lock_guard<std::recursive_mutex> lock(resourceMutex);
-        auto textureIt = textures.find(handle);
-        if (textureIt == textures.end()) {
+        std::lock_guard<std::recursive_mutex> lock_(resource_mutex_);
+        auto texture_it = textures_.find(handle);
+        if (texture_it == textures_.end()) {
             throw std::runtime_error("Invalid TextureHandle provided to BindTexture.");
         }
 
@@ -484,30 +484,30 @@ class VulkanRenderer : public IRenderer {
         UpdateDescriptorSet(BufferHandle{0}, handle, ds);  // Assuming no buffer binding here
 
         // Bind descriptor set
-        commandBuffer.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, pipelineLayout, 0, ds.descriptorSet,
-                                         nullptr);
+        command_buffer_.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, pipeline_layout_, 0, ds.descriptor_set,
+                                           nullptr);
     }
 
     SamplerHandle CreateSampler(const SamplerDesc& desc) override {
-        VulkanSampler vSampler;
-        vSampler.desc = desc;  // Store sampler description
+        VulkanSampler vsampler;
+        vsampler.desc = desc;  // Store sampler description
 
-        vk::SamplerCreateInfo samplerInfo{};
-        samplerInfo.magFilter = static_cast<vk::Filter>(desc.mag_filter);
-        samplerInfo.minFilter = static_cast<vk::Filter>(desc.min_filter);
-        samplerInfo.addressModeU = static_cast<vk::SamplerAddressMode>(desc.address_mode_u);
-        samplerInfo.addressModeV = static_cast<vk::SamplerAddressMode>(desc.address_mode_v);
-        samplerInfo.addressModeW = static_cast<vk::SamplerAddressMode>(desc.address_mode_w);
-        samplerInfo.anisotropyEnable = VK_TRUE;
-        samplerInfo.maxAnisotropy = 16.0f;  // Example value
-        samplerInfo.borderColor = vk::BorderColor::eIntOpaqueBlack;
-        samplerInfo.unnormalizedCoordinates = VK_FALSE;
-        samplerInfo.compareEnable = VK_FALSE;
-        samplerInfo.compareOp = vk::CompareOp::eAlways;
-        samplerInfo.mipmapMode = vk::SamplerMipmapMode::eLinear;
+        vk::SamplerCreateInfo sampler_info{};
+        sampler_info.magFilter = static_cast<vk::Filter>(desc.mag_filter);
+        sampler_info.minFilter = static_cast<vk::Filter>(desc.min_filter);
+        sampler_info.addressModeU = static_cast<vk::SamplerAddressMode>(desc.address_mode_u);
+        sampler_info.addressModeV = static_cast<vk::SamplerAddressMode>(desc.address_mode_v);
+        sampler_info.addressModeW = static_cast<vk::SamplerAddressMode>(desc.address_mode_w);
+        sampler_info.anisotropyEnable = VK_TRUE;
+        sampler_info.maxAnisotropy = 16.0f;  // Example value
+        sampler_info.borderColor = vk::BorderColor::eIntOpaqueBlack;
+        sampler_info.unnormalizedCoordinates = VK_FALSE;
+        sampler_info.compareEnable = VK_FALSE;
+        sampler_info.compareOp = vk::CompareOp::eAlways;
+        sampler_info.mipmapMode = vk::SamplerMipmapMode::eLinear;
 
         try {
-            vSampler.sampler = device.createSampler(samplerInfo);
+            vsampler.sampler = device_.createSampler(sampler_info);
         } catch (const std::exception& e) {
             throw std::runtime_error(std::string("Failed to create sampler: ") + e.what());
         }
@@ -515,17 +515,17 @@ class VulkanRenderer : public IRenderer {
         SamplerHandle handle;
         handle.id = GenerateUniqueID();
         {
-            std::lock_guard<std::recursive_mutex> lock(resourceMutex);
-            samplers[handle] = vSampler;
+            std::lock_guard<std::recursive_mutex> lock_(resource_mutex_);
+            samplers_.emplace(handle, vsampler);
         }
 
         return handle;
     }
 
     void BindSampler(const SamplerHandle& handle, uint32_t bind_point) override {
-        std::lock_guard<std::recursive_mutex> lock(resourceMutex);
-        auto samplerIt = samplers.find(handle);
-        if (samplerIt == samplers.end()) {
+        std::lock_guard<std::recursive_mutex> lock_(resource_mutex_);
+        auto sampler_it = samplers_.find(handle);
+        if (sampler_it == samplers_.end()) {
             throw std::runtime_error("Invalid SamplerHandle provided to BindSampler.");
         }
 
@@ -534,8 +534,8 @@ class VulkanRenderer : public IRenderer {
     }
 
     ShaderHandle CreateShader(const ShaderDesc& desc) override {
-        VulkanShader vShader;
-        vShader.desc = desc;  // Store shader description
+        VulkanShader vshader;
+        vshader.desc = desc;  // Store shader description
 
         // Load shader code from file (SPIR-V binary)
         std::ifstream file(desc.file_path, std::ios::ate | std::ios::binary);
@@ -543,62 +543,62 @@ class VulkanRenderer : public IRenderer {
             throw std::runtime_error("Failed to open shader file.");
         }
 
-        size_t fileSize = static_cast<size_t>(file.tellg());
-        std::vector<char> buffer(fileSize);
+        size_t file_size = static_cast<size_t>(file.tellg());
+        std::vector<char> buffer(file_size);
         file.seekg(0);
-        file.read(buffer.data(), fileSize);
+        file.read(buffer.data(), file_size);
         file.close();
 
-        vShader.shader_module = CreateShaderModule(buffer);
+        vshader.shader_module = CreateShaderModule(buffer);
 
         ShaderHandle handle;
         handle.id = GenerateUniqueID();
         {
-            std::lock_guard<std::recursive_mutex> lock(resourceMutex);
-            shaders[handle] = vShader;
+            std::lock_guard<std::recursive_mutex> lock_(resource_mutex_);
+            shaders_.emplace(handle, vshader);
         }
 
         return handle;
     }
 
     PipelineHandle CreatePipeline(const PipelineDesc& desc) override {
-        VulkanPipeline vPipeline;
-        vPipeline.desc = desc;  // Store pipeline description
+        VulkanPipeline vpipeline;
+        vpipeline.desc = desc;  // Store pipeline description
 
         // Create shader stages
-        std::vector<vk::PipelineShaderStageCreateInfo> shaderStages;
+        std::vector<vk::PipelineShaderStageCreateInfo> shader_stages;
 
         // Vertex Shader Stage
         if (desc.vertex_shader.id != 0) {
-            auto vertShaderIt = shaders.find(desc.vertex_shader);
-            if (vertShaderIt == shaders.end()) {
+            auto vert_shader_it = shaders_.find(desc.vertex_shader);
+            if (vert_shader_it == shaders_.end()) {
                 throw std::runtime_error("Invalid VertexShaderHandle provided to CreatePipeline.");
             }
 
-            vk::PipelineShaderStageCreateInfo vertShaderStageInfo{};
-            vertShaderStageInfo.stage = vk::ShaderStageFlagBits::eVertex;
-            vertShaderStageInfo.module = vertShaderIt->second.shader_module;
-            vertShaderStageInfo.pName = "main";
-            shaderStages.push_back(vertShaderStageInfo);
+            vk::PipelineShaderStageCreateInfo vert_shader_stage_info{};
+            vert_shader_stage_info.stage = vk::ShaderStageFlagBits::eVertex;
+            vert_shader_stage_info.module = vert_shader_it->second.shader_module;
+            vert_shader_stage_info.pName = "main";
+            shader_stages.push_back(vert_shader_stage_info);
         }
 
         // Fragment Shader Stage
         if (desc.fragment_shader.id != 0) {
-            auto fragShaderIt = shaders.find(desc.fragment_shader);
-            if (fragShaderIt == shaders.end()) {
+            auto frag_shader_it = shaders_.find(desc.fragment_shader);
+            if (frag_shader_it == shaders_.end()) {
                 throw std::runtime_error("Invalid FragmentShaderHandle provided to CreatePipeline.");
             }
 
-            vk::PipelineShaderStageCreateInfo fragShaderStageInfo{};
-            fragShaderStageInfo.stage = vk::ShaderStageFlagBits::eFragment;
-            fragShaderStageInfo.module = fragShaderIt->second.shader_module;
-            fragShaderStageInfo.pName = "main";
-            shaderStages.push_back(fragShaderStageInfo);
+            vk::PipelineShaderStageCreateInfo frag_shader_stage_info{};
+            frag_shader_stage_info.stage = vk::ShaderStageFlagBits::eFragment;
+            frag_shader_stage_info.module = frag_shader_it->second.shader_module;
+            frag_shader_stage_info.pName = "main";
+            shader_stages.push_back(frag_shader_stage_info);
         }
 
         // Vertex Input
-        std::vector<vk::VertexInputBindingDescription> bindingDescriptions;
-        std::vector<vk::VertexInputAttributeDescription> attributeDescriptions;
+        std::vector<vk::VertexInputBindingDescription> binding_descriptions;
+        std::vector<vk::VertexInputAttributeDescription> attribute_descriptions;
 
         for (const auto& attr : desc.vertex_layout_desc.attributes) {
             vk::VertexInputAttributeDescription attribute{};
@@ -606,19 +606,19 @@ class VulkanRenderer : public IRenderer {
             attribute.binding = 0;                                    // Assuming single binding for simplicity
             attribute.format = static_cast<vk::Format>(attr.format);  // Ensure correct mapping
             attribute.offset = attr.offset;
-            attributeDescriptions.push_back(attribute);
+            attribute_descriptions.push_back(attribute);
         }
 
-        vk::PipelineVertexInputStateCreateInfo vertexInputInfo{};
-        vertexInputInfo.vertexBindingDescriptionCount = static_cast<uint32_t>(bindingDescriptions.size());
-        vertexInputInfo.pVertexBindingDescriptions = bindingDescriptions.data();
-        vertexInputInfo.vertexAttributeDescriptionCount = static_cast<uint32_t>(attributeDescriptions.size());
-        vertexInputInfo.pVertexAttributeDescriptions = attributeDescriptions.data();
+        vk::PipelineVertexInputStateCreateInfo vertex_input_info{};
+        vertex_input_info.vertexBindingDescriptionCount = static_cast<uint32_t>(binding_descriptions.size());
+        vertex_input_info.pVertexBindingDescriptions = binding_descriptions.data();
+        vertex_input_info.vertexAttributeDescriptionCount = static_cast<uint32_t>(attribute_descriptions.size());
+        vertex_input_info.pVertexAttributeDescriptions = attribute_descriptions.data();
 
         // Input Assembly
-        vk::PipelineInputAssemblyStateCreateInfo inputAssembly{};
-        inputAssembly.topology = vk::PrimitiveTopology::eTriangleList;
-        inputAssembly.primitiveRestartEnable = VK_FALSE;
+        vk::PipelineInputAssemblyStateCreateInfo input_assembly{};
+        input_assembly.topology = vk::PrimitiveTopology::eTriangleList;
+        input_assembly.primitiveRestartEnable = VK_FALSE;
 
         // Viewport and Scissor
         vk::Viewport viewport{};
@@ -633,18 +633,18 @@ class VulkanRenderer : public IRenderer {
         scissor.offset = vk::Offset2D{desc.scissor.offset_x, desc.scissor.offset_y};
         scissor.extent = vk::Extent2D{desc.scissor.width, desc.scissor.height};
 
-        vk::PipelineViewportStateCreateInfo viewportState{};
-        viewportState.viewportCount = 1;
-        viewportState.pViewports = &viewport;
-        viewportState.scissorCount = 1;
-        viewportState.pScissors = &scissor;
+        vk::PipelineViewportStateCreateInfo viewport_state{};
+        viewport_state.viewportCount = 1;
+        viewport_state.pViewports = &viewport;
+        viewport_state.scissorCount = 1;
+        viewport_state.pScissors = &scissor;
 
         // Rasterizer
         vk::PipelineRasterizationStateCreateInfo rasterizer{};
         rasterizer.depthClampEnable = desc.rasterization.depth_clamp_enable;
         rasterizer.rasterizerDiscardEnable = desc.rasterization.rasterizer_discard_enable;
         rasterizer.polygonMode = MapFormat(desc.rasterization.polygon_mode);
-        rasterizer.lineWidth = 1.0f;  // #TODO antialsing line
+        rasterizer.lineWidth = 1.0f;  // #TODO anti-aliasing line
         rasterizer.cullMode = MapFormat(desc.rasterization.cull_mode);
         rasterizer.frontFace = MapFormat(desc.rasterization.front_face);
         rasterizer.depthBiasEnable = VK_FALSE;
@@ -655,127 +655,127 @@ class VulkanRenderer : public IRenderer {
         multisampling.rasterizationSamples = vk::SampleCountFlagBits::e1;
 
         // Color Blending
-        std::vector<vk::PipelineColorBlendAttachmentState> colorBlendAttachments;
-        for (const auto& blendState : desc.color_blends) {
-            vk::PipelineColorBlendAttachmentState colorBlend{};
-            colorBlend.blendEnable = blendState.blend_enable;
-            colorBlend.srcColorBlendFactor = static_cast<vk::BlendFactor>(blendState.src_color_blend_factor);
-            colorBlend.dstColorBlendFactor = static_cast<vk::BlendFactor>(blendState.dst_color_blend_factor);
-            colorBlend.colorBlendOp = static_cast<vk::BlendOp>(blendState.color_blend_op);
-            colorBlend.srcAlphaBlendFactor = static_cast<vk::BlendFactor>(blendState.src_alpha_blend_factor);
-            colorBlend.dstAlphaBlendFactor = static_cast<vk::BlendFactor>(blendState.dst_alpha_blend_factor);
-            colorBlend.alphaBlendOp = static_cast<vk::BlendOp>(blendState.alpha_blend_op);
-            colorBlend.colorWriteMask = vk::ColorComponentFlagBits::eR | vk::ColorComponentFlagBits::eG |
-                                        vk::ColorComponentFlagBits::eB | vk::ColorComponentFlagBits::eA;
-            colorBlendAttachments.push_back(colorBlend);
+        std::vector<vk::PipelineColorBlendAttachmentState> color_blend_attachments;
+        for (const auto& blend_state : desc.color_blends) {
+            vk::PipelineColorBlendAttachmentState color_blend{};
+            color_blend.blendEnable = blend_state.blend_enable;
+            color_blend.srcColorBlendFactor = static_cast<vk::BlendFactor>(blend_state.src_color_blend_factor);
+            color_blend.dstColorBlendFactor = static_cast<vk::BlendFactor>(blend_state.dst_color_blend_factor);
+            color_blend.colorBlendOp = static_cast<vk::BlendOp>(blend_state.color_blend_op);
+            color_blend.srcAlphaBlendFactor = static_cast<vk::BlendFactor>(blend_state.src_alpha_blend_factor);
+            color_blend.dstAlphaBlendFactor = static_cast<vk::BlendFactor>(blend_state.dst_alpha_blend_factor);
+            color_blend.alphaBlendOp = static_cast<vk::BlendOp>(blend_state.alpha_blend_op);
+            color_blend.colorWriteMask = vk::ColorComponentFlagBits::eR | vk::ColorComponentFlagBits::eG |
+                                         vk::ColorComponentFlagBits::eB | vk::ColorComponentFlagBits::eA;
+            color_blend_attachments.push_back(color_blend);
         }
 
-        vk::PipelineColorBlendStateCreateInfo colorBlending{};
-        colorBlending.logicOpEnable = VK_FALSE;
-        colorBlending.logicOp = vk::LogicOp::eCopy;
-        colorBlending.attachmentCount = static_cast<uint32_t>(colorBlendAttachments.size());
-        colorBlending.pAttachments = colorBlendAttachments.data();
-        colorBlending.blendConstants[0] = 0.0f;
-        colorBlending.blendConstants[1] = 0.0f;
-        colorBlending.blendConstants[2] = 0.0f;
-        colorBlending.blendConstants[3] = 0.0f;
+        vk::PipelineColorBlendStateCreateInfo color_blending{};
+        color_blending.logicOpEnable = VK_FALSE;
+        color_blending.logicOp = vk::LogicOp::eCopy;
+        color_blending.attachmentCount = static_cast<uint32_t>(color_blend_attachments.size());
+        color_blending.pAttachments = color_blend_attachments.data();
+        color_blending.blendConstants[0] = 0.0f;
+        color_blending.blendConstants[1] = 0.0f;
+        color_blending.blendConstants[2] = 0.0f;
+        color_blending.blendConstants[3] = 0.0f;
 
         // Pipeline Layout
-        vk::PipelineLayoutCreateInfo pipelineLayoutInfo{};
-        pipelineLayoutInfo.setLayoutCount = 0;  // Descriptor sets will be managed internally
-        pipelineLayoutInfo.pSetLayouts = nullptr;
-        pipelineLayoutInfo.pushConstantRangeCount = 0;
-        pipelineLayoutInfo.pPushConstantRanges = nullptr;
+        vk::PipelineLayoutCreateInfo pipeline_layout_info{};
+        pipeline_layout_info.setLayoutCount = 0;  // Descriptor sets will be managed internally
+        pipeline_layout_info.pSetLayouts = nullptr;
+        pipeline_layout_info.pushConstantRangeCount = 0;
+        pipeline_layout_info.pPushConstantRanges = nullptr;
 
         try {
-            vPipeline.layout = device.createPipelineLayout(pipelineLayoutInfo);
+            vpipeline.layout = device_.createPipelineLayout(pipeline_layout_info);
         } catch (const std::exception& e) {
             throw std::runtime_error(std::string("Failed to create pipeline layout: ") + e.what());
         }
 
-        // Pipeline Creation move to BindPipeline
+        // Pipeline Creation moved to BindPipeline
 #if 0
-        vk::GraphicsPipelineCreateInfo pipelineInfo{};
-        pipelineInfo.stageCount = static_cast<uint32_t>(shaderStages.size());
-        pipelineInfo.pStages = shaderStages.data();
-        pipelineInfo.pVertexInputState = &vertexInputInfo;
-        pipelineInfo.pInputAssemblyState = &inputAssembly;
-        pipelineInfo.pViewportState = &viewportState;
-        pipelineInfo.pRasterizationState = &rasterizer;
-        pipelineInfo.pMultisampleState = &multisampling;
-        pipelineInfo.pDepthStencilState = nullptr;  // Implement if using depth
-        pipelineInfo.pColorBlendState = &colorBlending;
-        pipelineInfo.pDynamicState = nullptr;  // Implement if using dynamic states
-        pipelineInfo.layout = vPipeline.layout;
-        pipelineInfo.renderPass = renderPass;
-        pipelineInfo.subpass = 0;
-        pipelineInfo.basePipelineHandle = nullptr;
+    vk::GraphicsPipelineCreateInfo pipeline_info{};
+    pipeline_info.stageCount = static_cast<uint32_t>(shader_stages.size());
+    pipeline_info.pStages = shader_stages.data();
+    pipeline_info.pVertexInputState = &vertex_input_info;
+    pipeline_info.pInputAssemblyState = &input_assembly;
+    pipeline_info.pViewportState = &viewport_state;
+    pipeline_info.pRasterizationState = &rasterizer;
+    pipeline_info.pMultisampleState = &multisampling;
+    pipeline_info.pDepthStencilState = nullptr;  // Implement if using depth
+    pipeline_info.pColorBlendState = &color_blending;
+    pipeline_info.pDynamicState = nullptr;  // Implement if using dynamic states
+    pipeline_info.layout = vpipeline.layout;
+    pipeline_info.renderPass = render_pass_;
+    pipeline_info.subpass = 0;
+    pipeline_info.basePipelineHandle = nullptr;
 
-        try {
-            vPipeline.pipeline = device.createGraphicsPipeline(nullptr, pipelineInfo).value;
-        } catch (const std::exception& e) {
-            throw std::runtime_error(std::string("Failed to create graphics pipeline: ") + e.what());
-        }
+    try {
+      vpipeline.pipeline = device_.createGraphicsPipeline(nullptr, pipeline_info).value;
+    } catch (const std::exception& e) {
+      throw std::runtime_error(std::string("Failed to create graphics pipeline: ") + e.what());
+    }
 #endif
         PipelineHandle handle;
         handle.id = GenerateUniqueID();
         {
-            std::lock_guard<std::recursive_mutex> lock(resourceMutex);
-            pipelines[handle] = vPipeline;
+            std::lock_guard<std::recursive_mutex> lock_(resource_mutex_);
+            pipelines_.emplace(handle, vpipeline);
         }
 
         return handle;
     }
 
     PipelineHandle CreatePipeline(const ComputePipelineDesc& desc) override {
-        VulkanPipeline vPipeline;
+        VulkanPipeline vpipeline;
         // Note: For compute pipelines, PipelineDesc and VulkanPipeline structs might need to differentiate
-        vPipeline.desc = PipelineDesc();  // Initialize appropriately
+        vpipeline.desc = PipelineDesc();  // Initialize appropriately
 
         // Create shader stage
-        auto computeShaderIt = shaders.find(desc.compute_shader);
-        if (computeShaderIt == shaders.end()) {
+        auto compute_shader_it = shaders_.find(desc.compute_shader);
+        if (compute_shader_it == shaders_.end()) {
             throw std::runtime_error("Invalid ComputeShaderHandle provided to CreatePipeline.");
         }
 
-        vk::PipelineShaderStageCreateInfo shaderStageInfo{};
-        shaderStageInfo.stage = vk::ShaderStageFlagBits::eCompute;
-        shaderStageInfo.module = computeShaderIt->second.shader_module;
-        shaderStageInfo.pName = "main";
+        vk::PipelineShaderStageCreateInfo shader_stage_info{};
+        shader_stage_info.stage = vk::ShaderStageFlagBits::eCompute;
+        shader_stage_info.module = compute_shader_it->second.shader_module;
+        shader_stage_info.pName = "main";
 
-        std::vector<vk::PipelineShaderStageCreateInfo> shaderStages = {shaderStageInfo};
+        std::vector<vk::PipelineShaderStageCreateInfo> shader_stages = {shader_stage_info};
 
         // Pipeline Layout
-        vk::PipelineLayoutCreateInfo pipelineLayoutInfo{};
-        pipelineLayoutInfo.setLayoutCount = 0;  // Descriptor sets will be managed internally
-        pipelineLayoutInfo.pSetLayouts = nullptr;
-        pipelineLayoutInfo.pushConstantRangeCount = 0;
-        pipelineLayoutInfo.pPushConstantRanges = nullptr;
+        vk::PipelineLayoutCreateInfo pipeline_layout_info{};
+        pipeline_layout_info.setLayoutCount = 0;  // Descriptor sets will be managed internally
+        pipeline_layout_info.pSetLayouts = nullptr;
+        pipeline_layout_info.pushConstantRangeCount = 0;
+        pipeline_layout_info.pPushConstantRanges = nullptr;
 
         try {
-            vPipeline.layout = device.createPipelineLayout(pipelineLayoutInfo);
+            vpipeline.layout = device_.createPipelineLayout(pipeline_layout_info);
         } catch (const std::exception& e) {
             throw std::runtime_error(std::string("Failed to create compute pipeline layout: ") + e.what());
         }
 
         // Compute Pipeline Create Info
-        vk::ComputePipelineCreateInfo pipelineInfo{};
-        pipelineInfo.stage = shaderStageInfo;
-        pipelineInfo.layout = vPipeline.layout;
-        pipelineInfo.basePipelineHandle = nullptr;
+        vk::ComputePipelineCreateInfo pipeline_info{};
+        pipeline_info.stage = shader_stage_info;
+        pipeline_info.layout = vpipeline.layout;
+        pipeline_info.basePipelineHandle = nullptr;
 
 #if 0
-        try {
-            vPipeline.pipelines = device.createComputePipeline(nullptr, pipelineInfo).value;
-        } catch (const std::exception& e) {
-            throw std::runtime_error(std::string("Failed to create compute pipeline: ") + e.what());
-        }
+    try {
+      vpipeline.pipelines = device_.createComputePipeline(nullptr, pipeline_info).value;
+    } catch (const std::exception& e) {
+      throw std::runtime_error(std::string("Failed to create compute pipeline: ") + e.what());
+    }
 #endif
         PipelineHandle handle;
         handle.id = GenerateUniqueID();
         {
-            std::lock_guard<std::recursive_mutex> lock(resourceMutex);
-            pipelines[handle] = vPipeline;
+            std::lock_guard<std::recursive_mutex> lock_(resource_mutex_);
+            pipelines_.emplace(handle, vpipeline);
         }
 
         return handle;
@@ -783,63 +783,63 @@ class VulkanRenderer : public IRenderer {
 
     // BeginPass시 RenderDesc로 CreateFrameBuffer를 생성하고 CreateRenderPass를 생성한다.
     FrameBufferHandle CreateFrameBuffer(const FrameBufferDesc& desc) {
-        std::lock_guard<std::recursive_mutex> lock(resourceMutex);
+        std::lock_guard<std::recursive_mutex> lock_(resource_mutex_);
 
         // Populate RenderPassDesc based on FrameBufferDesc
-        RenderPassDesc renderPassDesc;
-        for (const auto& textureHandle : desc.color_targets) {
-            auto textureIt = textures.find(textureHandle);
-            if (textureIt == textures.end()) {
+        RenderPassDesc render_pass_desc;
+        for (const auto& texture_handle : desc.color_targets) {
+            auto texture_it = textures_.find(texture_handle);
+            if (texture_it == textures_.end()) {
                 throw std::runtime_error("Invalid TextureHandle in FrameBufferDesc.color_targets.");
             }
-            renderPassDesc.color_formats.push_back(textureIt->second.desc.format);
+            render_pass_desc.color_formats.push_back(texture_it->second.desc.format);
         }
 
         if (desc.depth_target.id != 0) {  // Assuming TextureHandle{0} is invalid
-            auto depthIt = textures.find(desc.depth_target);
-            if (depthIt == textures.end()) {
+            auto depth_it = textures_.find(desc.depth_target);
+            if (depth_it == textures_.end()) {
                 throw std::runtime_error("Invalid TextureHandle in FrameBufferDesc.depth_target.");
             }
-            renderPassDesc.depth_format = depthIt->second.desc.format;
+            render_pass_desc.depth_format = depth_it->second.desc.format;
         } else {
-            renderPassDesc.depth_format = Format::kUnknown;
+            render_pass_desc.depth_format = Format::kUnknown;
         }
 
         // Assign other members from FrameBufferDesc to RenderPassDesc
-        renderPassDesc.clear_colors = desc.clear_colors;
-        renderPassDesc.clear_depth = desc.clear_depth;
-        renderPassDesc.clear_depth_value = desc.clear_depth_value;
-        renderPassDesc.clear_stencil_value = desc.clear_stencil_value;
-        renderPassDesc.color_attachment_options = desc.color_attachment_options;
-        renderPassDesc.depth_attachment_options = desc.depth_attachment_options;
-        renderPassDesc.subpasses = desc.subpasses;
+        render_pass_desc.clear_colors = desc.clear_colors;
+        render_pass_desc.clear_depth = desc.clear_depth;
+        render_pass_desc.clear_depth_value = desc.clear_depth_value;
+        render_pass_desc.clear_stencil_value = desc.clear_stencil_value;
+        render_pass_desc.color_attachment_options = desc.color_attachment_options;
+        render_pass_desc.depth_attachment_options = desc.depth_attachment_options;
+        render_pass_desc.subpasses = desc.subpasses;
 
         // Create or retrieve RenderPass
-        RenderPassHandle renderpass_handle = CreateRenderPassInternal(renderPassDesc);
+        RenderPassHandle renderpass_handle = CreateRenderPassInternal(render_pass_desc);
 
         // Create Framebuffer
-        VulkanFrameBuffer vFrameBuffer;
+        VulkanFrameBuffer vframebuffer;
         // Gather image views for attachments
         std::vector<vk::ImageView> attachments;
-        for (const auto& colorHandle : desc.color_targets) {
-            auto textureIt = textures.find(colorHandle);
-            if (textureIt == textures.end()) {
+        for (const auto& color_handle : desc.color_targets) {
+            auto texture_it = textures_.find(color_handle);
+            if (texture_it == textures_.end()) {
                 throw std::runtime_error("Invalid TextureHandle in FrameBufferDesc.color_targets.");
             }
-            attachments.push_back(textureIt->second.image_view);
+            attachments.push_back(texture_it->second.image_view);
         }
 
         if (desc.depth_target.id != 0) {
-            auto depthIt = textures.find(desc.depth_target);
-            if (depthIt == textures.end()) {
+            auto depth_it = textures_.find(desc.depth_target);
+            if (depth_it == textures_.end()) {
                 throw std::runtime_error("Invalid TextureHandle in FrameBufferDesc.depth_target.");
             }
-            attachments.push_back(depthIt->second.image_view);
+            attachments.push_back(depth_it->second.image_view);
         }
 
         // Retrieve the RenderPass
-        auto renderPassIt = render_passes.find(renderpass_handle);
-        if (renderPassIt == render_passes.end()) {
+        auto render_pass_it = render_passes_.find(renderpass_handle);
+        if (render_pass_it == render_passes_.end()) {
             throw std::runtime_error("RenderPassHandle not found for FrameBufferDesc.");
         }
 
@@ -847,53 +847,53 @@ class VulkanRenderer : public IRenderer {
         uint32_t width = desc.width;
         uint32_t height = desc.height;
 
-        vk::FramebufferCreateInfo framebufferInfo{};
-        framebufferInfo.renderPass = renderPassIt->second.renderpass;
-        framebufferInfo.attachmentCount = static_cast<uint32_t>(attachments.size());
-        framebufferInfo.pAttachments = attachments.data();
-        framebufferInfo.width = width;
-        framebufferInfo.height = height;
-        framebufferInfo.layers = 1;
+        vk::FramebufferCreateInfo framebuffer_info{};
+        framebuffer_info.renderPass = render_pass_it->second.renderpass;
+        framebuffer_info.attachmentCount = static_cast<uint32_t>(attachments.size());
+        framebuffer_info.pAttachments = attachments.data();
+        framebuffer_info.width = width;
+        framebuffer_info.height = height;
+        framebuffer_info.layers = 1;
 
         try {
-            vFrameBuffer.framebuffer = device.createFramebuffer(framebufferInfo);
+            vframebuffer.framebuffer = device_.createFramebuffer(framebuffer_info);
         } catch (const std::exception& e) {
             throw std::runtime_error(std::string("Failed to create framebuffer: ") + e.what());
         }
 
-        vFrameBuffer.renderpass_handle = renderpass_handle;
-        vFrameBuffer.desc = desc;
-        vFrameBuffer.ref_count = 1;
+        vframebuffer.renderpass_handle = renderpass_handle;
+        vframebuffer.desc = desc;
+        vframebuffer.ref_count = 1;
 
         FrameBufferHandle handle;
         handle.id = GenerateUniqueID();
-        frame_buffers[handle] = vFrameBuffer;
+        framebuffers_.emplace(handle, vframebuffer);
 
         return handle;
     }
 
-    FrameBufferHandle VulkanRenderer::CreateFrameBuffer(const SwapChainHandle& handle) {
-        std::lock_guard<std::recursive_mutex> lock(resource_mutex_);
+    FrameBufferHandle CreateFrameBuffer(const SwapChainHandle& handle) override {
+        std::lock_guard<std::recursive_mutex> lock_(resource_mutex_);
 
         // SwapChain 조회
-        auto swap_chain_it = swap_chains_.find(handle);
-        if (swap_chain_it == swap_chains_.end()) {
+        auto swapchain_it = swapchains_.find(handle);
+        if (swapchain_it == swapchains_.end()) {
             throw std::runtime_error("Invalid SwapChainHandle provided to CreateFrameBuffer.");
         }
 
-        VulkanSwapChain& swap_chain = swap_chains_.at(handle);
+        VulkanSwapChain& swapchain_data = swapchains_.at(handle);
 
         // FrameBufferDesc 생성
         FrameBufferDesc framebuffer_desc{};
-        framebuffer_desc.width = swap_chain.width;
-        framebuffer_desc.height = swap_chain.height;
+        framebuffer_desc.width = swapchain_data.width;
+        framebuffer_desc.height = swapchain_data.height;
         // framebuffer_desc.clear_color = {0.0f, 0.0f, 0.0f, 1.0f};
-        framebuffer_desc.clear_depth = swap_chain.desc.depth_format != Format::kUnknown;
+        framebuffer_desc.clear_depth = swapchain_data.desc.depth_format != Format::kUnknown;
         framebuffer_desc.clear_depth_value = 1.0f;
         framebuffer_desc.clear_stencil_value = 0;
         framebuffer_desc.color_attachment_options = {
             AttachmentOptions{.load_op = AttachmentLoadOp::kClear, .store_op = AttachmentStoreOp::kStore}};
-        // framebuffer_desc.depth_attachment_options = swap_chain.desc.depth_attachment_options;
+        // framebuffer_desc.depth_attachment_options = swapchain_data.desc.depth_attachment_options;
 
         // SwapChain의 각 이미지에 대해 텍스처 생성
         // 단일 FrameBufferHandle에 여러 프레임버퍼를 생성하지 않도록 주의
@@ -901,22 +901,26 @@ class VulkanRenderer : public IRenderer {
         // 있습니다.
 
         // FrameBufferDesc에 SwapChain 이미지 기반의 color_targets 추가
-        for (const auto& image : swap_chain_it->second.swapchain.getImages()) {
+        for (const auto& image : swapchain_it->second.swapchain.getImages()) {
             TextureDesc color_texture_desc{
-                .image = image, .format = swap_chain.desc.color_format, .usage = TextureUsage::kRenderTarget,
+                // .image = image, // TextureDesc에는 image 멤버가 없음; 이미 SwapChain 이미지가 VulkanTexture에
+                // 포함되어 있음
+                .format = swapchain_it->second.color_format,
+                .usage = TextureUsage::kRenderTarget,
                 // 기타 필요한 TextureDesc 초기화
             };
             // TextureHandle color_handle = CreateTexture(color_texture_desc); // CreateTexture를 사용하지 않음.
-            framebuffer_desc.color_targets.emplace_back(color_handle);
+            // framebuffer_desc.color_targets.emplace_back(color_handle);
+            // 위의 주석 처리된 코드는 SwapChain의 이미지를 TextureHandle로 관리하지 않으므로 실제 구현에 맞게 수정 필요
         }
 
         // Depth 텍스처 생성 (필요 시)
-        if (framebuffer_desc.depth_attachment_options.load_op != AttachmentLoadOp::kDontCare) {
+        if (framebuffer_desc.clear_depth) {
             TextureDesc depth_texture_desc{
-                .format = swap_chain.desc.depth_format,
+                .format = swapchain_it->second.depth_format,
                 .usage = TextureUsage::kDepthStencil,
-                .width = swap_chain.width,
-                .height = swap_chain.height,
+                .width = swapchain_data.width,
+                .height = swapchain_data.height,
                 // 기타 필요한 TextureDesc 초기화
             };
             framebuffer_desc.depth_target = CreateTexture(depth_texture_desc);
@@ -925,67 +929,68 @@ class VulkanRenderer : public IRenderer {
         // FrameBuffer 생성
         return CreateFrameBuffer(framebuffer_desc);
     }
+
     void BindPipeline(const PipelineHandle& handle, const uint8_t* constants, size_t size,
-                      uint32_t subIndex = 0) override {
-        std::lock_guard<std::recursive_mutex> lock(resourceMutex);
+                      uint32_t sub_index = 0) override {
+        std::lock_guard<std::recursive_mutex> lock_(resource_mutex_);
 
         // Retrieve VulkanPipeline
-        auto pipelineIt = pipelines.find(handle);
-        if (pipelineIt == pipelines.end()) {
+        auto pipeline_it = pipelines_.find(handle);
+        if (pipeline_it == pipelines_.end()) {
             throw std::runtime_error("Invalid PipelineHandle provided to BindPipeline.");
         }
 
-        VulkanPipeline& vPipeline = pipelineIt->second;
+        VulkanPipeline& vpipeline = pipeline_it->second;
 
         // Retrieve current framebuffer's render pass hash
         // Assuming current framebuffer is tracked; otherwise, pass it as a parameter or track it globally
         // For this example, we'll assume a single swapchain/framebuffer is active
-        if (swapChains.empty()) {
+        if (swapchains_.empty()) {
             throw std::runtime_error("No active swapchain found.");
         }
 
-        VulkanSwapChain& currentSwapChain = swapChains.begin()->second;
-        VulkanRenderPass currentRenderPass;  // = renderPasses[currentSwapChain.renderpass_handle];
+        VulkanSwapChain& current_swapchain = swapchains_.begin()->second;
+        VulkanRenderPass current_render_pass;  // = render_passes_[current_swapchain.renderpass_handle];
 
-        uint64_t renderPassHash = currentRenderPass.descHash;
-        uint32_t currentPass = current_pass;  // Current subpass index
+        uint64_t render_pass_hash = current_render_pass.desc_hash;
+        uint32_t current_pass = current_pass_;  // Current subpass index
 
         // Combine render pass hash and subpass index to create a unique key
         std::hash<uint64_t> hasher;
-        uint64_t combinedHash = hasher(renderPassHash) ^ (static_cast<uint64_t>(currentPass) << 32);
+        uint64_t combined_hash = hasher(render_pass_hash) ^ (static_cast<uint64_t>(current_pass) << 32);
 
-        // Check if pipeline with combinedHash exists
-        auto existingPipelineIt = vPipeline.pipelines.find(combinedHash);
-        if (existingPipelineIt != vPipeline.pipelines.end()) {
+        // Check if pipeline with combined_hash exists
+        auto existing_pipeline_it = vpipeline.pipelines.find(combined_hash);
+        if (existing_pipeline_it != vpipeline.pipelines.end()) {
             // Pipeline already exists, bind it
-            commandBuffer.bindPipeline(vk::PipelineBindPoint::eGraphics, existingPipelineIt->second);
+            command_buffer_.bindPipeline(vk::PipelineBindPoint::eGraphics, existing_pipeline_it->second);
         } else {
             // Create a new pipeline based on the stored desc
-            vk::GraphicsPipelineCreateInfo pipelineInfo;
-            //= vPipeline.desc.ToVulkanPipelineCreateInfo();  // Assume this method exists
+            vk::GraphicsPipelineCreateInfo pipeline_info;
+            //= vpipeline.desc.ToVulkanPipelineCreateInfo();  // Assume this method exists
 
-            // Set dynamic states or other states based on subIndex if needed
-            // Modify pipelineInfo based on subIndex
+            // Set dynamic states or other states based on sub_index if needed
+            // Modify pipeline_info based on sub_index
 
-            vk::Pipeline newPipeline;
+            vk::Pipeline new_pipeline;
             try {
-                newPipeline = device.createGraphicsPipeline(nullptr, pipelineInfo).value;
+                new_pipeline = device_.createGraphicsPipeline(nullptr, pipeline_info).value;
             } catch (const std::exception& e) {
                 throw std::runtime_error(std::string("Failed to create graphics pipeline: ") + e.what());
             }
 
             // Store the new pipeline in the map
-            vPipeline.pipelines[combinedHash] = newPipeline;
+            vpipeline.pipelines.emplace(combined_hash, new_pipeline);
 
             // Bind the new pipeline
-            commandBuffer.bindPipeline(vk::PipelineBindPoint::eGraphics, newPipeline);
+            command_buffer_.bindPipeline(vk::PipelineBindPoint::eGraphics, new_pipeline);
         }
 
         // Optionally handle push constants if provided
         if (constants && size > 0) {
             // Assuming push constant ranges are defined in pipeline layout
-            commandBuffer.pushConstants(
-                vPipeline.layout,
+            command_buffer_.pushConstants(
+                vpipeline.layout,
                 vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment,  // Adjust as needed
                 0,                                                                      // Offset
                 size, constants);
@@ -993,98 +998,98 @@ class VulkanRenderer : public IRenderer {
     }
 
     void DispatchCompute(uint32_t group_x, uint32_t group_y, uint32_t group_z) override {
-        commandBuffer.dispatch(group_x, group_y, group_z);
+        command_buffer_.dispatch(group_x, group_y, group_z);
     }
 
     void BeginPass(const FrameBufferHandle& handle) override {
-        std::lock_guard<std::recursive_mutex> lock(resourceMutex);
+        std::lock_guard<std::recursive_mutex> lock_(resource_mutex_);
 
-        auto frameBufferIt = frameBuffers.find(handle);
-        if (frameBufferIt == frameBuffers.end()) {
+        auto framebuffer_it = framebuffers_.find(handle);
+        if (framebuffer_it == framebuffers_.end()) {
             throw std::runtime_error("Invalid FrameBufferHandle provided to BeginPass.");
         }
 
-        VulkanFrameBuffer& vFrameBuffer = frameBufferIt->second;
+        VulkanFrameBuffer& vframebuffer = framebuffer_it->second;
 
         // 현재 RenderPassHandle 할당 (단계 3)
-        currentRenderPassHandle = vFrameBuffer.renderPassHandle;
+        current_render_pass_handle_ = vframebuffer.renderpass_handle;
 
-        VulkanRenderPass& vRenderPass = renderPasses[currentRenderPassHandle];
+        VulkanRenderPass& vrender_pass = render_passes_.at(current_render_pass_handle_);
 
         // 명령 버퍼 시작
-        vk::CommandBufferBeginInfo beginInfo{};
-        beginInfo.flags = vk::CommandBufferUsageFlagBits::eSimultaneousUse;
+        vk::CommandBufferBeginInfo begin_info{};
+        begin_info.flags = vk::CommandBufferUsageFlagBits::eSimultaneousUse;
 
         try {
-            commandBuffer.begin(beginInfo);
+            command_buffer_.begin(begin_info);
         } catch (const std::exception& e) {
             throw std::runtime_error(std::string("Failed to begin command buffer: ") + e.what());
         }
 
         // 클리어 값 설정
-        std::vector<vk::ClearValue> clearValues;
-        for (const auto& color : vRenderPass.desc.clear_colors) {
-            vk::ClearColorValue clearColor =
+        std::vector<vk::ClearValue> clear_values;
+        for (const auto& color : vrender_pass.desc.clear_colors) {
+            vk::ClearColorValue clear_color =
                 vk::ClearColorValue(std::array<float, 4>{color[0], color[1], color[2], color[3]});
-            clearValues.emplace_back(clearColor);
+            clear_values.emplace_back(clear_color);
         }
-        if (vRenderPass.desc.clear_depth) {
-            vk::ClearDepthStencilValue clearDepth = {};
-            clearDepth.depth = vRenderPass.desc.clear_depth_value;
-            clearDepth.stencil = vRenderPass.desc.clear_stencil_value;
-            clearValues.emplace_back(clearDepth);
+        if (vrender_pass.desc.clear_depth) {
+            vk::ClearDepthStencilValue clear_depth = {};
+            clear_depth.depth = vrender_pass.desc.clear_depth_value;
+            clear_depth.stencil = vrender_pass.desc.clear_stencil_value;
+            clear_values.emplace_back(clear_depth);
         }
 
         // RenderPass 시작
-        vk::RenderPassBeginInfo renderPassInfo{};
-        renderPassInfo.renderPass = vRenderPass.renderpass;
-        renderPassInfo.framebuffer = vFrameBuffer.framebuffer;
-        renderPassInfo.renderArea.offset = vk::Offset2D{0, 0};
-        renderPassInfo.renderArea.extent = vk::Extent2D{vFrameBuffer.desc.width, vFrameBuffer.desc.height};
-        renderPassInfo.clearValueCount = static_cast<uint32_t>(clearValues.size());
-        renderPassInfo.pClearValues = clearValues.data();
+        vk::RenderPassBeginInfo render_pass_info{};
+        render_pass_info.renderPass = vrender_pass.renderpass;
+        render_pass_info.framebuffer = vframebuffer.framebuffer;
+        render_pass_info.renderArea.offset = vk::Offset2D{0, 0};
+        render_pass_info.renderArea.extent = vk::Extent2D{vframebuffer.desc.width, vframebuffer.desc.height};
+        render_pass_info.clearValueCount = static_cast<uint32_t>(clear_values.size());
+        render_pass_info.pClearValues = clear_values.data();
 
         try {
-            commandBuffer.beginRenderPass(renderPassInfo, vk::SubpassContents::eInline);
+            command_buffer_.beginRenderPass(render_pass_info, vk::SubpassContents::eInline);
         } catch (const std::exception& e) {
             throw std::runtime_error(std::string("Failed to begin render pass: ") + e.what());
         }
     }
 
-    void EndPass() override { commandBuffer.endRenderPass(); }
+    void EndPass() override { command_buffer_.endRenderPass(); }
 
     void NextPass() override {
-        std::lock_guard<std::recursive_mutex> lock(resourceMutex);
-        current_pass++;
+        std::lock_guard<std::recursive_mutex> lock_(resource_mutex_);
+        current_pass_++;
     }
 
     void Render(const SwapChainHandle& handle, std::function<void()> callback) override {
-        std::lock_guard<std::recursive_mutex> lock(resourceMutex);
-        auto it = swapChains.find(handle);
-        if (it == swapChains.end()) {
+        std::lock_guard<std::recursive_mutex> lock_(resource_mutex_);
+        auto it = swapchains_.find(handle);
+        if (it == swapchains_.end()) {
             throw std::runtime_error("Invalid SwapChainHandle provided to Render.");
         }
 
-        VulkanSwapChain& scData = it->second;
+        VulkanSwapChain& sc_data = it->second;
 
         // Handle synchronization
-        size_t frame = scData.currentFrame;
-        vk::Semaphore imageAvailableSemaphore = scData.imageAvailableSemaphores[frame];
-        vk::Semaphore renderFinishedSemaphore = scData.renderFinishedSemaphores[frame];
-        vk::Fence inFlightFence = scData.inFlightFences[frame];
+        size_t frame = sc_data.current_frame;
+        vk::Semaphore image_available_semaphore = sc_data.image_available_semaphores[frame];
+        vk::Semaphore render_finished_semaphore = sc_data.render_finished_semaphores[frame];
+        vk::Fence in_flight_fence = sc_data.in_flight_fences[frame];
 
         // Wait for the previous frame
         {
-            std::ignore = device.waitForFences(inFlightFence, VK_TRUE, UINT64_MAX);
+            device_.waitForFences(in_flight_fence, VK_TRUE, UINT64_MAX);
         }
 
         // Reset the fence
-        device.resetFences(inFlightFence);
+        device_.resetFences(in_flight_fence);
 
         // Acquire image from swapchain
-        uint32_t imageIndex;
-        vk::Result result =
-            device.acquireNextImageKHR(scData.swapchain, UINT64_MAX, imageAvailableSemaphore, nullptr, &imageIndex);
+        uint32_t image_index;
+        vk::Result result = device_.acquireNextImageKHR(sc_data.swapchain, UINT64_MAX, image_available_semaphore,
+                                                        nullptr, &image_index);
         if (result == vk::Result::eErrorOutOfDateKHR) {
             throw std::runtime_error("Swapchain is out of date.");
         } else if (result != vk::Result::eSuccess && result != vk::Result::eSuboptimalKHR) {
@@ -1092,46 +1097,46 @@ class VulkanRenderer : public IRenderer {
         }
 
         // Begin command buffer
-        commandBuffer.reset({});
-        vk::CommandBufferBeginInfo beginInfo{};
-        beginInfo.flags = vk::CommandBufferUsageFlagBits::eOneTimeSubmit;
+        command_buffer_.reset({});
+        vk::CommandBufferBeginInfo begin_info{};
+        begin_info.flags = vk::CommandBufferUsageFlagBits::eOneTimeSubmit;
 
         try {
-            commandBuffer.begin(beginInfo);
+            command_buffer_.begin(begin_info);
         } catch (const std::exception& e) {
             throw std::runtime_error(std::string("Failed to begin command buffer: ") + e.what());
         }
 
         // Begin render pass using the current framebuffer
-        VulkanRenderPass vRenderPass;  // = renderPasses[scData.renderpass_handle];
-        VulkanFrameBuffer& vFrameBuffer = frameBuffers[vRenderPass.framebuffer_handle];
+        VulkanRenderPass vrender_pass;  // = render_passes_[sc_data.renderpass_handle];
+        VulkanFrameBuffer& vframebuffer = framebuffers_.at(vrender_pass.renderpass_handle);
 
-        vk::RenderPassBeginInfo renderPassInfo{};
-        renderPassInfo.renderPass = vRenderPass.renderpass;
-        renderPassInfo.framebuffer = vFrameBuffer.framebuffer;
-        renderPassInfo.renderArea.offset = vk::Offset2D{0, 0};
-        renderPassInfo.renderArea.extent = vk::Extent2D{scData.width, scData.height};
+        vk::RenderPassBeginInfo render_pass_info{};
+        render_pass_info.renderPass = vrender_pass.renderpass;
+        render_pass_info.framebuffer = vframebuffer.framebuffer;
+        render_pass_info.renderArea.offset = vk::Offset2D{0, 0};
+        render_pass_info.renderArea.extent = vk::Extent2D{sc_data.width, sc_data.height};
 
         // Define clear values based on RenderPassDesc
-        RenderPassDesc passDesc = vRenderPass.desc;
-        std::vector<vk::ClearValue> clearValues;
-        for (const auto& color : passDesc.clear_colors) {
-            vk::ClearColorValue clearColor =
+        RenderPassDesc pass_desc = vrender_pass.desc;
+        std::vector<vk::ClearValue> clear_values;
+        for (const auto& color : pass_desc.clear_colors) {
+            vk::ClearColorValue clear_color =
                 vk::ClearColorValue(std::array<float, 4>{color[0], color[1], color[2], color[3]});
-            clearValues.emplace_back(clearColor);
+            clear_values.emplace_back(clear_color);
         }
-        if (passDesc.clear_depth) {
-            vk::ClearDepthStencilValue depthClear = {};
-            depthClear.depth = passDesc.clear_depth_value;
-            depthClear.stencil = passDesc.clear_stencil_value;
-            clearValues.emplace_back(depthClear);
+        if (pass_desc.clear_depth) {
+            vk::ClearDepthStencilValue depth_clear = {};
+            depth_clear.depth = pass_desc.clear_depth_value;
+            depth_clear.stencil = pass_desc.clear_stencil_value;
+            clear_values.emplace_back(depth_clear);
         }
 
-        renderPassInfo.clearValueCount = static_cast<uint32_t>(clearValues.size());
-        renderPassInfo.pClearValues = clearValues.data();
+        render_pass_info.clearValueCount = static_cast<uint32_t>(clear_values.size());
+        render_pass_info.pClearValues = clear_values.data();
 
         try {
-            commandBuffer.beginRenderPass(renderPassInfo, vk::SubpassContents::eInline);
+            command_buffer_.beginRenderPass(render_pass_info, vk::SubpassContents::eInline);
         } catch (const std::exception& e) {
             throw std::runtime_error(std::string("Failed to begin render pass: ") + e.what());
         }
@@ -1141,51 +1146,51 @@ class VulkanRenderer : public IRenderer {
 
         // End render pass
         try {
-            commandBuffer.endRenderPass();
+            command_buffer_.endRenderPass();
         } catch (const std::exception& e) {
             throw std::runtime_error(std::string("Failed to end render pass: ") + e.what());
         }
 
         // End command buffer
         try {
-            commandBuffer.end();
+            command_buffer_.end();
         } catch (const std::exception& e) {
             throw std::runtime_error(std::string("Failed to end command buffer: ") + e.what());
         }
 
         // Submit command buffer
-        vk::SubmitInfo submitInfo{};
-        vk::Semaphore waitSemaphores[] = {imageAvailableSemaphore};
-        vk::PipelineStageFlags waitStages[] = {vk::PipelineStageFlagBits::eColorAttachmentOutput};
-        submitInfo.waitSemaphoreCount = 1;
-        submitInfo.pWaitSemaphores = waitSemaphores;
-        submitInfo.pWaitDstStageMask = waitStages;
-        submitInfo.commandBufferCount = 1;
-        submitInfo.pCommandBuffers = &commandBuffer;
-        vk::Semaphore signalSemaphores[] = {renderFinishedSemaphore};
-        submitInfo.signalSemaphoreCount = 1;
-        submitInfo.pSignalSemaphores = signalSemaphores;
+        vk::SubmitInfo submit_info{};
+        vk::Semaphore wait_semaphores[] = {image_available_semaphore};
+        vk::PipelineStageFlags wait_stages[] = {vk::PipelineStageFlagBits::eColorAttachmentOutput};
+        submit_info.waitSemaphoreCount = 1;
+        submit_info.pWaitSemaphores = wait_semaphores;
+        submit_info.pWaitDstStageMask = wait_stages;
+        submit_info.commandBufferCount = 1;
+        submit_info.pCommandBuffers = &command_buffer_;
+        vk::Semaphore signal_semaphores[] = {render_finished_semaphore};
+        submit_info.signalSemaphoreCount = 1;
+        submit_info.pSignalSemaphores = signal_semaphores;
 
         try {
-            vk::SubmitInfo submitInfoLocal = submitInfo;
-            graphicsQueue.submit(submitInfoLocal, inFlightFence);
+            vk::SubmitInfo submit_info_local = submit_info;
+            graphics_queue_.submit(submit_info_local, in_flight_fence);
         } catch (const std::exception& e) {
             throw std::runtime_error(std::string("Failed to submit command buffer: ") + e.what());
         }
 
         // Present the image
-        vk::PresentInfoKHR presentInfo{};
-        presentInfo.waitSemaphoreCount = 1;
-        presentInfo.pWaitSemaphores = signalSemaphores;
-        presentInfo.swapchainCount = 1;
-        presentInfo.pSwapchains = &scData.swapchain;
-        presentInfo.pImageIndices = &imageIndex;
+        vk::PresentInfoKHR present_info{};
+        present_info.waitSemaphoreCount = 1;
+        present_info.pWaitSemaphores = signal_semaphores;
+        present_info.swapchainCount = 1;
+        present_info.pSwapchains = &sc_data.swapchain;
+        present_info.pImageIndices = &image_index;
 
         try {
-            vk::Result presentResult = graphicsQueue.presentKHR(presentInfo);
-            if (presentResult == vk::Result::eErrorOutOfDateKHR || presentResult == vk::Result::eSuboptimalKHR) {
+            vk::Result present_result = graphics_queue_.presentKHR(present_info);
+            if (present_result == vk::Result::eErrorOutOfDateKHR || present_result == vk::Result::eSuboptimalKHR) {
                 throw std::runtime_error("Swapchain is out of date or suboptimal.");
-            } else if (presentResult != vk::Result::eSuccess) {
+            } else if (present_result != vk::Result::eSuccess) {
                 throw std::runtime_error("Failed to present swapchain image.");
             }
         } catch (const std::exception& e) {
@@ -1193,32 +1198,32 @@ class VulkanRenderer : public IRenderer {
         }
 
         // Advance to the next frame
-        scData.currentFrame = (scData.currentFrame + 1) % MAX_FRAMES_IN_FLIGHT;
+        sc_data.current_frame = (sc_data.current_frame + 1) % kMaxFramesInFlight;
     }
 
-    void DrawIndexed(uint32_t index_count, uint32_t instance_count, uint32_t first_index, int32_t vertex_offset,
-                     uint32_t first_instance) override {
-        commandBuffer.drawIndexed(index_count, instance_count, first_index, vertex_offset, first_instance);
+    void DrawIndexed(uint32_t index_count, uint32_t instance_count = 1, uint32_t first_index = 0,
+                     int32_t vertex_offset = 0, uint32_t first_instance = 0) override {
+        command_buffer_.drawIndexed(index_count, instance_count, first_index, vertex_offset, first_instance);
     }
 
     bool ReloadShader(const ShaderHandle& handle, const ShaderDesc& new_desc) override {
-        std::lock_guard<std::recursive_mutex> lock(resourceMutex);
-        auto it = shaders.find(handle);
-        if (it == shaders.end())
+        std::lock_guard<std::recursive_mutex> lock_(resource_mutex_);
+        auto it = shaders_.find(handle);
+        if (it == shaders_.end())
             return false;
 
         // Destroy old shader module
-        device.destroyShaderModule(it->second.shader_module);
+        device_.destroyShaderModule(it->second.shader_module);
 
         // Load new shader
         std::ifstream file(new_desc.file_path, std::ios::ate | std::ios::binary);
         if (!file.is_open()) {
             return false;
         }
-        size_t fileSize = static_cast<size_t>(file.tellg());
-        std::vector<char> buffer(fileSize);
+        size_t file_size = static_cast<size_t>(file.tellg());
+        std::vector<char> buffer(file_size);
         file.seekg(0);
-        file.read(buffer.data(), fileSize);
+        file.read(buffer.data(), file_size);
         file.close();
 
         it->second.shader_module = CreateShaderModule(buffer);
@@ -1228,149 +1233,149 @@ class VulkanRenderer : public IRenderer {
     }
 
     void ReleaseResource(const SwapChainHandle& handle) override {
-        std::lock_guard<std::recursive_mutex> lock(resourceMutex);
-        auto it = swapChains.find(handle);
-        if (it != swapChains.end()) {
-            VulkanSwapChain& scData = it->second;
-            if (scData.swapchain) {
-                device.destroySwapchainKHR(scData.swapchain);
+        std::lock_guard<std::recursive_mutex> lock_(resource_mutex_);
+        auto it = swapchains_.find(handle);
+        if (it != swapchains_.end()) {
+            VulkanSwapChain& sc_data = it->second;
+            if (sc_data.swapchain) {
+                device_.destroySwapchainKHR(sc_data.swapchain);
             }
 
 #if 0
-            ReleaseResource(scData.renderpass_handle);
+      ReleaseResource(sc_data.renderpass_handle);
 
-            for (auto& texture : scData.color_handles) {
-                ReleaseResource(texture);
-            }
+      for (auto& texture : sc_data.color_handles) {
+        ReleaseResource(texture);
+      }
 
-            ReleaseResource(scData.depth_handle);
+      ReleaseResource(sc_data.depth_handle);
 #endif
             // Cleanup synchronization primitives
-            for (auto& semaphore : scData.imageAvailableSemaphores) {
-                device.destroySemaphore(semaphore);
+            for (auto& semaphore : sc_data.image_available_semaphores) {
+                device_.destroySemaphore(semaphore);
             }
-            for (auto& semaphore : scData.renderFinishedSemaphores) {
-                device.destroySemaphore(semaphore);
+            for (auto& semaphore : sc_data.render_finished_semaphores) {
+                device_.destroySemaphore(semaphore);
             }
-            for (auto& fence : scData.inFlightFences) {
-                device.destroyFence(fence);
+            for (auto& fence : sc_data.in_flight_fences) {
+                device_.destroyFence(fence);
             }
-            swapChains.erase(it);
+            swapchains_.erase(it);
         }
     }
 
     void ReleaseResource(const TextureHandle& handle) override {
-        std::lock_guard<std::recursive_mutex> lock(resourceMutex);
-        auto it = textures.find(handle);
-        if (it != textures.end()) {
+        std::lock_guard<std::recursive_mutex> lock_(resource_mutex_);
+        auto it = textures_.find(handle);
+        if (it != textures_.end()) {
             // Decrement ref count
             if (--it->second.ref_count == 0) {
                 // Destroy image view
-                device.destroyImageView(it->second.image_view);
+                device_.destroyImageView(it->second.image_view);
 
                 if (it->second.creation_type == TextureCreationType::kRegular) {
                     // Only destroy image and allocation if not from swapchain
                     if (it->second.allocation != VK_NULL_HANDLE) {
-                        vmaDestroyImage(allocator, static_cast<VkImage>(it->second.image), it->second.allocation);
+                        vmaDestroyImage(allocator_, static_cast<VkImage>(it->second.image), it->second.allocation);
                     }
                 }
-                // If creationType is kSwapChain, do not destroy the image itself
+                // If creation_type is kSwapChain, do not destroy the image itself
 
-                textures.erase(it);
+                textures_.erase(it);
             }
         }
     }
 
     void ReleaseResource(const SamplerHandle& handle) override {
-        std::lock_guard<std::recursive_mutex> lock(resourceMutex);
-        auto it = samplers.find(handle);
-        if (it != samplers.end()) {
+        std::lock_guard<std::recursive_mutex> lock_(resource_mutex_);
+        auto it = samplers_.find(handle);
+        if (it != samplers_.end()) {
             // Decrement ref count
             if (--it->second.ref_count == 0) {
-                device.destroySampler(it->second.sampler);
-                samplers.erase(it);
+                device_.destroySampler(it->second.sampler);
+                samplers_.erase(it);
             }
         }
     }
 
     void ReleaseResource(const PipelineHandle& handle) override {
-        std::lock_guard<std::recursive_mutex> lock(resourceMutex);
-        auto it = pipelines.find(handle);
-        if (it != pipelines.end()) {
+        std::lock_guard<std::recursive_mutex> lock_(resource_mutex_);
+        auto it = pipelines_.find(handle);
+        if (it != pipelines_.end()) {
             // Decrement ref count
             if (--it->second.ref_count == 0) {
-                // device.destroyPipeline(it->second.pipeline);
-                device.destroyPipelineLayout(it->second.layout);
-                pipelines.erase(it);
+                // device_.destroyPipeline(it->second.pipeline);
+                device_.destroyPipelineLayout(it->second.layout);
+                pipelines_.erase(it);
             }
         }
     }
 
     void ReleaseResource(const ShaderHandle& handle) override {
-        std::lock_guard<std::recursive_mutex> lock(resourceMutex);
-        auto it = shaders.find(handle);
-        if (it != shaders.end()) {
+        std::lock_guard<std::recursive_mutex> lock_(resource_mutex_);
+        auto it = shaders_.find(handle);
+        if (it != shaders_.end()) {
             // Decrement ref count
             if (--it->second.ref_count == 0) {
-                device.destroyShaderModule(it->second.shader_module);
-                shaders.erase(it);
+                device_.destroyShaderModule(it->second.shader_module);
+                shaders_.erase(it);
             }
         }
     }
 
     void ReleaseResource(const FrameBufferHandle& handle) override {
-        std::lock_guard<std::recursive_mutex> lock(resourceMutex);
-        auto it = frameBuffers.find(handle);
-        if (it != frameBuffers.end()) {
+        std::lock_guard<std::recursive_mutex> lock_(resource_mutex_);
+        auto it = framebuffers_.find(handle);
+        if (it != framebuffers_.end()) {
             if (--it->second.ref_count == 0) {
-                device.destroyFramebuffer(it->second.framebuffer);
-                ReleaseResource(it->second.renderPassHandle);
-                frameBuffers.erase(it);
+                device_.destroyFramebuffer(it->second.framebuffer);
+                ReleaseResource(it->second.renderpass_handle);
+                framebuffers_.erase(it);
             }
         }
     }
 
    private:
     // Vulkan core components
-    vk::Instance instance;
-    vk::PhysicalDevice physicalDevice;
-    vk::Device device;
-    vk::Queue graphicsQueue;
-    uint32_t graphicsQueueFamily;
-    vk::SurfaceKHR surface;
-    vk::RenderPass renderPass;
-    vk::CommandPool commandPool;
-    vk::CommandBuffer commandBuffer;
+    vk::Instance instance_;
+    vk::PhysicalDevice physical_device_;
+    vk::Device device_;
+    vk::Queue graphics_queue_;
+    uint32_t graphics_queue_family_;
+    vk::SurfaceKHR surface_;
+    vk::RenderPass render_pass_;
+    vk::CommandPool command_pool_;
+    vk::CommandBuffer command_buffer_;
 
     // Debug messenger
-    vk::DebugUtilsMessengerEXT debugMessenger;
+    vk::DebugUtilsMessengerEXT debug_messenger_;
 
     // VMA Allocator
-    VmaAllocator allocator;
+    VmaAllocator allocator_;
 
     // Resource maps using dedicated structs
-    std::unordered_map<BufferHandle, VulkanBuffer, HandleHash> buffers;
-    std::unordered_map<TextureHandle, VulkanTexture, HandleHash> textures;
-    std::unordered_map<SamplerHandle, VulkanSampler, HandleHash> samplers;
-    std::unordered_map<ShaderHandle, VulkanShader, HandleHash> shaders;
-    std::unordered_map<PipelineHandle, VulkanPipeline, HandleHash> pipelines;
-    std::unordered_map<SwapChainHandle, VulkanSwapChain, HandleHash> swap_chains;
-    std::unordered_map<FrameBufferHandle, VulkanFrameBuffer, HandleHash> frame_buffers;
-    std::unordered_map<RenderPassHandle, VulkanRenderPass, HandleHash> render_passes;
+    std::unordered_map<BufferHandle, VulkanBuffer, HandleHash> buffers_;
+    std::unordered_map<TextureHandle, VulkanTexture, HandleHash> textures_;
+    std::unordered_map<SamplerHandle, VulkanSampler, HandleHash> samplers_;
+    std::unordered_map<ShaderHandle, VulkanShader, HandleHash> shaders_;
+    std::unordered_map<PipelineHandle, VulkanPipeline, HandleHash> pipelines_;
+    std::unordered_map<SwapChainHandle, VulkanSwapChain, HandleHash> swapchains_;
+    std::unordered_map<FrameBufferHandle, VulkanFrameBuffer, HandleHash> framebuffers_;
+    std::unordered_map<RenderPassHandle, VulkanRenderPass, HandleHash> render_passes_;
 
     // Handle to index mapping
-    std::recursive_mutex resourceMutex;
+    std::recursive_mutex resource_mutex_;
 
     // Descriptor Set Management
-    vk::DescriptorPool descriptorPool;
-    vk::DescriptorSetLayout descriptorSetLayout;  // #TODO 내부적으로 자동 관리
-    std::mutex descriptorMutex;
+    vk::DescriptorPool descriptor_pool_;
+    vk::DescriptorSetLayout descriptor_set_layout_;  // #TODO 내부적으로 자동 관리
+    std::mutex descriptor_mutex_;
 
     // Current pipeline handle
-    vk::Pipeline currentPipeline;
-    vk::PipelineLayout pipelineLayout;  // #TODO 내부적으로 자동 관리
-    uint32_t current_pass = 0;
-    RenderPassHandle currentRenderPassHandle;
+    vk::Pipeline current_pipeline_;
+    vk::PipelineLayout pipeline_layout_;  // #TODO 내부적으로 자동 관리
+    uint32_t current_pass_ = 0;
+    RenderPassHandle current_render_pass_handle_;
 
     // Internal methods
     void InitVulkan(const char* app_name) {
@@ -1384,11 +1389,11 @@ class VulkanRenderer : public IRenderer {
         CreateLogicalDevice();
 
         // Initialize VMA
-        VmaAllocatorCreateInfo allocatorInfo = {};
-        allocatorInfo.physicalDevice = static_cast<VkPhysicalDevice>(physicalDevice);
-        allocatorInfo.device = static_cast<VkDevice>(device);
-        allocatorInfo.instance = static_cast<VkInstance>(instance);
-        if (vmaCreateAllocator(&allocatorInfo, &allocator) != VK_SUCCESS) {
+        VmaAllocatorCreateInfo allocator_info = {};
+        allocator_info.physicalDevice = static_cast<VkPhysicalDevice>(physical_device_);
+        allocator_info.device = static_cast<VkDevice>(device_);
+        allocator_info.instance = static_cast<VkInstance>(instance_);
+        if (vmaCreateAllocator(&allocator_info, &allocator_) != VK_SUCCESS) {
             throw std::runtime_error("Failed to create VMA allocator.");
         }
 
@@ -1405,198 +1410,201 @@ class VulkanRenderer : public IRenderer {
     }
 
     void CleanupVulkan() {
-        device.waitIdle();
+        device_.waitIdle();
 
-        std::lock_guard<std::recursive_mutex> lock(resourceMutex);
-        bool memoryLeak = false;
+        std::lock_guard<std::recursive_mutex> lock_(resource_mutex_);
+        bool memory_leak = false;
 
         // Destroy all pipelines
-        for (auto& [handle, pipeline] : pipelines) {
-            // device.destroyPipeline(pipeline.pipeline);
-            device.destroyPipelineLayout(pipeline.layout);
+        for (auto& [handle, pipeline] : pipelines_) {
+            // device_.destroyPipeline(pipeline.pipeline);
+            device_.destroyPipelineLayout(pipeline.layout);
             if (pipeline.ref_count != 0) {
-                memoryLeak = true;
+                memory_leak = true;
                 std::cerr << "Memory Leak: Pipeline ID " << handle.id << " has refCount " << pipeline.ref_count
                           << std::endl;
             }
         }
-        pipelines.clear();
+        pipelines_.clear();
 
         // Destroy all shader modules
-        for (auto& [handle, shader] : shaders) {
-            device.destroyShaderModule(shader.shader_module);
+        for (auto& [handle, shader] : shaders_) {
+            device_.destroyShaderModule(shader.shader_module);
             if (shader.ref_count != 0) {
-                memoryLeak = true;
+                memory_leak = true;
                 std::cerr << "Memory Leak: Shader ID " << handle.id << " has refCount " << shader.ref_count
                           << std::endl;
             }
         }
-        shaders.clear();
+        shaders_.clear();
 
         // Destroy all samplers
-        for (auto& [handle, sampler] : samplers) {
-            device.destroySampler(sampler.sampler);
+        for (auto& [handle, sampler] : samplers_) {
+            device_.destroySampler(sampler.sampler);
             if (sampler.ref_count != 0) {
-                memoryLeak = true;
+                memory_leak = true;
                 std::cerr << "Memory Leak: Sampler ID " << handle.id << " has refCount " << sampler.ref_count
                           << std::endl;
             }
         }
-        samplers.clear();
+        samplers_.clear();
 
         // Destroy all image views and images
-        for (auto& [handle, texture] : textures) {
-            device.destroyImageView(texture.image_view);
-            if (texture.creation_type != TextureCreationType::kSwapChain)
-                vmaDestroyImage(allocator, static_cast<VkImage>(texture.image), texture.allocation);
+        for (auto& [handle, texture] : textures_) {
+            device_.destroyImageView(texture.image_view);
+            if (texture.creation_type == TextureCreationType::kRegular && texture.allocation != VK_NULL_HANDLE) {
+                vmaDestroyImage(allocator_, static_cast<VkImage>(texture.image), texture.allocation);
+            }
             if (texture.ref_count != 0) {
-                memoryLeak = true;
+                memory_leak = true;
                 std::cerr << "Memory Leak: Texture ID " << handle.id << " has refCount " << texture.ref_count
                           << std::endl;
             }
         }
-        textures.clear();
+        textures_.clear();
 
         // Destroy all buffers
-        for (auto& [handle, buffer] : buffers) {
-            vmaDestroyBuffer(allocator, static_cast<VkBuffer>(buffer.buffer), buffer.allocation);
+        for (auto& [handle, buffer] : buffers_) {
+            vmaDestroyBuffer(allocator_, static_cast<VkBuffer>(buffer.buffer), buffer.allocation);
             if (buffer.ref_count != 0) {
-                memoryLeak = true;
+                memory_leak = true;
                 std::cerr << "Memory Leak: Buffer ID " << handle.id << " has refCount " << buffer.ref_count
                           << std::endl;
             }
         }
-        buffers.clear();
+        buffers_.clear();
 
         // Destroy all framebuffers
-        for (auto& [handle, framebuffer] : frameBuffers) {
-            device.destroyFramebuffer(framebuffer.framebuffer);
+        for (auto& [handle, framebuffer] : framebuffers_) {
+            device_.destroyFramebuffer(framebuffer.framebuffer);
+            ReleaseResource(framebuffer.renderpass_handle);
             if (framebuffer.ref_count != 0) {
-                memoryLeak = true;
+                memory_leak = true;
                 std::cerr << "Memory Leak: FrameBuffer ID " << handle.id << " has refCount " << framebuffer.ref_count
                           << std::endl;
             }
         }
-        frameBuffers.clear();
+        framebuffers_.clear();
 
         // Destroy all render passes
-        for (auto& [handle, renderPassStruct] : renderPasses) {
-            device.destroyRenderPass(renderPassStruct.renderpass);
-            if (renderPassStruct.ref_count != 0) {
-                memoryLeak = true;
+        for (auto& [handle, render_pass_struct] : render_passes_) {
+            device_.destroyRenderPass(render_pass_struct.renderpass);
+            if (render_pass_struct.ref_count != 0) {
+                memory_leak = true;
                 std::cerr << "Memory Leak: RenderPass ID " << handle.id << " has refCount "
-                          << renderPassStruct.ref_count << std::endl;
+                          << render_pass_struct.ref_count << std::endl;
             }
         }
-        renderPasses.clear();
+        render_passes_.clear();
 
         // Destroy all swapchains and their image views and framebuffers
-        for (auto& [handle, scData] : swapChains) {
-            if (scData.swapchain) {
-                device.destroySwapchainKHR(scData.swapchain);
+        for (auto& [handle, sc_data] : swapchains_) {
+            if (sc_data.swapchain) {
+                device_.destroySwapchainKHR(sc_data.swapchain);
             }
             // Destroy synchronization primitives
-            for (auto& semaphore : scData.imageAvailableSemaphores) {
-                device.destroySemaphore(semaphore);
+            for (auto& semaphore : sc_data.image_available_semaphores) {
+                device_.destroySemaphore(semaphore);
             }
-            for (auto& semaphore : scData.renderFinishedSemaphores) {
-                device.destroySemaphore(semaphore);
+            for (auto& semaphore : sc_data.render_finished_semaphores) {
+                device_.destroySemaphore(semaphore);
             }
-            for (auto& fence : scData.inFlightFences) {
-                device.destroyFence(fence);
+            for (auto& fence : sc_data.in_flight_fences) {
+                device_.destroyFence(fence);
             }
         }
-        swapChains.clear();
+        swapchains_.clear();
 
-        if (memoryLeak) {
+        if (memory_leak) {
             std::cerr << "VulkanRenderer Cleanup: Memory leaks detected." << std::endl;
         }
 
         // Destroy Render Pass
-        if (renderPass) {
-            device.destroyRenderPass(renderPass);
+        if (render_pass_) {
+            device_.destroyRenderPass(render_pass_);
         }
 
         // Destroy Command Pool
-        if (commandPool) {
-            device.destroyCommandPool(commandPool);
+        if (command_pool_) {
+            device_.destroyCommandPool(command_pool_);
         }
 
         // Destroy Descriptor Pool
-        if (descriptorPool) {
-            device.destroyDescriptorPool(descriptorPool);
+        if (descriptor_pool_) {
+            device_.destroyDescriptorPool(descriptor_pool_);
         }
 
         // Destroy Debug Messenger
-        if (debugMessenger) {
-            auto func = (PFN_vkDestroyDebugUtilsMessengerEXT)vkGetInstanceProcAddr(static_cast<VkInstance>(instance),
+        if (debug_messenger_) {
+            auto func = (PFN_vkDestroyDebugUtilsMessengerEXT)vkGetInstanceProcAddr(static_cast<VkInstance>(instance_),
                                                                                    "vkDestroyDebugUtilsMessengerEXT");
             if (func != nullptr) {
-                func(static_cast<VkInstance>(instance), static_cast<VkDebugUtilsMessengerEXT>(debugMessenger), nullptr);
+                func(static_cast<VkInstance>(instance_), static_cast<VkDebugUtilsMessengerEXT>(debug_messenger_),
+                     nullptr);
             }
         }
 
         // Destroy VMA allocator
-        if (allocator) {
-            vmaDestroyAllocator(allocator);
+        if (allocator_) {
+            vmaDestroyAllocator(allocator_);
         }
 
         // Destroy Vulkan device
-        if (device) {
-            device.destroy();
+        if (device_) {
+            device_.destroy();
         }
 
         // Destroy Vulkan instance
-        if (instance) {
-            instance.destroy();
+        if (instance_) {
+            instance_.destroy();
         }
     }
 
     void CreateInstance(const char* app_name) {
         // Validation layers
-        const std::vector<const char*> validationLayers = {"VK_LAYER_KHRONOS_validation"};
+        const std::vector<const char*> validation_layers = {"VK_LAYER_KHRONOS_validation"};
 
         if (!CheckValidationLayerSupport()) {
             throw std::runtime_error("Validation layers requested, but not available!");
         }
 
         // Application info
-        vk::ApplicationInfo appInfo;
-        appInfo.pApplicationName = app_name;
-        appInfo.applicationVersion = VK_MAKE_VERSION(1, 0, 0);
-        appInfo.pEngineName = "Lumora";
-        appInfo.engineVersion = VK_MAKE_VERSION(1, 0, 0);
-        appInfo.apiVersion = VK_API_VERSION_1_2;
+        vk::ApplicationInfo app_info{};
+        app_info.pApplicationName = app_name;
+        app_info.applicationVersion = VK_MAKE_VERSION(1, 0, 0);
+        app_info.pEngineName = "Lumora";
+        app_info.engineVersion = VK_MAKE_VERSION(1, 0, 0);
+        app_info.apiVersion = VK_API_VERSION_1_2;
 
         // Get required extensions
         std::vector<const char*> extensions = GetRequiredExtensions();
 
-        vk::InstanceCreateInfo createInfo;
-        createInfo.pApplicationInfo = &appInfo;
+        vk::InstanceCreateInfo create_info{};
+        create_info.pApplicationInfo = &app_info;
 
         // Enable extensions
-        createInfo.enabledExtensionCount = static_cast<uint32_t>(extensions.size());
-        createInfo.ppEnabledExtensionNames = extensions.data();
+        create_info.enabledExtensionCount = static_cast<uint32_t>(extensions.size());
+        create_info.ppEnabledExtensionNames = extensions.data();
 
         // Enable validation layers
-        createInfo.enabledLayerCount = static_cast<uint32_t>(validationLayers.size());
-        createInfo.ppEnabledLayerNames = validationLayers.data();
+        create_info.enabledLayerCount = static_cast<uint32_t>(validation_layers.size());
+        create_info.ppEnabledLayerNames = validation_layers.data();
 
         // Debug messenger create info (optional)
-        vk::DebugUtilsMessengerCreateInfoEXT debugCreateInfo = {};
-        debugCreateInfo.messageSeverity = vk::DebugUtilsMessageSeverityFlagBitsEXT::eVerbose |
-                                          vk::DebugUtilsMessageSeverityFlagBitsEXT::eWarning |
-                                          vk::DebugUtilsMessageSeverityFlagBitsEXT::eError;
-        debugCreateInfo.messageType = vk::DebugUtilsMessageTypeFlagBitsEXT::eGeneral |
-                                      vk::DebugUtilsMessageTypeFlagBitsEXT::eValidation |
-                                      vk::DebugUtilsMessageTypeFlagBitsEXT::ePerformance;
-        debugCreateInfo.pfnUserCallback = debugCallback;
+        vk::DebugUtilsMessengerCreateInfoEXT debug_create_info = {};
+        debug_create_info.messageSeverity = vk::DebugUtilsMessageSeverityFlagBitsEXT::eVerbose |
+                                            vk::DebugUtilsMessageSeverityFlagBitsEXT::eWarning |
+                                            vk::DebugUtilsMessageSeverityFlagBitsEXT::eError;
+        debug_create_info.messageType = vk::DebugUtilsMessageTypeFlagBitsEXT::eGeneral |
+                                        vk::DebugUtilsMessageTypeFlagBitsEXT::eValidation |
+                                        vk::DebugUtilsMessageTypeFlagBitsEXT::ePerformance;
+        debug_create_info.pfnUserCallback = DebugCallback;
 
-        createInfo.pNext = (VkDebugUtilsMessengerCreateInfoEXT*)&debugCreateInfo;
+        create_info.pNext = (VkDebugUtilsMessengerCreateInfoEXT*)&debug_create_info;
 
         // Create instance
         try {
-            instance = vk::createInstance(createInfo);
+            instance_ = vk::createInstance(create_info);
         } catch (const std::exception& e) {
             throw std::runtime_error(std::string("Failed to create Vulkan instance: ") + e.what());
         }
@@ -1606,145 +1614,143 @@ class VulkanRenderer : public IRenderer {
         if (!CheckValidationLayerSupport())
             return;
 
-        vk::DebugUtilsMessengerCreateInfoEXT createInfo = {};
-        createInfo.messageSeverity = vk::DebugUtilsMessageSeverityFlagBitsEXT::eVerbose |
-                                     vk::DebugUtilsMessageSeverityFlagBitsEXT::eWarning |
-                                     vk::DebugUtilsMessageSeverityFlagBitsEXT::eError;
-        createInfo.messageType = vk::DebugUtilsMessageTypeFlagBitsEXT::eGeneral |
-                                 vk::DebugUtilsMessageTypeFlagBitsEXT::eValidation |
-                                 vk::DebugUtilsMessageTypeFlagBitsEXT::ePerformance;
-        createInfo.pfnUserCallback = debugCallback;
+        vk::DebugUtilsMessengerCreateInfoEXT create_info{};
+        create_info.messageSeverity = vk::DebugUtilsMessageSeverityFlagBitsEXT::eVerbose |
+                                      vk::DebugUtilsMessageSeverityFlagBitsEXT::eWarning |
+                                      vk::DebugUtilsMessageSeverityFlagBitsEXT::eError;
+        create_info.messageType = vk::DebugUtilsMessageTypeFlagBitsEXT::eGeneral |
+                                  vk::DebugUtilsMessageTypeFlagBitsEXT::eValidation |
+                                  vk::DebugUtilsMessageTypeFlagBitsEXT::ePerformance;
+        create_info.pfnUserCallback = DebugCallback;
 
-        auto func = (PFN_vkCreateDebugUtilsMessengerEXT)vkGetInstanceProcAddr(static_cast<VkInstance>(instance),
+        auto func = (PFN_vkCreateDebugUtilsMessengerEXT)vkGetInstanceProcAddr(static_cast<VkInstance>(instance_),
                                                                               "vkCreateDebugUtilsMessengerEXT");
         if (func != nullptr) {
             VkDebugUtilsMessengerEXT messenger;
-            if (func(static_cast<VkInstance>(instance),
-                     reinterpret_cast<const VkDebugUtilsMessengerCreateInfoEXT*>(&createInfo), nullptr,
-                     &messenger) != VK_SUCCESS) {
+            if (func(static_cast<VkInstance>(instance_), &create_info, nullptr, &messenger) != VK_SUCCESS) {
                 throw std::runtime_error("Failed to set up debug messenger!");
             }
-            debugMessenger = vk::DebugUtilsMessengerEXT(messenger);
+            debug_messenger_ = vk::DebugUtilsMessengerEXT(messenger);
         } else {
             throw std::runtime_error("Could not load vkCreateDebugUtilsMessengerEXT");
         }
     }
 
     void PickPhysicalDevice() {
-        auto devices = instance.enumeratePhysicalDevices();
+        auto devices = instance_.enumeratePhysicalDevices();
         if (devices.empty()) {
             throw std::runtime_error("Failed to find GPUs with Vulkan support.");
         }
 
         // Select the first suitable device
-        for (const auto& deviceCandidate : devices) {
+        for (const auto& device_candidate : devices) {
             // Check for graphics queue family
-            auto queueFamilies = deviceCandidate.getQueueFamilyProperties();
-            bool hasGraphics = false;
-            for (size_t i = 0; i < queueFamilies.size(); ++i) {
-                if (queueFamilies[i].queueFlags & vk::QueueFlagBits::eGraphics) {
-                    graphicsQueueFamily = static_cast<uint32_t>(i);
-                    hasGraphics = true;
+            auto queue_families = device_candidate.getQueueFamilyProperties();
+            bool has_graphics = false;
+            for (size_t i = 0; i < queue_families.size(); ++i) {
+                if (queue_families[i].queueFlags & vk::QueueFlagBits::eGraphics) {
+                    graphics_queue_family_ = static_cast<uint32_t>(i);
+                    has_graphics = true;
                     break;
                 }
             }
-            if (hasGraphics) {
-                physicalDevice = deviceCandidate;
+            if (has_graphics) {
+                physical_device_ = device_candidate;
                 break;
             }
         }
 
-        if (!physicalDevice) {
+        if (!physical_device_) {
             throw std::runtime_error("Failed to find a suitable GPU with graphics and present capabilities.");
         }
     }
 
     void CreateLogicalDevice() {
-        float queuePriority = 1.0f;
-        vk::DeviceQueueCreateInfo queueCreateInfo;
-        queueCreateInfo.queueFamilyIndex = graphicsQueueFamily;
-        queueCreateInfo.queueCount = 1;
-        queueCreateInfo.pQueuePriorities = &queuePriority;
+        float queue_priority = 1.0f;
+        vk::DeviceQueueCreateInfo queue_create_info{};
+        queue_create_info.queueFamilyIndex = graphics_queue_family_;
+        queue_create_info.queueCount = 1;
+        queue_create_info.pQueuePriorities = &queue_priority;
 
         // Specify device features if needed
-        vk::PhysicalDeviceFeatures deviceFeatures = {};
+        vk::PhysicalDeviceFeatures device_features{};
 
         // Device extensions
-        std::vector<const char*> deviceExtensions = {
+        std::vector<const char*> device_extensions = {
             VK_KHR_SWAPCHAIN_EXTENSION_NAME
             // Add other device extensions if needed
         };
 
-        vk::DeviceCreateInfo createInfo;
-        createInfo.pQueueCreateInfos = &queueCreateInfo;
-        createInfo.queueCreateInfoCount = 1;
-        createInfo.pEnabledFeatures = &deviceFeatures;
-        createInfo.enabledExtensionCount = static_cast<uint32_t>(deviceExtensions.size());
-        createInfo.ppEnabledExtensionNames = deviceExtensions.data();
+        vk::DeviceCreateInfo create_info{};
+        create_info.pQueueCreateInfos = &queue_create_info;
+        create_info.queueCreateInfoCount = 1;
+        create_info.pEnabledFeatures = &device_features;
+        create_info.enabledExtensionCount = static_cast<uint32_t>(device_extensions.size());
+        create_info.ppEnabledExtensionNames = device_extensions.data();
 
         // Enable validation layers for device (optional, deprecated in newer Vulkan)
-        createInfo.enabledLayerCount = 0;
+        create_info.enabledLayerCount = 0;
 
         try {
-            device = physicalDevice.createDevice(createInfo);
+            device_ = physical_device_.createDevice(create_info);
         } catch (const std::exception& e) {
             throw std::runtime_error(std::string("Failed to create logical device: ") + e.what());
         }
 
-        graphicsQueue = device.getQueue(graphicsQueueFamily, 0);
+        graphics_queue_ = device_.getQueue(graphics_queue_family_, 0);
     }
 
     void CreateSurface(const SwapChainDesc& desc) {
 #ifdef _WIN32
         // Win32 Surface
-        VkWin32SurfaceCreateInfoKHR createInfo = {};
-        createInfo.sType = VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR;
-        createInfo.hwnd = static_cast<HWND>(desc.window_handle.win32.hwnd);
-        createInfo.hinstance = static_cast<HINSTANCE>(desc.window_handle.win32.hinstance);
+        VkWin32SurfaceCreateInfoKHR create_info{};
+        create_info.sType = VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR;
+        create_info.hwnd = static_cast<HWND>(desc.window_handle.win32.hwnd);
+        create_info.hinstance = static_cast<HINSTANCE>(desc.window_handle.win32.hinstance);
 
-        VkSurfaceKHR rawSurface;
-        if (vkCreateWin32SurfaceKHR(static_cast<VkInstance>(instance), &createInfo, nullptr, &rawSurface) !=
+        VkSurfaceKHR raw_surface;
+        if (vkCreateWin32SurfaceKHR(static_cast<VkInstance>(instance_), &create_info, nullptr, &raw_surface) !=
             VK_SUCCESS) {
             throw std::runtime_error("Failed to create Win32 surface.");
         }
-        surface = vk::SurfaceKHR(rawSurface);
+        surface_ = vk::SurfaceKHR(raw_surface);
 #elif defined(__linux__)
         // Xlib Surface (example)
-        VkXlibSurfaceCreateInfoKHR createInfo = {};
-        createInfo.sType = VK_STRUCTURE_TYPE_XLIB_SURFACE_CREATE_INFO_KHR;
-        createInfo.dpy = static_cast<Display*>(desc.window_handle.xlib.display);
-        createInfo.window = static_cast<Window>(desc.window_handle.xlib.window);
+        VkXlibSurfaceCreateInfoKHR create_info{};
+        create_info.sType = VK_STRUCTURE_TYPE_XLIB_SURFACE_CREATE_INFO_KHR;
+        create_info.dpy = static_cast<Display*>(desc.window_handle.xlib.display);
+        create_info.window = static_cast<Window>(desc.window_handle.xlib.window);
 
-        VkSurfaceKHR rawSurface;
-        if (vkCreateXlibSurfaceKHR(static_cast<VkInstance>(instance), &createInfo, nullptr, &rawSurface) !=
+        VkSurfaceKHR raw_surface;
+        if (vkCreateXlibSurfaceKHR(static_cast<VkInstance>(instance_), &create_info, nullptr, &raw_surface) !=
             VK_SUCCESS) {
             throw std::runtime_error("Failed to create Xlib surface.");
         }
-        surface = vk::SurfaceKHR(rawSurface);
+        surface_ = vk::SurfaceKHR(raw_surface);
 #elif defined(__ANDROID__)
         // Android Surface
-        VkAndroidSurfaceCreateInfoKHR createInfo = {};
-        createInfo.sType = VK_STRUCTURE_TYPE_ANDROID_SURFACE_CREATE_INFO_KHR;
-        createInfo.window = static_cast<ANativeWindow*>(desc.window_handle.android.window);
+        VkAndroidSurfaceCreateInfoKHR create_info{};
+        create_info.sType = VK_STRUCTURE_TYPE_ANDROID_SURFACE_CREATE_INFO_KHR;
+        create_info.window = static_cast<ANativeWindow*>(desc.window_handle.android.window);
 
-        VkSurfaceKHR rawSurface;
-        if (vkCreateAndroidSurfaceKHR(static_cast<VkInstance>(instance), &createInfo, nullptr, &rawSurface) !=
+        VkSurfaceKHR raw_surface;
+        if (vkCreateAndroidSurfaceKHR(static_cast<VkInstance>(instance_), &create_info, nullptr, &raw_surface) !=
             VK_SUCCESS) {
             throw std::runtime_error("Failed to create Android surface.");
         }
-        surface = vk::SurfaceKHR(rawSurface);
+        surface_ = vk::SurfaceKHR(raw_surface);
 #elif defined(__APPLE__)
         // MoltenVK Surface (macOS/iOS)
-        VkMetalSurfaceCreateInfoEXT createInfo = {};
-        createInfo.sType = VK_STRUCTURE_TYPE_METAL_SURFACE_CREATE_INFO_EXT;
-        createInfo.pLayer = static_cast<id<CAMetalLayer>>(desc.window_handle.cocoa.view);
+        VkMetalSurfaceCreateInfoEXT create_info{};
+        create_info.sType = VK_STRUCTURE_TYPE_METAL_SURFACE_CREATE_INFO_EXT;
+        create_info.pLayer = static_cast<id<CAMetalLayer>>(desc.window_handle.cocoa.view);
 
-        VkSurfaceKHR rawSurface;
-        if (vkCreateMetalSurfaceEXT(static_cast<VkInstance>(instance), &createInfo, nullptr, &rawSurface) !=
+        VkSurfaceKHR raw_surface;
+        if (vkCreateMetalSurfaceEXT(static_cast<VkInstance>(instance_), &create_info, nullptr, &raw_surface) !=
             VK_SUCCESS) {
             throw std::runtime_error("Failed to create Metal surface.");
         }
-        surface = vk::SurfaceKHR(rawSurface);
+        surface_ = vk::SurfaceKHR(raw_surface);
 #else
         throw std::runtime_error("Unsupported platform for surface creation.");
 #endif
@@ -1752,27 +1758,27 @@ class VulkanRenderer : public IRenderer {
 
     RenderPassHandle CreateRenderPassInternal(const RenderPassDesc& desc) {
         // Hash the RenderPassDesc to use as a key
-        uint64_t hashKey = hashDesc(desc);
+        uint64_t hash_key = HashDesc(desc);
 
         // Create a unique handle
-        RenderPassHandle handle{hashKey};
+        RenderPassHandle handle{hash_key};
 
         // Check if render pass already exists
-        auto it = renderPasses.find(handle);
-        if (it != renderPasses.end()) {
+        auto it = render_passes_.find(handle);
+        if (it != render_passes_.end()) {
             it->second.ref_count++;
             return it->first;
         }
 
-        size_t attachmentCount = desc.color_formats.size();
-        bool hasDepth = (desc.depth_format != Format::kUnknown);
-        if (hasDepth) {
-            attachmentCount += 1;
+        size_t attachment_count = desc.color_formats.size();
+        bool has_depth = (desc.depth_format != Format::kUnknown);
+        if (has_depth) {
+            attachment_count += 1;
         }
 
-        std::vector<vk::AttachmentDescription> attachments(attachmentCount);
-        std::vector<vk::AttachmentReference> colorAttachmentRefs(desc.color_formats.size());
-        std::vector<vk::AttachmentReference> depthAttachmentRef;
+        std::vector<vk::AttachmentDescription> attachments(attachment_count);
+        std::vector<vk::AttachmentReference> color_attachment_refs(desc.color_formats.size());
+        std::vector<vk::AttachmentReference> depth_attachment_ref;
 
         // Setup color attachments
         for (size_t i = 0; i < desc.color_formats.size(); i++) {
@@ -1791,12 +1797,12 @@ class VulkanRenderer : public IRenderer {
             attachments[i].initialLayout = vk::ImageLayout::eUndefined;
             attachments[i].finalLayout = vk::ImageLayout::ePresentSrcKHR;
 
-            colorAttachmentRefs[i].attachment = static_cast<uint32_t>(i);
-            colorAttachmentRefs[i].layout = vk::ImageLayout::eColorAttachmentOptimal;
+            color_attachment_refs[i].attachment = static_cast<uint32_t>(i);
+            color_attachment_refs[i].layout = vk::ImageLayout::eColorAttachmentOptimal;
         }
 
         // Setup depth attachment if present
-        if (hasDepth) {
+        if (has_depth) {
             attachments[desc.color_formats.size()].format = MapFormat(desc.depth_format);
             attachments[desc.color_formats.size()].samples = vk::SampleCountFlagBits::e1;
             attachments[desc.color_formats.size()].loadOp =
@@ -1812,20 +1818,20 @@ class VulkanRenderer : public IRenderer {
             attachments[desc.color_formats.size()].initialLayout = vk::ImageLayout::eUndefined;
             attachments[desc.color_formats.size()].finalLayout = vk::ImageLayout::eDepthStencilAttachmentOptimal;
 
-            vk::AttachmentReference depthRef{};
-            depthRef.attachment = static_cast<uint32_t>(desc.color_formats.size());
-            depthRef.layout = vk::ImageLayout::eDepthStencilAttachmentOptimal;
+            vk::AttachmentReference depth_ref{};
+            depth_ref.attachment = static_cast<uint32_t>(desc.color_formats.size());
+            depth_ref.layout = vk::ImageLayout::eDepthStencilAttachmentOptimal;
 
-            depthAttachmentRef.push_back(depthRef);
+            depth_attachment_ref.push_back(depth_ref);
         }
 
         // Define subpasses
         vk::SubpassDescription subpass{};
         subpass.pipelineBindPoint = vk::PipelineBindPoint::eGraphics;
-        subpass.colorAttachmentCount = static_cast<uint32_t>(colorAttachmentRefs.size());
-        subpass.pColorAttachments = colorAttachmentRefs.data();
-        if (hasDepth) {
-            subpass.pDepthStencilAttachment = &depthAttachmentRef[0];
+        subpass.colorAttachmentCount = static_cast<uint32_t>(color_attachment_refs.size());
+        subpass.pColorAttachments = color_attachment_refs.data();
+        if (has_depth) {
+            subpass.pDepthStencilAttachment = &depth_attachment_ref[0];
         } else {
             subpass.pDepthStencilAttachment = nullptr;
         }
@@ -1844,126 +1850,126 @@ class VulkanRenderer : public IRenderer {
         dependencies.push_back(dependency);
 
         // Create render pass
-        vk::RenderPassCreateInfo renderPassInfo{};
-        renderPassInfo.attachmentCount = static_cast<uint32_t>(attachments.size());
-        renderPassInfo.pAttachments = attachments.data();
-        renderPassInfo.subpassCount = 1;
-        renderPassInfo.pSubpasses = &subpass;
-        renderPassInfo.dependencyCount = static_cast<uint32_t>(dependencies.size());
-        renderPassInfo.pDependencies = dependencies.data();
+        vk::RenderPassCreateInfo render_pass_info{};
+        render_pass_info.attachmentCount = static_cast<uint32_t>(attachments.size());
+        render_pass_info.pAttachments = attachments.data();
+        render_pass_info.subpassCount = 1;
+        render_pass_info.pSubpasses = &subpass;
+        render_pass_info.dependencyCount = static_cast<uint32_t>(dependencies.size());
+        render_pass_info.pDependencies = dependencies.data();
 
-        VulkanRenderPass vRenderPass;
+        VulkanRenderPass vrender_pass;
 
         try {
-            vRenderPass.renderpass = device.createRenderPass(renderPassInfo);
+            vrender_pass.renderpass = device_.createRenderPass(render_pass_info);
         } catch (const std::exception& e) {
             throw std::runtime_error(std::string("Failed to create render pass: ") + e.what());
         }
 
-        vRenderPass.desc = desc;
-        vRenderPass.ref_count = 1;
-        vRenderPass.descHash = hashKey;  // Store the hash
+        vrender_pass.desc = desc;
+        vrender_pass.ref_count = 1;
+        vrender_pass.desc_hash = hash_key;  // Store the hash
 
         // Store the render pass
-        renderPasses[handle] = vRenderPass;
+        render_passes_.emplace(handle, vrender_pass);
 
         return handle;
     }
 
-    vk::ImageView CreateView(vk::Image image, vk::Format format, vk::ImageAspectFlags aspectMask) {
-        vk::ImageViewCreateInfo viewInfo{};
-        viewInfo.image = image;
-        viewInfo.viewType = vk::ImageViewType::e2D;
-        viewInfo.format = format;
-        viewInfo.components.r = vk::ComponentSwizzle::eIdentity;
-        viewInfo.components.g = vk::ComponentSwizzle::eIdentity;
-        viewInfo.components.b = vk::ComponentSwizzle::eIdentity;
-        viewInfo.components.a = vk::ComponentSwizzle::eIdentity;
-        viewInfo.subresourceRange.aspectMask = aspectMask;
-        viewInfo.subresourceRange.baseMipLevel = 0;
-        viewInfo.subresourceRange.levelCount = 1;
-        viewInfo.subresourceRange.baseArrayLayer = 0;
-        viewInfo.subresourceRange.layerCount = 1;
+    vk::ImageView CreateView(vk::Image image, vk::Format format, vk::ImageAspectFlags aspect_mask) {
+        vk::ImageViewCreateInfo view_info{};
+        view_info.image = image;
+        view_info.viewType = vk::ImageViewType::e2D;
+        view_info.format = format;
+        view_info.components.r = vk::ComponentSwizzle::eIdentity;
+        view_info.components.g = vk::ComponentSwizzle::eIdentity;
+        view_info.components.b = vk::ComponentSwizzle::eIdentity;
+        view_info.components.a = vk::ComponentSwizzle::eIdentity;
+        view_info.subresourceRange.aspectMask = aspect_mask;
+        view_info.subresourceRange.baseMipLevel = 0;
+        view_info.subresourceRange.levelCount = 1;
+        view_info.subresourceRange.baseArrayLayer = 0;
+        view_info.subresourceRange.layerCount = 1;
 
         try {
-            return device.createImageView(viewInfo);
+            return device_.createImageView(view_info);
         } catch (const std::exception& e) {
             throw std::runtime_error(std::string("Failed to create image view: ") + e.what());
         }
     }
 
     void CreateCommandPool() {
-        vk::CommandPoolCreateInfo poolInfo{};
-        poolInfo.queueFamilyIndex = graphicsQueueFamily;
-        poolInfo.flags = vk::CommandPoolCreateFlagBits::eResetCommandBuffer;
+        vk::CommandPoolCreateInfo pool_info{};
+        pool_info.queueFamilyIndex = graphics_queue_family_;
+        pool_info.flags = vk::CommandPoolCreateFlagBits::eResetCommandBuffer;
 
         try {
-            commandPool = device.createCommandPool(poolInfo);
+            command_pool_ = device_.createCommandPool(pool_info);
         } catch (const std::exception& e) {
             throw std::runtime_error(std::string("Failed to create command pool: ") + e.what());
         }
     }
 
     void AllocateCommandBuffer() {
-        vk::CommandBufferAllocateInfo allocInfo{};
-        allocInfo.commandPool = commandPool;
-        allocInfo.level = vk::CommandBufferLevel::ePrimary;
-        allocInfo.commandBufferCount = 1;
+        vk::CommandBufferAllocateInfo alloc_info{};
+        alloc_info.commandPool = command_pool_;
+        alloc_info.level = vk::CommandBufferLevel::ePrimary;
+        alloc_info.commandBufferCount = 1;
 
         try {
-            auto commandBuffers = device.allocateCommandBuffers(allocInfo);
-            if (commandBuffers.empty()) {
+            auto command_buffers = device_.allocateCommandBuffers(alloc_info);
+            if (command_buffers.empty()) {
                 throw std::runtime_error("Failed to allocate command buffer.");
             }
-            commandBuffer = commandBuffers[0];
+            command_buffer_ = command_buffers[0];
         } catch (const std::exception& e) {
             throw std::runtime_error(std::string("Failed to allocate command buffer: ") + e.what());
         }
     }
 
-    void SetupSynchronization(VulkanSwapChain& scData) {
-        scData.imageAvailableSemaphores.resize(MAX_FRAMES_IN_FLIGHT);
-        scData.renderFinishedSemaphores.resize(MAX_FRAMES_IN_FLIGHT);
-        scData.inFlightFences.resize(MAX_FRAMES_IN_FLIGHT);
-        scData.currentFrame = 0;
+    void SetupSynchronization(VulkanSwapChain& sc_data) {
+        sc_data.image_available_semaphores.resize(kMaxFramesInFlight);
+        sc_data.render_finished_semaphores.resize(kMaxFramesInFlight);
+        sc_data.in_flight_fences.resize(kMaxFramesInFlight);
+        sc_data.current_frame = 0;
 
-        vk::SemaphoreCreateInfo semaphoreInfo{};
-        vk::FenceCreateInfo fenceInfo{};
-        fenceInfo.flags = vk::FenceCreateFlagBits::eSignaled;  // Initially signaled
+        vk::SemaphoreCreateInfo semaphore_info{};
+        vk::FenceCreateInfo fence_info{};
+        fence_info.flags = vk::FenceCreateFlagBits::eSignaled;  // Initially signaled
 
-        for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
+        for (int i = 0; i < kMaxFramesInFlight; i++) {
             try {
-                scData.imageAvailableSemaphores[i] = device.createSemaphore(semaphoreInfo);
-                scData.renderFinishedSemaphores[i] = device.createSemaphore(semaphoreInfo);
-                scData.inFlightFences[i] = device.createFence(fenceInfo);
+                sc_data.image_available_semaphores[i] = device_.createSemaphore(semaphore_info);
+                sc_data.render_finished_semaphores[i] = device_.createSemaphore(semaphore_info);
+                sc_data.in_flight_fences[i] = device_.createFence(fence_info);
             } catch (const std::exception& e) {
                 throw std::runtime_error(std::string("Failed to create synchronization primitives: ") + e.what());
             }
         }
     }
 
-    void CleanupSynchronization(VulkanSwapChain& scData) {
-        for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
-            device.destroySemaphore(scData.imageAvailableSemaphores[i]);
-            device.destroySemaphore(scData.renderFinishedSemaphores[i]);
-            device.destroyFence(scData.inFlightFences[i]);
+    void CleanupSynchronization(VulkanSwapChain& sc_data) {
+        for (int i = 0; i < kMaxFramesInFlight; i++) {
+            device_.destroySemaphore(sc_data.image_available_semaphores[i]);
+            device_.destroySemaphore(sc_data.render_finished_semaphores[i]);
+            device_.destroyFence(sc_data.in_flight_fences[i]);
         }
-        scData.imageAvailableSemaphores.clear();
-        scData.renderFinishedSemaphores.clear();
-        scData.inFlightFences.clear();
-        scData.currentFrame = 0;
+        sc_data.image_available_semaphores.clear();
+        sc_data.render_finished_semaphores.clear();
+        sc_data.in_flight_fences.clear();
+        sc_data.current_frame = 0;
     }
 
-    void TransitionImageLayout(vk::CommandBuffer cmdBuffer, vk::Image image, vk::Format format,
-                               vk::ImageLayout oldLayout, vk::ImageLayout newLayout) {
+    void TransitionImageLayout(vk::CommandBuffer cmd_buffer, vk::Image image, vk::Format format,
+                               vk::ImageLayout old_layout, vk::ImageLayout new_layout) {
         vk::ImageMemoryBarrier barrier{};
-        barrier.oldLayout = oldLayout;
-        barrier.newLayout = newLayout;
+        barrier.oldLayout = old_layout;
+        barrier.newLayout = new_layout;
         barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
         barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
         barrier.image = image;
 
-        if (newLayout == vk::ImageLayout::eDepthStencilAttachmentOptimal) {
+        if (new_layout == vk::ImageLayout::eDepthStencilAttachmentOptimal) {
             barrier.subresourceRange.aspectMask = vk::ImageAspectFlagBits::eDepth;
             if (format == vk::Format::eD32SfloatS8Uint || format == vk::Format::eD24UnormS8Uint) {
                 barrier.subresourceRange.aspectMask |= vk::ImageAspectFlagBits::eStencil;
@@ -1977,51 +1983,52 @@ class VulkanRenderer : public IRenderer {
         barrier.subresourceRange.baseArrayLayer = 0;
         barrier.subresourceRange.layerCount = 1;
 
-        vk::PipelineStageFlags sourceStage;
-        vk::PipelineStageFlags destinationStage;
+        vk::PipelineStageFlags source_stage;
+        vk::PipelineStageFlags destination_stage;
 
-        if (oldLayout == vk::ImageLayout::eUndefined && newLayout == vk::ImageLayout::eTransferDstOptimal) {
+        if (old_layout == vk::ImageLayout::eUndefined && new_layout == vk::ImageLayout::eTransferDstOptimal) {
             barrier.srcAccessMask = {};
             barrier.dstAccessMask = vk::AccessFlagBits::eTransferWrite;
 
-            sourceStage = vk::PipelineStageFlagBits::eTopOfPipe;
-            destinationStage = vk::PipelineStageFlagBits::eTransfer;
-        } else if (oldLayout == vk::ImageLayout::eTransferDstOptimal &&
-                   newLayout == vk::ImageLayout::eShaderReadOnlyOptimal) {
+            source_stage = vk::PipelineStageFlagBits::eTopOfPipe;
+            destination_stage = vk::PipelineStageFlagBits::eTransfer;
+        } else if (old_layout == vk::ImageLayout::eTransferDstOptimal &&
+                   new_layout == vk::ImageLayout::eShaderReadOnlyOptimal) {
             barrier.srcAccessMask = vk::AccessFlagBits::eTransferWrite;
             barrier.dstAccessMask = vk::AccessFlagBits::eShaderRead;
 
-            sourceStage = vk::PipelineStageFlagBits::eTransfer;
-            destinationStage = vk::PipelineStageFlagBits::eFragmentShader;
-        } else if (oldLayout == vk::ImageLayout::eUndefined &&
-                   newLayout == vk::ImageLayout::eDepthStencilAttachmentOptimal) {
+            source_stage = vk::PipelineStageFlagBits::eTransfer;
+            destination_stage = vk::PipelineStageFlagBits::eFragmentShader;
+        } else if (old_layout == vk::ImageLayout::eUndefined &&
+                   new_layout == vk::ImageLayout::eDepthStencilAttachmentOptimal) {
             barrier.srcAccessMask = {};
             barrier.dstAccessMask =
                 vk::AccessFlagBits::eDepthStencilAttachmentRead | vk::AccessFlagBits::eDepthStencilAttachmentWrite;
 
-            sourceStage = vk::PipelineStageFlagBits::eTopOfPipe;
-            destinationStage = vk::PipelineStageFlagBits::eEarlyFragmentTests;
+            source_stage = vk::PipelineStageFlagBits::eTopOfPipe;
+            destination_stage = vk::PipelineStageFlagBits::eEarlyFragmentTests;
         } else {
             throw std::invalid_argument("Unsupported layout transition!");
         }
 
-        cmdBuffer.pipelineBarrier(sourceStage, destinationStage, {},  // dependency flags
-                                  0, nullptr,                         // memory barriers
-                                  0, nullptr,                         // buffer memory barriers
-                                  1, &barrier                         // image memory barriers
+        cmd_buffer.pipelineBarrier(source_stage, destination_stage, {},  // dependency flags
+                                   0, nullptr,                           // memory barriers
+                                   0, nullptr,                           // buffer memory barriers
+                                   1, &barrier                           // image memory barriers
         );
     }
-    void InsertImageMemoryBarrier(vk::CommandBuffer& cmdBuffer, vk::Image image, vk::Format format,
-                                  vk::ImageLayout oldLayout, vk::ImageLayout newLayout, vk::PipelineStageFlags srcStage,
-                                  vk::PipelineStageFlags dstStage) {
+
+    void InsertImageMemoryBarrier(vk::CommandBuffer& cmd_buffer, vk::Image image, vk::Format format,
+                                  vk::ImageLayout old_layout, vk::ImageLayout new_layout,
+                                  vk::PipelineStageFlags src_stage, vk::PipelineStageFlags dst_stage) {
         vk::ImageMemoryBarrier barrier{};
-        barrier.oldLayout = oldLayout;
-        barrier.newLayout = newLayout;
+        barrier.oldLayout = old_layout;
+        barrier.newLayout = new_layout;
         barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
         barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
         barrier.image = image;
 
-        if (newLayout == vk::ImageLayout::eDepthStencilAttachmentOptimal) {
+        if (new_layout == vk::ImageLayout::eDepthStencilAttachmentOptimal) {
             barrier.subresourceRange.aspectMask = vk::ImageAspectFlagBits::eDepth;
             if (format == vk::Format::eD32SfloatS8Uint || format == vk::Format::eD24UnormS8Uint) {
                 barrier.subresourceRange.aspectMask |= vk::ImageAspectFlagBits::eStencil;
@@ -2035,15 +2042,15 @@ class VulkanRenderer : public IRenderer {
         barrier.subresourceRange.baseArrayLayer = 0;
         barrier.subresourceRange.layerCount = 1;
 
-        if (oldLayout == vk::ImageLayout::eUndefined && newLayout == vk::ImageLayout::eTransferDstOptimal) {
+        if (old_layout == vk::ImageLayout::eUndefined && new_layout == vk::ImageLayout::eTransferDstOptimal) {
             barrier.srcAccessMask = {};
             barrier.dstAccessMask = vk::AccessFlagBits::eTransferWrite;
-        } else if (oldLayout == vk::ImageLayout::eTransferDstOptimal &&
-                   newLayout == vk::ImageLayout::eShaderReadOnlyOptimal) {
+        } else if (old_layout == vk::ImageLayout::eTransferDstOptimal &&
+                   new_layout == vk::ImageLayout::eShaderReadOnlyOptimal) {
             barrier.srcAccessMask = vk::AccessFlagBits::eTransferWrite;
             barrier.dstAccessMask = vk::AccessFlagBits::eShaderRead;
-        } else if (oldLayout == vk::ImageLayout::eUndefined &&
-                   newLayout == vk::ImageLayout::eDepthStencilAttachmentOptimal) {
+        } else if (old_layout == vk::ImageLayout::eUndefined &&
+                   new_layout == vk::ImageLayout::eDepthStencilAttachmentOptimal) {
             barrier.srcAccessMask = {};
             barrier.dstAccessMask =
                 vk::AccessFlagBits::eDepthStencilAttachmentRead | vk::AccessFlagBits::eDepthStencilAttachmentWrite;
@@ -2051,33 +2058,33 @@ class VulkanRenderer : public IRenderer {
             throw std::invalid_argument("Unsupported layout transition!");
         }
 
-        cmdBuffer.pipelineBarrier(srcStage, dstStage, {},  // dependency flags
-                                  0, nullptr,              // memory barriers
-                                  0, nullptr,              // buffer memory barriers
-                                  1, &barrier              // image memory barriers
+        cmd_buffer.pipelineBarrier(src_stage, dst_stage, {},  // dependency flags
+                                   0, nullptr,                // memory barriers
+                                   0, nullptr,                // buffer memory barriers
+                                   1, &barrier                // image memory barriers
         );
     }
 
     bool CheckValidationLayerSupport() {
-        uint32_t layerCount;
-        vkEnumerateInstanceLayerProperties(&layerCount, nullptr);
+        uint32_t layer_count;
+        vkEnumerateInstanceLayerProperties(&layer_count, nullptr);
 
-        std::vector<VkLayerProperties> availableLayers(layerCount);
-        vkEnumerateInstanceLayerProperties(&layerCount, availableLayers.data());
+        std::vector<VkLayerProperties> available_layers(layer_count);
+        vkEnumerateInstanceLayerProperties(&layer_count, available_layers.data());
 
-        const std::vector<const char*> validationLayers = {"VK_LAYER_KHRONOS_validation"};
+        const std::vector<const char*> validation_layers = {"VK_LAYER_KHRONOS_validation"};
 
-        for (const char* layerName : validationLayers) {
-            bool layerFound = false;
+        for (const char* layer_name : validation_layers) {
+            bool layer_found = false;
 
-            for (const auto& layerProperties : availableLayers) {
-                if (strcmp(layerName, layerProperties.layerName) == 0) {
-                    layerFound = true;
+            for (const auto& layer_properties : available_layers) {
+                if (std::strcmp(layer_name, layer_properties.layerName) == 0) {
+                    layer_found = true;
                     break;
                 }
             }
 
-            if (!layerFound) {
+            if (!layer_found) {
                 return false;
             }
         }
@@ -2086,8 +2093,8 @@ class VulkanRenderer : public IRenderer {
     }
 
     std::vector<const char*> GetRequiredExtensions() {
-        uint32_t glfwExtensionCount = 0;
-        const char** glfwExtensions;
+        uint32_t glfw_extension_count = 0;
+        const char** glfw_extensions;
 
         // Platform-specific extensions
         std::vector<const char*> extensions = {VK_EXT_DEBUG_UTILS_EXTENSION_NAME, VK_KHR_SURFACE_EXTENSION_NAME};
@@ -2121,124 +2128,124 @@ class VulkanRenderer : public IRenderer {
             vk::DescriptorSetLayoutBinding{1, vk::DescriptorType::eCombinedImageSampler, 1,
                                            vk::ShaderStageFlagBits::eFragment}};
 
-        vk::DescriptorSetLayoutCreateInfo layoutInfo{};
-        layoutInfo.bindingCount = static_cast<uint32_t>(bindings.size());
-        layoutInfo.pBindings = bindings.data();
+        vk::DescriptorSetLayoutCreateInfo layout_info{};
+        layout_info.bindingCount = static_cast<uint32_t>(bindings.size());
+        layout_info.pBindings = bindings.data();
 
         try {
-            descriptorSetLayout = device.createDescriptorSetLayout(layoutInfo);
+            descriptor_set_layout_ = device_.createDescriptorSetLayout(layout_info);
         } catch (const std::exception& e) {
             throw std::runtime_error(std::string("Failed to create descriptor set layout: ") + e.what());
         }
 
         // Create Pipeline Layout with Descriptor Set Layout
-        vk::PipelineLayoutCreateInfo pipelineLayoutInfo{};
-        pipelineLayoutInfo.setLayoutCount = 1;
-        pipelineLayoutInfo.pSetLayouts = &descriptorSetLayout;
+        vk::PipelineLayoutCreateInfo pipeline_layout_info{};
+        pipeline_layout_info.setLayoutCount = 1;
+        pipeline_layout_info.pSetLayouts = &descriptor_set_layout_;
 
         try {
-            pipelineLayout = device.createPipelineLayout(pipelineLayoutInfo);
+            pipeline_layout_ = device_.createPipelineLayout(pipeline_layout_info);
         } catch (const std::exception& e) {
             throw std::runtime_error(std::string("Failed to create pipeline layout: ") + e.what());
         }
     }
 
     void CreateDescriptorPool() {
-        std::lock_guard<std::mutex> lock(descriptorMutex);
+        std::lock_guard<std::mutex> lock_(descriptor_mutex_);
 
-        std::vector<vk::DescriptorPoolSize> poolSizes = {
+        std::vector<vk::DescriptorPoolSize> pool_sizes = {
             {vk::DescriptorType::eUniformBuffer, 100}, {vk::DescriptorType::eCombinedImageSampler, 100}
             // Add more pool sizes as needed
         };
 
-        vk::DescriptorPoolCreateInfo poolInfo{};
-        poolInfo.poolSizeCount = static_cast<uint32_t>(poolSizes.size());
-        poolInfo.pPoolSizes = poolSizes.data();
-        poolInfo.maxSets = 100;  // Adjust based on application needs
+        vk::DescriptorPoolCreateInfo pool_info{};
+        pool_info.poolSizeCount = static_cast<uint32_t>(pool_sizes.size());
+        pool_info.pPoolSizes = pool_sizes.data();
+        pool_info.maxSets = 100;  // Adjust based on application needs
 
         try {
-            descriptorPool = device.createDescriptorPool(poolInfo);
+            descriptor_pool_ = device_.createDescriptorPool(pool_info);
         } catch (const std::exception& e) {
             throw std::runtime_error(std::string("Failed to create descriptor pool: ") + e.what());
         }
     }
 
     DescriptorSet AllocateDescriptorSet() {
-        vk::DescriptorSetAllocateInfo allocInfo{};
-        allocInfo.descriptorPool = descriptorPool;
-        allocInfo.descriptorSetCount = 1;
-        allocInfo.pSetLayouts = &descriptorSetLayout;
+        vk::DescriptorSetAllocateInfo alloc_info{};
+        alloc_info.descriptorPool = descriptor_pool_;
+        alloc_info.descriptorSetCount = 1;
+        alloc_info.pSetLayouts = &descriptor_set_layout_;
 
-        vk::DescriptorSet descriptorSet;
+        vk::DescriptorSet descriptor_set;
         try {
-            descriptorSet = device.allocateDescriptorSets(allocInfo).front();
+            descriptor_set = device_.allocateDescriptorSets(alloc_info).front();
         } catch (const std::exception& e) {
             throw std::runtime_error(std::string("Failed to allocate descriptor set: ") + e.what());
         }
 
         DescriptorSet ds;
-        ds.descriptorSet = descriptorSet;
-        // descriptorSets[descriptorSet] = ds; // #FIXME hashing
+        ds.descriptor_set = descriptor_set;
+        // descriptorSets_[descriptor_set] = ds; // #FIXME hashing
 
         return ds;
     }
 
-    void UpdateDescriptorSet(BufferHandle bufferHandle, TextureHandle textureHandle, DescriptorSet& ds) {
-        auto bufferIt = buffers.find(bufferHandle);
-        if (bufferIt == buffers.end()) {
+    void UpdateDescriptorSet(BufferHandle buffer_handle, TextureHandle texture_handle, DescriptorSet& ds) {
+        auto buffer_it = buffers_.find(buffer_handle);
+        if (buffer_it == buffers_.end()) {
             throw std::runtime_error("Invalid BufferHandle provided to UpdateDescriptorSet.");
         }
 
-        auto textureIt = textures.find(textureHandle);
-        if (textureIt == textures.end()) {
+        auto texture_it = textures_.find(texture_handle);
+        if (texture_it == textures_.end()) {
             throw std::runtime_error("Invalid TextureHandle provided to UpdateDescriptorSet.");
         }
 
         // Update uniform buffer
-        vk::DescriptorBufferInfo bufferInfo{};
-        bufferInfo.buffer = bufferIt->second.buffer;
-        bufferInfo.offset = 0;
-        bufferInfo.range = VK_WHOLE_SIZE;
-        ds.bufferInfos.push_back(bufferInfo);
+        vk::DescriptorBufferInfo buffer_info{};
+        buffer_info.buffer = buffer_it->second.buffer;
+        buffer_info.offset = 0;
+        buffer_info.range = VK_WHOLE_SIZE;
+        ds.buffer_infos.push_back(buffer_info);
 
         // Update image sampler
-        vk::DescriptorImageInfo imageInfo{};
-        imageInfo.imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
-        imageInfo.imageView = textureIt->second.image_view;
-        imageInfo.sampler = samplers.find(textureIt->second.sampler_handle)->second.sampler;
-        ds.imageInfos.push_back(imageInfo);
+        vk::DescriptorImageInfo image_info{};
+        image_info.imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
+        image_info.imageView = texture_it->second.image_view;
+        image_info.sampler = samplers_.at(texture_it->second.sampler_handle).sampler;
+        ds.image_infos.push_back(image_info);
 
         // Write descriptor sets
-        std::vector<vk::WriteDescriptorSet> descriptorWrites = {
+        std::vector<vk::WriteDescriptorSet> descriptor_writes = {
             // Binding 0: Uniform Buffer
-            vk::WriteDescriptorSet{ds.descriptorSet, 0, 0, 1, vk::DescriptorType::eUniformBuffer, nullptr,
-                                   &ds.bufferInfos.back(), nullptr},
+            vk::WriteDescriptorSet{ds.descriptor_set, 0, 0, 1, vk::DescriptorType::eUniformBuffer, nullptr,
+                                   &ds.buffer_infos.back(), nullptr},
             // Binding 1: Combined Image Sampler
-            vk::WriteDescriptorSet{ds.descriptorSet, 1, 0, 1, vk::DescriptorType::eCombinedImageSampler,
-                                   &ds.imageInfos.back(), nullptr, nullptr}};
+            vk::WriteDescriptorSet{ds.descriptor_set, 1, 0, 1, vk::DescriptorType::eCombinedImageSampler,
+                                   &ds.image_infos.back(), nullptr, nullptr}};
 
-        device.updateDescriptorSets(descriptorWrites, {});
+        device_.updateDescriptorSets(descriptor_writes, {});
     }
 
     vk::ShaderModule CreateShaderModule(const std::vector<char>& code) {
-        vk::ShaderModuleCreateInfo createInfo;
-        createInfo.codeSize = code.size();
-        createInfo.pCode = reinterpret_cast<const uint32_t*>(code.data());
+        vk::ShaderModuleCreateInfo create_info{};
+        create_info.codeSize = code.size();
+        create_info.pCode = reinterpret_cast<const uint32_t*>(code.data());
 
         try {
-            return device.createShaderModule(createInfo);
+            return device_.createShaderModule(create_info);
         } catch (const std::exception& e) {
             throw std::runtime_error(std::string("Failed to create shader module: ") + e.what());
         }
     }
 
     void ReleaseResource(const RenderPassHandle& handle) {
-        std::lock_guard<std::recursive_mutex> lock(resourceMutex);
-        auto it = renderPasses.find(handle);
-        if (it != renderPasses.end()) {
+        std::lock_guard<std::recursive_mutex> lock_(resource_mutex_);
+        auto it = render_passes_.find(handle);
+        if (it != render_passes_.end()) {
             if (--it->second.ref_count == 0) {
-                device.destroyRenderPass(it->second.renderpass);
-                renderPasses.erase(it);
+                device_.destroyRenderPass(it->second.renderpass);
+                render_passes_.erase(it);
             }
         }
     }
@@ -2347,16 +2354,16 @@ class VulkanRenderer : public IRenderer {
     }
 
     // #TODO xxHash로 교체
-    inline void hash_combine(std::size_t& seed) {}
+    inline void HashCombine(std::size_t& seed) {}
 
     template <typename T, typename... Rest>
-    inline void hash_combine(std::size_t& seed, const T& v, Rest... rest) {
+    inline void HashCombine(std::size_t& seed, const T& v, Rest... rest) {
         seed ^= std::hash<T>()(v) + 0x9e3779b9 + (seed << 6) + (seed >> 2);
-        hash_combine(seed, rest...);
+        HashCombine(seed, rest...);
     }
 
     // Hash RenderPassDesc
-    uint64_t hashDesc(const RenderPassDesc& desc) {
+    uint64_t HashDesc(const RenderPassDesc& desc) {
         std::hash<uint64_t> hasher;
         uint64_t seed = 0;
 
@@ -2366,8 +2373,8 @@ class VulkanRenderer : public IRenderer {
 
         seed ^= hasher(static_cast<uint64_t>(desc.depth_format)) + 0x9e3779b9 + (seed << 6) + (seed >> 2);
 
-        for (const auto& clearColor : desc.clear_colors) {
-            for (float value : clearColor) {
+        for (const auto& clear_color : desc.clear_colors) {
+            for (float value : clear_color) {
                 seed ^= hasher(*reinterpret_cast<const uint32_t*>(&value)) + 0x9e3779b9 + (seed << 6) + (seed >> 2);
             }
         }
@@ -2377,9 +2384,9 @@ class VulkanRenderer : public IRenderer {
                 (seed >> 2);
         seed ^= hasher(desc.clear_stencil_value) + 0x9e3779b9 + (seed << 6) + (seed >> 2);
 
-        for (const auto& colorOp : desc.color_attachment_options) {
-            seed ^= hasher(static_cast<uint64_t>(colorOp.load_op)) + 0x9e3779b9 + (seed << 6) + (seed >> 2);
-            seed ^= hasher(static_cast<uint64_t>(colorOp.store_op)) + 0x9e3779b9 + (seed << 6) + (seed >> 2);
+        for (const auto& color_op : desc.color_attachment_options) {
+            seed ^= hasher(static_cast<uint64_t>(color_op.load_op)) + 0x9e3779b9 + (seed << 6) + (seed >> 2);
+            seed ^= hasher(static_cast<uint64_t>(color_op.store_op)) + 0x9e3779b9 + (seed << 6) + (seed >> 2);
         }
 
         seed ^= hasher(static_cast<uint64_t>(desc.depth_attachment_options.load_op)) + 0x9e3779b9 + (seed << 6) +
@@ -2388,8 +2395,8 @@ class VulkanRenderer : public IRenderer {
                 (seed >> 2);
 
         for (const auto& subpass : desc.subpasses) {
-            for (const auto& colorAttachment : subpass.color_attachments) {
-                seed ^= hasher(colorAttachment.attachment) + 0x9e3779b9 + (seed << 6) + (seed >> 2);
+            for (const auto& color_attachment : subpass.color_attachments) {
+                seed ^= hasher(color_attachment.attachment) + 0x9e3779b9 + (seed << 6) + (seed >> 2);
             }
             if (subpass.depth_attachment.attachment != 0) {
                 seed ^= hasher(subpass.depth_attachment.attachment) + 0x9e3779b9 + (seed << 6) + (seed >> 2);
