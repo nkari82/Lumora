@@ -128,8 +128,22 @@ struct VulkanRenderPass : VulkanRef {
 struct VulkanSwapChain : VulkanRef {
     SwapChainDesc desc;
     vk::SwapchainKHR swapchain;
-    vk::Format color_format;  // refactoring
-    vk::Format depth_format;  // refactoring
+    vk::SurfaceKHR surface;  // Each swapchain's Surface
+    vk::Format color_format;
+    vk::Format depth_format;
+
+    // Each swapchain has its own Physical Device and Logical Device
+    vk::PhysicalDevice physical_device;
+    vk::Device logical_device;
+
+    uint32_t graphics_queue_family;  // Graphics Queue Family Index
+    uint32_t present_queue_family;   // Present Queue Family Index
+    vk::Queue graphics_queue;        // Graphics Queue
+
+    // Command Pool
+    vk::CommandPool command_pool;
+    std::vector<vk::CommandBuffer> command_buffers;
+
     // Synchronization primitives
     std::vector<vk::Semaphore> image_available_semaphores;
     std::vector<vk::Semaphore> render_finished_semaphores;
@@ -159,60 +173,64 @@ class VulkanRenderer : public IRenderer {
     SwapChainHandle CreateSwapChain(const SwapChainDesc& desc) override {
         std::lock_guard<std::recursive_mutex> lock_(resource_mutex_);
 
-        // Create surface if not already created
-        if (!surface_) {
-            surface_ = CreateSurface(desc.window_handle);
-        }
+        VulkanSwapChain swapchain_data;
+        swapchain_data.desc = desc;
 
-        // Choose surface format, present mode, and swap extent
-        auto surface_formats = physical_device_.getSurfaceFormatsKHR(surface_);
-        vk::SurfaceFormatKHR chosen_format = surface_formats[0];
-        for (const auto& available_format : surface_formats) {
-            if (available_format.format == vk::Format::eB8G8R8A8Unorm &&
-                available_format.colorSpace == vk::ColorSpaceKHR::eSrgbNonlinear) {
-                chosen_format = available_format;
-                break;
+        // 1. Create Surface
+        swapchain_data.surface = CreateSurface(desc.window_handle);
+
+        // 2. Pick Physical Device for this SwapChain
+        swapchain_data.physical_device = PickPhysicalDevice(swapchain_data.surface);
+
+        // Initialize VMA
+        if (!allocator_) {
+            VmaAllocatorCreateInfo allocator_info = {};
+            allocator_info.physicalDevice =
+                static_cast<VkPhysicalDevice>(swapchain_data.physical_device);  // #FIXME physical_device
+            allocator_info.device = static_cast<VkDevice>(device_);
+            allocator_info.instance = static_cast<VkInstance>(instance_);
+            if (vmaCreateAllocator(&allocator_info, &allocator_) != VK_SUCCESS) {
+                throw std::runtime_error("Failed to create VMA allocator.");
             }
         }
 
-        auto present_modes = physical_device_.getSurfacePresentModesKHR(surface_);
-        vk::PresentModeKHR chosen_present_mode = vk::PresentModeKHR::eFifo;
-        for (const auto& available_present_mode : present_modes) {
-            if (available_present_mode == vk::PresentModeKHR::eMailbox) {
-                chosen_present_mode = available_present_mode;
-                break;
-            }
-        }
+        // 4. Create Logical Device
+        CreateLogicalDevice(swapchain_data);
 
-        auto capabilities = physical_device_.getSurfaceCapabilitiesKHR(surface_);
-        vk::Extent2D chosen_extent = {};
-        if (capabilities.currentExtent.width != UINT32_MAX) {
-            chosen_extent = capabilities.currentExtent;
-        } else {
-            chosen_extent.width = std::clamp(static_cast<uint32_t>(desc.width), capabilities.minImageExtent.width,
-                                             capabilities.maxImageExtent.width);
-            chosen_extent.height = std::clamp(static_cast<uint32_t>(desc.height), capabilities.minImageExtent.height,
-                                              capabilities.maxImageExtent.height);
-        }
+        // 5. Select Surface Format, Present Mode, and Extent
+        auto surface_formats = swapchain_data.physical_device.getSurfaceFormatsKHR(swapchain_data.surface);
+        vk::SurfaceFormatKHR chosen_format = ChooseSurfaceFormat(surface_formats);
+
+        auto present_modes = swapchain_data.physical_device.getSurfacePresentModesKHR(swapchain_data.surface);
+        vk::PresentModeKHR chosen_present_mode = ChoosePresentMode(present_modes);
+
+        auto capabilities = swapchain_data.physical_device.getSurfaceCapabilitiesKHR(swapchain_data.surface);
+        vk::Extent2D chosen_extent = ChooseExtent(capabilities, desc.width, desc.height);
 
         uint32_t image_count = desc.buffer_count;
         if (capabilities.maxImageCount > 0 && image_count > capabilities.maxImageCount) {
             image_count = capabilities.maxImageCount;
         }
 
+        // 6. Set Image Usage Flags
+        vk::ImageUsageFlags image_usage_flags = Convert(desc.image_usage);
+
+        // 7. Create Swapchain
         vk::SwapchainCreateInfoKHR swapchain_info{};
-        swapchain_info.surface = surface_;
+        swapchain_info.sType = vk::StructureType::eSwapchainCreateInfoKHR;
+        swapchain_info.surface = swapchain_data.surface;
         swapchain_info.minImageCount = image_count;
         swapchain_info.imageFormat = chosen_format.format;
         swapchain_info.imageColorSpace = chosen_format.colorSpace;
         swapchain_info.imageExtent = chosen_extent;
         swapchain_info.imageArrayLayers = 1;
-        swapchain_info.imageUsage = Convert(desc.image_usage);  // 변경: TextureUsage 매핑
+        swapchain_info.imageUsage = image_usage_flags;
 
-        // Handle queue families
-        uint32_t queue_family_indices[] = {graphics_queue_family_, present_queue_family_};
-        if (graphics_queue_family_ != present_queue_family_) {  // 수정된 조건문
+        // Queue Family Handling
+        if (swapchain_data.graphics_queue_family != swapchain_data.present_queue_family) {
             swapchain_info.imageSharingMode = vk::SharingMode::eConcurrent;
+            uint32_t queue_family_indices[] = {swapchain_data.graphics_queue_family,
+                                               swapchain_data.present_queue_family};
             swapchain_info.queueFamilyIndexCount = 2;
             swapchain_info.pQueueFamilyIndices = queue_family_indices;
         } else {
@@ -225,23 +243,39 @@ class VulkanRenderer : public IRenderer {
         swapchain_info.clipped = VK_TRUE;
         swapchain_info.oldSwapchain = nullptr;
 
-        VulkanSwapChain swapchain_data;
-
         try {
-            swapchain_data.swapchain = device_.createSwapchainKHR(swapchain_info);
+            swapchain_data.swapchain = swapchain_data.logical_device.createSwapchainKHR(swapchain_info);
         } catch (const std::exception& e) {
             throw std::runtime_error(std::string("Failed to create swap chain: ") + e.what());
         }
 
-        // Create synchronization primitives
+        // 8. Create Command Pool
+        swapchain_data.command_pool = CreateCommandPool(swapchain_data);
+
+        // 8.1 Allocate Command Buffers
+        vk::CommandBufferAllocateInfo alloc_info{};
+        alloc_info.sType = vk::StructureType::eCommandBufferAllocateInfo;
+        alloc_info.commandPool = swapchain_data.command_pool;
+        alloc_info.level = vk::CommandBufferLevel::ePrimary;
+        alloc_info.commandBufferCount = kMaxFramesInFlight;  // 예: 프레임당 하나의 커맨드 버퍼
+
+        try {
+            swapchain_data.command_buffers = swapchain_data.logical_device.allocateCommandBuffers(alloc_info);
+        } catch (const std::exception& e) {
+            throw std::runtime_error(std::string("Failed to allocate command buffers: ") + e.what());
+        }
+
+        // 9. Setup Synchronization Primitives
         SetupSynchronization(swapchain_data);
 
+        // 10. Store the SwapChain
         SwapChainHandle handle;
         handle.id = GenerateUniqueID();
         swapchains_.emplace(handle, swapchain_data);
 
         return handle;
     }
+
     BufferHandle CreateBuffer(const BufferDesc& desc) override {
         VulkanBuffer vbuffer;
 
@@ -1066,6 +1100,8 @@ class VulkanRenderer : public IRenderer {
             throw std::runtime_error("Failed to acquire swapchain image.");
         }
 
+        command_buffer_ = sc_data.command_buffers[sc_data.current_frame];
+
         // Reset and begin the command buffer
         command_buffer_.reset({});
         vk::CommandBufferBeginInfo begin_info{};
@@ -1101,7 +1137,7 @@ class VulkanRenderer : public IRenderer {
         submit_info.pSignalSemaphores = signal_semaphores;
 
         try {
-            graphics_queue_.submit(submit_info, in_flight_fence);
+            sc_data.graphics_queue.submit(submit_info, in_flight_fence);
         } catch (const std::exception& e) {
             throw std::runtime_error(std::string("Failed to submit command buffer: ") + e.what());
         }
@@ -1115,7 +1151,7 @@ class VulkanRenderer : public IRenderer {
         present_info.pImageIndices = &image_index;
 
         try {
-            vk::Result present_result = graphics_queue_.presentKHR(present_info);
+            vk::Result present_result = sc_data.graphics_queue.presentKHR(present_info);
             if (present_result == vk::Result::eErrorOutOfDateKHR || present_result == vk::Result::eSuboptimalKHR) {
                 throw std::runtime_error("Swapchain is out of date or suboptimal.");
             } else if (present_result != vk::Result::eSuccess) {
@@ -1160,34 +1196,43 @@ class VulkanRenderer : public IRenderer {
         return true;
     }
 
-    void ReleaseResource(const SwapChainHandle& handle) override {
-        std::lock_guard<std::recursive_mutex> lock_(resource_mutex_);
+    void ReleaseResource(const SwapChainHandle& handle) {
         auto it = swapchains_.find(handle);
         if (it != swapchains_.end()) {
             VulkanSwapChain& sc_data = it->second;
-            if (sc_data.swapchain) {
-                device_.destroySwapchainKHR(sc_data.swapchain);
-            }
 
-#if 0
-      ReleaseResource(sc_data.renderpass_handle);
-
-      for (auto& texture : sc_data.color_handles) {
-        ReleaseResource(texture);
-      }
-
-      ReleaseResource(sc_data.depth_handle);
-#endif
-            // Cleanup synchronization primitives
+            // Synchronization primitives 정리
             for (auto& semaphore : sc_data.image_available_semaphores) {
-                device_.destroySemaphore(semaphore);
+                sc_data.logical_device.destroySemaphore(semaphore);
             }
             for (auto& semaphore : sc_data.render_finished_semaphores) {
-                device_.destroySemaphore(semaphore);
+                sc_data.logical_device.destroySemaphore(semaphore);
             }
             for (auto& fence : sc_data.in_flight_fences) {
-                device_.destroyFence(fence);
+                sc_data.logical_device.destroyFence(fence);
             }
+
+            // Command Pool 정리
+            if (sc_data.command_pool) {
+                sc_data.logical_device.destroyCommandPool(sc_data.command_pool);
+            }
+
+            // Swapchain 정리
+            if (sc_data.swapchain) {
+                sc_data.logical_device.destroySwapchainKHR(sc_data.swapchain);
+            }
+
+            // Surface 정리
+            if (sc_data.surface) {
+                instance_.destroySurfaceKHR(sc_data.surface);
+            }
+
+            // 논리 장치 정리
+            if (sc_data.logical_device) {
+                sc_data.logical_device.destroy();
+            }
+
+            // 스왑체인 맵에서 제거
             swapchains_.erase(it);
         }
     }
@@ -1268,13 +1313,9 @@ class VulkanRenderer : public IRenderer {
     vk::Instance instance_;
     vk::PhysicalDevice physical_device_;
     vk::Device device_;
-    vk::Queue graphics_queue_;
-    uint32_t graphics_queue_family_;
-    uint32_t present_queue_family_;
     vk::SurfaceKHR surface_;
     vk::RenderPass render_pass_;
-    vk::CommandPool command_pool_;
-    vk::CommandBuffer command_buffer_;
+    vk::CommandBuffer command_buffer_;  // current command buffer
 
     // Debug messenger
     vk::DebugUtilsMessengerEXT debug_messenger_;
@@ -1310,27 +1351,6 @@ class VulkanRenderer : public IRenderer {
     void InitVulkan(const char* app_name) {
         // Create Vulkan Instance
         CreateInstance(app_name);
-
-        // Pick Physical Device
-        PickPhysicalDevice();
-
-        // Create Logical Device
-        CreateLogicalDevice();
-
-        // Initialize VMA
-        VmaAllocatorCreateInfo allocator_info = {};
-        allocator_info.physicalDevice = static_cast<VkPhysicalDevice>(physical_device_);
-        allocator_info.device = static_cast<VkDevice>(device_);
-        allocator_info.instance = static_cast<VkInstance>(instance_);
-        if (vmaCreateAllocator(&allocator_info, &allocator_) != VK_SUCCESS) {
-            throw std::runtime_error("Failed to create VMA allocator.");
-        }
-
-        // Create Command Pool
-        CreateCommandPool();
-
-        // Allocate Command Buffer
-        AllocateCommandBuffer();
 
         // Create Descriptor Pool
         CreateDescriptorPool();
@@ -1453,11 +1473,6 @@ class VulkanRenderer : public IRenderer {
             device_.destroyRenderPass(render_pass_);
         }
 
-        // Destroy Command Pool
-        if (command_pool_) {
-            device_.destroyCommandPool(command_pool_);
-        }
-
         // Destroy Descriptor Pool
         if (descriptor_pool_) {
             device_.destroyDescriptorPool(descriptor_pool_);
@@ -1567,154 +1582,202 @@ class VulkanRenderer : public IRenderer {
         }
     }
 
-    void PickPhysicalDevice() {
-        auto devices = instance_.enumeratePhysicalDevices();
-        if (devices.empty()) {
+    struct QueueFamilyIndices {
+        std::vector<uint32_t> graphics_family_indices;
+        uint32_t present_family = UINT32_MAX;
+
+        bool isComplete() const { return !graphics_family_indices.empty() && present_family != UINT32_MAX; }
+    };
+
+    vk::PhysicalDevice PickPhysicalDevice(vk::SurfaceKHR surface) {
+        auto physical_devices = instance_.enumeratePhysicalDevices();
+        if (physical_devices.empty()) {
             throw std::runtime_error("Failed to find GPUs with Vulkan support.");
         }
 
-        // Select the first suitable device
-        for (const auto& device_candidate : devices) {
-            // Check for graphics queue family
-            auto queue_families = device_candidate.getQueueFamilyProperties();
-            bool has_graphics = false;
-            bool has_present = false;
-            uint32_t graphics_family = 0;
-            uint32_t present_family = 0;
+        for (const auto& device_candidate : physical_devices) {
+            if (IsDeviceSuitable(device_candidate, surface)) {
+                return device_candidate;
+            }
+        }
 
-            for (size_t i = 0; i < queue_families.size(); ++i) {
-                if (queue_families[i].queueFlags & vk::QueueFlagBits::eGraphics) {
-                    graphics_family = static_cast<uint32_t>(i);
-                    has_graphics = true;
-                }
+        throw std::runtime_error("Failed to find a suitable GPU.");
+    }
 
-                if (device_candidate.getSurfaceSupportKHR(static_cast<uint32_t>(i), surface_)) {
-                    present_family = static_cast<uint32_t>(i);
-                    has_present = true;
-                }
+    bool IsDeviceSuitable(vk::PhysicalDevice device, vk::SurfaceKHR surface) {
+        // 큐 패밀리 인덱스 확인
+        QueueFamilyIndices indices = FindQueueFamilies(device, surface);
+        return indices.isComplete();
+    }
 
-                if (has_graphics && has_present) {
-                    break;
-                }
+    QueueFamilyIndices FindQueueFamilies(vk::PhysicalDevice device, vk::SurfaceKHR surface) {
+        QueueFamilyIndices indices;
+        std::vector<vk::QueueFamilyProperties> queue_families = device.getQueueFamilyProperties();
+
+        for (uint32_t i = 0; i < queue_families.size(); i++) {
+            if (queue_families[i].queueFlags & vk::QueueFlagBits::eGraphics) {
+                indices.graphics_family_indices.push_back(i);
             }
 
-            if (has_graphics && has_present) {
-                graphics_queue_family_ = graphics_family;
-                present_queue_family_ = present_family;
-                physical_device_ = device_candidate;
+            if (device.getSurfaceSupportKHR(i, surface)) {
+                indices.present_family = i;
+            }
+
+            if (indices.isComplete()) {
                 break;
             }
         }
 
-        if (!physical_device_) {
-            throw std::runtime_error("Failed to find a suitable GPU with graphics and present capabilities.");
-        }
+        return indices;
     }
 
-    void CreateLogicalDevice() {
+    void CreateLogicalDevice(VulkanSwapChain& swapchain_data) {
+        // Find queue families for this physical device and surface
+        QueueFamilyIndices indices = FindQueueFamilies(swapchain_data.physical_device, swapchain_data.surface);
+
+        if (indices.graphics_family_indices.empty() || indices.present_family == UINT32_MAX) {
+            throw std::runtime_error("Failed to find required queue families.");
+        }
+
+        swapchain_data.graphics_queue_family = indices.graphics_family_indices[0];
+        swapchain_data.present_queue_family = indices.present_family;
+
+        // 큐 패밀리 인덱스의 유일성을 보장
+        std::vector<uint32_t> unique_queue_families = {swapchain_data.graphics_queue_family};
+        if (swapchain_data.present_queue_family != swapchain_data.graphics_queue_family) {
+            unique_queue_families.push_back(swapchain_data.present_queue_family);
+        }
+
+        std::vector<vk::DeviceQueueCreateInfo> queue_create_infos;
         float queue_priority = 1.0f;
-        vk::DeviceQueueCreateInfo queue_create_info{};
-        queue_create_info.queueFamilyIndex = graphics_queue_family_;
-        queue_create_info.queueCount = 1;
-        queue_create_info.pQueuePriorities = &queue_priority;
+        for (uint32_t queue_family : unique_queue_families) {
+            vk::DeviceQueueCreateInfo queue_create_info{};
+            queue_create_info.sType = vk::StructureType::eDeviceQueueCreateInfo;
+            queue_create_info.queueFamilyIndex = queue_family;
+            queue_create_info.queueCount = 1;
+            queue_create_info.pQueuePriorities = &queue_priority;
+            queue_create_infos.push_back(queue_create_info);
+        }
 
-        // Specify device features if needed
-        vk::PhysicalDeviceFeatures device_features{};
+        vk::PhysicalDeviceFeatures device_features{};  // 필요한 기능 활성화
 
-        // Device extensions
         std::vector<const char*> device_extensions = {
             VK_KHR_SWAPCHAIN_EXTENSION_NAME
-            // Add other device extensions if needed
+            // 필요한 다른 확장들 추가
         };
 
         vk::DeviceCreateInfo create_info{};
-        create_info.pQueueCreateInfos = &queue_create_info;
-        create_info.queueCreateInfoCount = 1;
+        create_info.sType = vk::StructureType::eDeviceCreateInfo;
+        create_info.pQueueCreateInfos = queue_create_infos.data();
+        create_info.queueCreateInfoCount = static_cast<uint32_t>(queue_create_infos.size());
         create_info.pEnabledFeatures = &device_features;
         create_info.enabledExtensionCount = static_cast<uint32_t>(device_extensions.size());
         create_info.ppEnabledExtensionNames = device_extensions.data();
 
-        // Enable validation layers for device (optional, deprecated in newer Vulkan)
-        create_info.enabledLayerCount = 0;
-
         try {
-            device_ = physical_device_.createDevice(create_info);
+            swapchain_data.logical_device = swapchain_data.physical_device.createDevice(create_info);
         } catch (const std::exception& e) {
             throw std::runtime_error(std::string("Failed to create logical device: ") + e.what());
         }
 
-        graphics_queue_ = device_.getQueue(graphics_queue_family_, 0);
+        // 그래픽 큐 가져오기
+        swapchain_data.graphics_queue = swapchain_data.logical_device.getQueue(swapchain_data.graphics_queue_family, 0);
+        // 프레젠트 큐 가져오기
+        if (swapchain_data.present_queue_family != swapchain_data.graphics_queue_family) {
+            swapchain_data.graphics_queue =
+                swapchain_data.logical_device.getQueue(swapchain_data.present_queue_family, 0);
+        }
     }
 
-    // 4. CreateSurface 함수 수정: 두 개의 void* 포인터 사용
-    vk::SurfaceKHR CreateSurface(const WindowHandle& desc) {
+    vk::SurfaceFormatKHR ChooseSurfaceFormat(const std::vector<vk::SurfaceFormatKHR>& available_formats) {
+        for (const auto& available_format : available_formats) {
+            if (available_format.format == vk::Format::eB8G8R8A8Unorm &&
+                available_format.colorSpace == vk::ColorSpaceKHR::eSrgbNonlinear) {
+                return available_format;
+            }
+        }
+        return available_formats[0];
+    }
+
+    vk::PresentModeKHR ChoosePresentMode(const std::vector<vk::PresentModeKHR>& available_present_modes) {
+        for (const auto& available_present_mode : available_present_modes) {
+            if (available_present_mode == vk::PresentModeKHR::eMailbox) {
+                return available_present_mode;
+            }
+        }
+        return vk::PresentModeKHR::eFifo;
+    }
+
+    vk::Extent2D ChooseExtent(const vk::SurfaceCapabilitiesKHR& capabilities, uint32_t width, uint32_t height) {
+        if (capabilities.currentExtent.width != UINT32_MAX) {
+            return capabilities.currentExtent;
+        } else {
+            vk::Extent2D actual_extent = {width, height};
+            actual_extent.width =
+                std::clamp(actual_extent.width, capabilities.minImageExtent.width, capabilities.maxImageExtent.width);
+            actual_extent.height = std::clamp(actual_extent.height, capabilities.minImageExtent.height,
+                                              capabilities.maxImageExtent.height);
+            return actual_extent;
+        }
+    }
+
+    vk::SurfaceKHR CreateSurface(const WindowHandle& window_handle) {
         VkSurfaceKHR raw_surface;
 
-        // 플랫폼별로 handle1과 handle2를 해석
-        if (desc.handle1 != nullptr || desc.handle2 != nullptr) {
 #ifdef _WIN32
-            // Windows
-            HWND hwnd = static_cast<HWND>(desc.handle1);
-            HINSTANCE hinstance = static_cast<HINSTANCE>(desc.handle2);
+        HWND hwnd = static_cast<HWND>(window_handle.display);
+        HINSTANCE hinstance = static_cast<HINSTANCE>(window_handle.platform);
 
-            VkWin32SurfaceCreateInfoKHR create_info{};
-            create_info.sType = VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR;
-            create_info.hwnd = hwnd;
-            create_info.hinstance = hinstance;
+        VkWin32SurfaceCreateInfoKHR create_info{};
+        create_info.sType = VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR;
+        create_info.hwnd = hwnd;
+        create_info.hinstance = hinstance;
 
-            if (vkCreateWin32SurfaceKHR(static_cast<VkInstance>(instance_), &create_info, nullptr, &raw_surface) !=
-                VK_SUCCESS) {
-                throw std::runtime_error("Failed to create Win32 surface.");
-            }
-#elif defined(__linux__)
-            // Xlib
-            Display* display = static_cast<Display*>(desc.handle1);
-            Window window = static_cast<Window>(desc.handle2);
-
-            VkXlibSurfaceCreateInfoKHR create_info{};
-            create_info.sType = VK_STRUCTURE_TYPE_XLIB_SURFACE_CREATE_INFO_KHR;
-            create_info.dpy = display;
-            create_info.window = window;
-
-            VkSurfaceKHR raw_surface;
-            if (vkCreateXlibSurfaceKHR(static_cast<VkInstance>(instance_), &create_info, nullptr, &raw_surface) !=
-                VK_SUCCESS) {
-                throw std::runtime_error("Failed to create Xlib surface.");
-            }
-#elif defined(__ANDROID__)
-            // Android
-            ANativeWindow* window = static_cast<ANativeWindow*>(desc.handle1);
-            // handle2은 사용되지 않을 수 있음
-
-            VkAndroidSurfaceCreateInfoKHR create_info{};
-            create_info.sType = VK_STRUCTURE_TYPE_ANDROID_SURFACE_CREATE_INFO_KHR;
-            create_info.window = window;
-
-            VkSurfaceKHR raw_surface;
-            if (vkCreateAndroidSurfaceKHR(static_cast<VkInstance>(instance_), &create_info, nullptr, &raw_surface) !=
-                VK_SUCCESS) {
-                throw std::runtime_error("Failed to create Android surface.");
-            }
-#elif defined(__APPLE__)
-            // macOS/iOS (Metal)
-            id<CAMetalLayer> view = (__bridge id<CAMetalLayer>)(desc.handle1);
-            // handle2은 사용되지 않을 수 있음
-
-            VkMetalSurfaceCreateInfoEXT create_info{};
-            create_info.sType = VK_STRUCTURE_TYPE_METAL_SURFACE_CREATE_INFO_EXT;
-            create_info.pLayer = (__bridge void*)view;
-
-            VkSurfaceKHR raw_surface;
-            if (vkCreateMetalSurfaceEXT(static_cast<VkInstance>(instance_), &create_info, nullptr, &raw_surface) !=
-                VK_SUCCESS) {
-                throw std::runtime_error("Failed to create Metal surface.");
-            }
-#else
-            throw std::runtime_error("Unsupported platform for surface creation.");
-#endif
-        } else {
-            throw std::runtime_error("Invalid WindowHandle: both handles are null.");
+        if (vkCreateWin32SurfaceKHR(static_cast<VkInstance>(instance_), &create_info, nullptr, &raw_surface) !=
+            VK_SUCCESS) {
+            throw std::runtime_error("Failed to create Win32 surface.");
         }
+#elif defined(__linux__)
+        // Xlib 예시; 실제로 사용하는 windowing system에 맞게 수정 필요
+        Display* display = static_cast<Display*>(window_handle.display);  // 사용자 정의
+        Window window = 0;                                                // 사용자 정의
+
+        VkXlibSurfaceCreateInfoKHR create_info{};
+        create_info.sType = VK_STRUCTURE_TYPE_XLIB_SURFACE_CREATE_INFO_KHR;
+        create_info.dpy = display;
+        create_info.window = window;
+
+        if (vkCreateXlibSurfaceKHR(static_cast<VkInstance>(instance_), &create_info, nullptr, &raw_surface) !=
+            VK_SUCCESS) {
+            throw std::runtime_error("Failed to create Xlib surface.");
+        }
+#elif defined(__ANDROID__)
+        // Android 예시; 실제로 사용하는 경우에 맞게 수정 필요
+        ANativeWindow* window = static_cast<ANativeWindow*>(window_handle.display);
+
+        VkAndroidSurfaceCreateInfoKHR create_info{};
+        create_info.sType = VK_STRUCTURE_TYPE_ANDROID_SURFACE_CREATE_INFO_KHR;
+        create_info.window = window;
+
+        if (vkCreateAndroidSurfaceKHR(static_cast<VkInstance>(instance_), &create_info, nullptr, &raw_surface) !=
+            VK_SUCCESS) {
+            throw std::runtime_error("Failed to create Android surface.");
+        }
+#elif defined(__APPLE__)
+        // macOS/iOS 예시; 실제로 사용하는 경우에 맞게 수정 필요
+        id<CAMetalLayer> view = (__bridge id<CAMetalLayer>)(window_handle.display);
+
+        VkMetalSurfaceCreateInfoEXT create_info{};
+        create_info.sType = VK_STRUCTURE_TYPE_METAL_SURFACE_CREATE_INFO_EXT;
+        create_info.pLayer = (__bridge void*)view;
+
+        if (vkCreateMetalSurfaceEXT(static_cast<VkInstance>(instance_), &create_info, nullptr, &raw_surface) !=
+            VK_SUCCESS) {
+            throw std::runtime_error("Failed to create Metal surface.");
+        }
+#else
+        throw std::runtime_error("Unsupported platform for surface creation.");
+#endif
 
         return vk::SurfaceKHR(raw_surface);
     }
@@ -1861,32 +1924,16 @@ class VulkanRenderer : public IRenderer {
         }
     }
 
-    void CreateCommandPool() {
+    vk::CommandPool CreateCommandPool(VulkanSwapChain& swapchain_data) {
         vk::CommandPoolCreateInfo pool_info{};
-        pool_info.queueFamilyIndex = graphics_queue_family_;
-        pool_info.flags = vk::CommandPoolCreateFlagBits::eResetCommandBuffer;
+        pool_info.sType = vk::StructureType::eCommandPoolCreateInfo;
+        pool_info.queueFamilyIndex = swapchain_data.graphics_queue_family;
+        pool_info.flags = vk::CommandPoolCreateFlagBits::eResetCommandBuffer;  // 필요한 플래그 설정
 
         try {
-            command_pool_ = device_.createCommandPool(pool_info);
+            return swapchain_data.logical_device.createCommandPool(pool_info);
         } catch (const std::exception& e) {
             throw std::runtime_error(std::string("Failed to create command pool: ") + e.what());
-        }
-    }
-
-    void AllocateCommandBuffer() {
-        vk::CommandBufferAllocateInfo alloc_info{};
-        alloc_info.commandPool = command_pool_;
-        alloc_info.level = vk::CommandBufferLevel::ePrimary;
-        alloc_info.commandBufferCount = 1;
-
-        try {
-            auto command_buffers = device_.allocateCommandBuffers(alloc_info);
-            if (command_buffers.empty()) {
-                throw std::runtime_error("Failed to allocate command buffer.");
-            }
-            command_buffer_ = command_buffers[0];
-        } catch (const std::exception& e) {
-            throw std::runtime_error(std::string("Failed to allocate command buffer: ") + e.what());
         }
     }
 
@@ -1902,9 +1949,9 @@ class VulkanRenderer : public IRenderer {
 
         for (int i = 0; i < kMaxFramesInFlight; i++) {
             try {
-                sc_data.image_available_semaphores[i] = device_.createSemaphore(semaphore_info);
-                sc_data.render_finished_semaphores[i] = device_.createSemaphore(semaphore_info);
-                sc_data.in_flight_fences[i] = device_.createFence(fence_info);
+                sc_data.image_available_semaphores[i] = sc_data.logical_device.createSemaphore(semaphore_info);
+                sc_data.render_finished_semaphores[i] = sc_data.logical_device.createSemaphore(semaphore_info);
+                sc_data.in_flight_fences[i] = sc_data.logical_device.createFence(fence_info);
             } catch (const std::exception& e) {
                 throw std::runtime_error(std::string("Failed to create synchronization primitives: ") + e.what());
             }

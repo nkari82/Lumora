@@ -88,9 +88,9 @@ inline TextureUsage& operator&=(TextureUsage& lhs, TextureUsage rhs) {
 inline bool HasTextureUsage(TextureUsage usage, TextureUsage flag) { return (usage & flag) != TextureUsage::kNone; }
 
 struct WindowHandle {
-    void* handle1;  // 예: HWND, Display*, ANativeWindow*, NSView*, 등
-    void* handle2;  // 예: HINSTANCE, X11 Window, 추가 정보 등
-} window_handle;
+    void* display;   // 예: HWND, Display*, ANativeWindow*, NSView*, 등
+    void* platform;  // 예: HINSTANCE, X11 Window, 추가 정보 등
+};
 
 struct SwapChainDesc {
     WindowHandle window_handle;
