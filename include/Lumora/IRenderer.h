@@ -427,10 +427,10 @@ class IRenderer {
 
     virtual void DispatchCompute(uint32_t group_x, uint32_t group_y, uint32_t group_z) = 0;
 
-    virtual void BeginPass(const FrameBufferHandle& handle) = 0;
+    virtual void BeginPass(const FrameBufferHandle& handle, uint32_t image_index) = 0;
     virtual void EndPass() = 0;
     virtual void NextPass() = 0;
-    virtual void Render(const SwapChainHandle& handle, std::function<void()> callback) = 0;
+    virtual void Render(const SwapChainHandle& handle, std::function<void(uint32_t)> callback) = 0;
     virtual void DrawIndexed(uint32_t index_count, uint32_t instance_count = 1, uint32_t first_index = 0,
                              int32_t vertex_offset = 0, uint32_t first_instance = 0) = 0;
     virtual bool ReloadShader(const ShaderHandle& handle, const ShaderDesc& new_desc) = 0;

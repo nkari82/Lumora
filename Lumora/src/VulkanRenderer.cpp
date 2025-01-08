@@ -992,7 +992,7 @@ class VulkanRenderer : public IRenderer {
         command_buffer_.dispatch(group_x, group_y, group_z);
     }
 
-    void BeginPass(const FrameBufferHandle& handle) override {
+    void BeginPass(const FrameBufferHandle& handle, uint32_t image_index) override {
         std::lock_guard<std::recursive_mutex> lock_(resource_mutex_);
 
         auto framebuffer_it = framebuffers_.find(handle);
@@ -1006,16 +1006,6 @@ class VulkanRenderer : public IRenderer {
         current_render_pass_handle_ = vframebuffer.renderpass_handle;
 
         VulkanRenderPass& vrender_pass = render_passes_.at(current_render_pass_handle_);
-
-        // 명령 버퍼 시작
-        vk::CommandBufferBeginInfo begin_info{};
-        begin_info.flags = vk::CommandBufferUsageFlagBits::eSimultaneousUse;
-
-        try {
-            command_buffer_.begin(begin_info);
-        } catch (const std::exception& e) {
-            throw std::runtime_error(std::string("Failed to begin command buffer: ") + e.what());
-        }
 
         // 클리어 값 설정
         std::vector<vk::ClearValue> clear_values;
@@ -1034,7 +1024,7 @@ class VulkanRenderer : public IRenderer {
         // RenderPass 시작
         vk::RenderPassBeginInfo render_pass_info{};
         render_pass_info.renderPass = vrender_pass.renderpass;
-        render_pass_info.framebuffer = vframebuffer.framebuffers[0];
+        render_pass_info.framebuffer = vframebuffer.framebuffers[image_index];
         render_pass_info.renderArea.offset = vk::Offset2D{0, 0};
         render_pass_info.renderArea.extent = vk::Extent2D{vframebuffer.desc.width, vframebuffer.desc.height};
         render_pass_info.clearValueCount = static_cast<uint32_t>(clear_values.size());
@@ -1054,7 +1044,7 @@ class VulkanRenderer : public IRenderer {
         current_pass_++;
     }
 
-    void Render(const SwapChainHandle& handle, std::function<void()> callback) override {
+    void Render(const SwapChainHandle& handle, std::function<void(uint32_t)> callback) override {
         std::lock_guard<std::recursive_mutex> lock_(resource_mutex_);
         auto it = swapchains_.find(handle);
         if (it == swapchains_.end()) {
@@ -1076,7 +1066,7 @@ class VulkanRenderer : public IRenderer {
         device_.resetFences(in_flight_fence);
 
         // Acquire the next image from the swapchain
-        uint32_t image_index;
+        uint32_t image_index = 0;  // 현재 스왑체인 이미지
         vk::Result result = device_.acquireNextImageKHR(sc_data.swapchain, UINT64_MAX, image_available_semaphore,
                                                         nullptr, &image_index);
         if (result == vk::Result::eErrorOutOfDateKHR) {
@@ -1084,20 +1074,6 @@ class VulkanRenderer : public IRenderer {
         } else if (result != vk::Result::eSuccess && result != vk::Result::eSuboptimalKHR) {
             throw std::runtime_error("Failed to acquire swapchain image.");
         }
-
-        // Retrieve the FrameBufferHandle associated with the swapchain
-        FrameBufferHandle framebuffer_handle = sc_data.framebuffer_handle;
-        auto framebuffer_it = framebuffers_.find(framebuffer_handle);
-        if (framebuffer_it == framebuffers_.end()) {
-            throw std::runtime_error("FrameBufferHandle not found for SwapChain.");
-        }
-        VulkanFrameBuffer& vframebuffer = framebuffer_it->second;
-
-        // Get the specific vk::Framebuffer for the image_index
-        if (image_index >= vframebuffer.framebuffers.size()) {
-            throw std::runtime_error("Image index out of range for framebuffers.");
-        }
-        vk::Framebuffer framebuffer = vframebuffer.framebuffers[image_index];
 
         // Reset and begin the command buffer
         command_buffer_.reset({});
@@ -1110,52 +1086,8 @@ class VulkanRenderer : public IRenderer {
             throw std::runtime_error(std::string("Failed to begin command buffer: ") + e.what());
         }
 
-        // Retrieve the associated RenderPass
-        auto render_pass_it = render_passes_.find(vframebuffer.renderpass_handle);
-        if (render_pass_it == render_passes_.end()) {
-            throw std::runtime_error("RenderPassHandle not found for FrameBuffer.");
-        }
-        VulkanRenderPass& vrender_pass = render_pass_it->second;
-
-        // 설정된 클리어 값을 기반으로 vk::ClearValue 설정
-        std::vector<vk::ClearValue> clear_values;
-        for (const auto& color : vrender_pass.desc.clear_colors) {
-            vk::ClearColorValue clear_color =
-                vk::ClearColorValue(std::array<float, 4>{color[0], color[1], color[2], color[3]});
-            clear_values.emplace_back(clear_color);
-        }
-        if (vrender_pass.desc.clear_depth) {
-            vk::ClearDepthStencilValue clear_depth = {};
-            clear_depth.depth = vrender_pass.desc.clear_depth_value;
-            clear_depth.stencil = vrender_pass.desc.clear_stencil_value;
-            clear_values.emplace_back(clear_depth);
-        }
-
-        // RenderPassBeginInfo 설정
-        vk::RenderPassBeginInfo render_pass_info{};
-        render_pass_info.renderPass = vrender_pass.renderpass;
-        render_pass_info.framebuffer = framebuffer;
-        render_pass_info.renderArea.offset = vk::Offset2D{0, 0};
-        render_pass_info.renderArea.extent = vk::Extent2D{vframebuffer.desc.width, vframebuffer.desc.height};
-        render_pass_info.clearValueCount = static_cast<uint32_t>(clear_values.size());
-        render_pass_info.pClearValues = clear_values.data();
-
-        // RenderPass 시작
-        try {
-            command_buffer_.beginRenderPass(render_pass_info, vk::SubpassContents::eInline);
-        } catch (const std::exception& e) {
-            throw std::runtime_error(std::string("Failed to begin render pass: ") + e.what());
-        }
-
-        // 사용자 정의 렌더링 명령 실행
-        callback();
-
-        // RenderPass 종료
-        try {
-            command_buffer_.endRenderPass();
-        } catch (const std::exception& e) {
-            throw std::runtime_error(std::string("Failed to end render pass: ") + e.what());
-        }
+        // 사용자 정의 렌더링 명령 실행 (콜백에서 BeginPass와 EndPass를 호출함)
+        callback(image_index);
 
         // 커맨드 버퍼 종료
         try {
