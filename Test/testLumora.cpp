@@ -40,19 +40,18 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow) {
     std::unique_ptr<lumora::IRenderer> renderer = lumora::IRenderer::Create();
     renderer->Open("Vulkan Renderer Test");
 
+    lumora::WindowHandle wh = {reinterpret_cast<void*>(hwnd), reinterpret_cast<void*>(hInstance)};
     // Create SwapChain
     lumora::SwapChainDesc swapDesc;
-    swapDesc.window_handle.win32.hwnd = hwnd;
-    swapDesc.window_handle.win32.hinstance = hInstance;
+    swapDesc.window_handle = wh;
     swapDesc.width = 1280;
     swapDesc.height = 720;
     swapDesc.color_format = lumora::Format::kSRGBA8Unorm;
     swapDesc.buffer_count = 2;
     swapDesc.vsync = true;
 
-    lumora::RenderPassDesc def;
-
-    lumora::SwapChainHandle swapchain = renderer->CreateSwapChain(swapDesc, def);
+    lumora::SwapChainHandle swapchain = renderer->CreateSwapChain(swapDesc);
+    lumora::FrameBufferHandle framebuffer = renderer->CreateFrameBuffer(swapchain);
 
     // Main Loop
     MSG msg = {};
@@ -71,11 +70,11 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow) {
             break;
 
         // Rendering callback
-        renderer->Render(swapchain, [&]() {
+        renderer->Render(swapchain, [&](uint32_t image_index) {
             // Begin Render Pass
             // lumora::RenderPassDesc passDesc;
             // Setup passDesc as needed
-            renderer->BeginPass(def);
+            renderer->BeginPass(framebuffer, image_index);
 
             // Bind pipeline, buffers, textures, etc.
             // For example:

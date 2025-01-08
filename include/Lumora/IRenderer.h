@@ -5,6 +5,7 @@
 #include <functional>
 #include <memory>
 #include <string>
+#include <variant>
 #include <vector>
 
 namespace lumora {
@@ -57,45 +58,51 @@ enum class Format {
 
 enum class MemoryUsage { kAuto, kGpuOnly, kCpuToGpu };
 
+enum class TextureUsage : uint32_t {
+    kNone = 0x0,
+    kSampled = 0x1,          // 샘플링 가능한 텍스처
+    kRenderTarget = 0x2,     // 렌더 타겟으로 사용 (Output Attachment)
+    kDepthStencil = 0x4,     // Depth/Stencil 용도로 사용
+    kStorage = 0x8,          // Storage Image로 사용
+    kInputAttachment = 0x10  // Input Attachment로 사용 (렌더패스에서)
+};
+
+inline TextureUsage operator|(TextureUsage lhs, TextureUsage rhs) {
+    return static_cast<TextureUsage>(static_cast<uint32_t>(lhs) | static_cast<uint32_t>(rhs));
+}
+
+inline TextureUsage operator&(TextureUsage lhs, TextureUsage rhs) {
+    return static_cast<TextureUsage>(static_cast<uint32_t>(lhs) & static_cast<uint32_t>(rhs));
+}
+
+inline TextureUsage& operator|=(TextureUsage& lhs, TextureUsage rhs) {
+    lhs = lhs | rhs;
+    return lhs;
+}
+
+inline TextureUsage& operator&=(TextureUsage& lhs, TextureUsage rhs) {
+    lhs = lhs & rhs;
+    return lhs;
+}
+
+inline bool HasTextureUsage(TextureUsage usage, TextureUsage flag) { return (usage & flag) != TextureUsage::kNone; }
+
+struct WindowHandle {
+    void* handle1;  // 예: HWND, Display*, ANativeWindow*, NSView*, 등
+    void* handle2;  // 예: HINSTANCE, X11 Window, 추가 정보 등
+} window_handle;
+
 struct SwapChainDesc {
-    // 공용체를 사용하여 플랫폼별 윈도우 핸들링
-    union WindowHandle {
-        void* generic = nullptr;  // 기본: nullptr
-
-#ifdef _WIN32
-        struct {
-            void* hwnd;
-            void* hinstance;
-        } win32;
-#endif
-
-#ifdef __linux__
-        struct {
-            void* display;
-            void* window;
-        } xlib;  // 예: Xlib
-                 // Wayland 지원을 추가할 수 있습니다.
-#endif
-
-#ifdef __ANDROID__
-        struct {
-            void* window;  // ANativeWindow*
-        } android;
-#endif
-
-#ifdef __APPLE__
-        struct {
-            void* view;  // NSView* for macOS, UIView* for iOS
-        } cocoa;
-#endif
-    } window_handle;
-
+    WindowHandle window_handle;
     uint32_t width = 1280;
     uint32_t height = 720;
     Format color_format = Format::kSRGBA8Unorm;
     Format depth_format = Format::kDepth24Stencil8;
     int32_t buffer_count = 2;
     bool vsync = true;
+
+    // 이미지 사용 플래그 추가 (TextureUsage 사용)
+    TextureUsage image_usage = TextureUsage::kRenderTarget;
 };
 
 enum class BufferUsage {
@@ -124,22 +131,6 @@ struct BufferDesc {
     size_t size = 0;          // initial data size
     MemoryUsage memory_usage = MemoryUsage::kAuto;
 };
-
-enum class TextureUsage : uint32_t {
-    kSampled = 0x1,          // 샘플링 가능한 텍스처
-    kRenderTarget = 0x2,     // 렌더 타겟으로 사용 (Output Attachment)
-    kDepthStencil = 0x4,     // Depth/Stencil 용도로 사용
-    kStorage = 0x8,          // Storage Image로 사용
-    kInputAttachment = 0x10  // Input Attachment로 사용 (렌더패스에서)
-};
-
-inline TextureUsage operator|(TextureUsage lhs, TextureUsage rhs) {
-    return static_cast<TextureUsage>(static_cast<uint32_t>(lhs) | static_cast<uint32_t>(rhs));
-}
-
-inline bool operator&(TextureUsage lhs, TextureUsage rhs) {
-    return (static_cast<uint32_t>(lhs) & static_cast<uint32_t>(rhs)) != 0;
-}
 
 enum class TextureType {
     k2D,      // 기본값: 2D 텍스처

@@ -161,7 +161,7 @@ class VulkanRenderer : public IRenderer {
 
         // Create surface if not already created
         if (!surface_) {
-            CreateSurface(desc);
+            surface_ = CreateSurface(desc.window_handle);
         }
 
         // Choose surface format, present mode, and swap extent
@@ -207,13 +207,13 @@ class VulkanRenderer : public IRenderer {
         swapchain_info.imageColorSpace = chosen_format.colorSpace;
         swapchain_info.imageExtent = chosen_extent;
         swapchain_info.imageArrayLayers = 1;
-        swapchain_info.imageUsage = vk::ImageUsageFlagBits::eColorAttachment;
+        swapchain_info.imageUsage = Convert(desc.image_usage);  // 변경: TextureUsage 매핑
 
         // Handle queue families
-        uint32_t queue_family_indices[] = {graphics_queue_family_};
-        if (graphics_queue_family_ != graphics_queue_family_) {  // This condition is always false; likely a typo
+        uint32_t queue_family_indices[] = {graphics_queue_family_, present_queue_family_};
+        if (graphics_queue_family_ != present_queue_family_) {  // 수정된 조건문
             swapchain_info.imageSharingMode = vk::SharingMode::eConcurrent;
-            swapchain_info.queueFamilyIndexCount = 1;
+            swapchain_info.queueFamilyIndexCount = 2;
             swapchain_info.pQueueFamilyIndices = queue_family_indices;
         } else {
             swapchain_info.imageSharingMode = vk::SharingMode::eExclusive;
@@ -242,7 +242,6 @@ class VulkanRenderer : public IRenderer {
 
         return handle;
     }
-
     BufferHandle CreateBuffer(const BufferDesc& desc) override {
         VulkanBuffer vbuffer;
 
@@ -341,18 +340,10 @@ class VulkanRenderer : public IRenderer {
         image_info.extent.depth = desc.depth;
         image_info.mipLevels = desc.mip_levels;
         image_info.arrayLayers = desc.array_layers;
-        image_info.format = MapFormat(desc.format);
+        image_info.format = Convert(desc.format);
         image_info.tiling = vk::ImageTiling::eOptimal;
         image_info.initialLayout = vk::ImageLayout::eUndefined;
-        image_info.usage = vk::ImageUsageFlagBits::eSampled;
-        if (desc.usage & TextureUsage::kRenderTarget)
-            image_info.usage |= vk::ImageUsageFlagBits::eColorAttachment;
-        if (desc.usage & TextureUsage::kDepthStencil)
-            image_info.usage |= vk::ImageUsageFlagBits::eDepthStencilAttachment;
-        if (desc.usage & TextureUsage::kStorage)
-            image_info.usage |= vk::ImageUsageFlagBits::eStorage;
-        if (desc.usage & TextureUsage::kInputAttachment)
-            image_info.usage |= vk::ImageUsageFlagBits::eInputAttachment;
+        image_info.usage = Convert(desc.usage);
 
         VmaAllocationCreateInfo alloc_info = {};
         vtexture.memory_usage = desc.memory_usage;
@@ -386,7 +377,7 @@ class VulkanRenderer : public IRenderer {
 
         // Determine aspect mask
         vk::ImageAspectFlags aspect_mask = vk::ImageAspectFlagBits::eColor;
-        if (desc.usage & TextureUsage::kDepthStencil) {
+        if (HasTextureUsage(desc.usage, TextureUsage::kDepthStencil)) {
             aspect_mask = vk::ImageAspectFlagBits::eDepth;
             if (image_info.format == vk::Format::eD24UnormS8Uint || image_info.format == vk::Format::eD32SfloatS8Uint) {
                 aspect_mask |= vk::ImageAspectFlagBits::eStencil;
@@ -577,10 +568,10 @@ class VulkanRenderer : public IRenderer {
         vk::PipelineRasterizationStateCreateInfo rasterizer{};
         rasterizer.depthClampEnable = desc.rasterization.depth_clamp_enable;
         rasterizer.rasterizerDiscardEnable = desc.rasterization.rasterizer_discard_enable;
-        rasterizer.polygonMode = MapFormat(desc.rasterization.polygon_mode);
+        rasterizer.polygonMode = Convert(desc.rasterization.polygon_mode);
         rasterizer.lineWidth = 1.0f;  // #TODO anti-aliasing line
-        rasterizer.cullMode = MapFormat(desc.rasterization.cull_mode);
-        rasterizer.frontFace = MapFormat(desc.rasterization.front_face);
+        rasterizer.cullMode = Convert(desc.rasterization.cull_mode);
+        rasterizer.frontFace = Convert(desc.rasterization.front_face);
         rasterizer.depthBiasEnable = VK_FALSE;
 
         // Multisampling
@@ -1279,6 +1270,7 @@ class VulkanRenderer : public IRenderer {
     vk::Device device_;
     vk::Queue graphics_queue_;
     uint32_t graphics_queue_family_;
+    uint32_t present_queue_family_;
     vk::SurfaceKHR surface_;
     vk::RenderPass render_pass_;
     vk::CommandPool command_pool_;
@@ -1586,14 +1578,29 @@ class VulkanRenderer : public IRenderer {
             // Check for graphics queue family
             auto queue_families = device_candidate.getQueueFamilyProperties();
             bool has_graphics = false;
+            bool has_present = false;
+            uint32_t graphics_family = 0;
+            uint32_t present_family = 0;
+
             for (size_t i = 0; i < queue_families.size(); ++i) {
                 if (queue_families[i].queueFlags & vk::QueueFlagBits::eGraphics) {
-                    graphics_queue_family_ = static_cast<uint32_t>(i);
+                    graphics_family = static_cast<uint32_t>(i);
                     has_graphics = true;
+                }
+
+                if (device_candidate.getSurfaceSupportKHR(static_cast<uint32_t>(i), surface_)) {
+                    present_family = static_cast<uint32_t>(i);
+                    has_present = true;
+                }
+
+                if (has_graphics && has_present) {
                     break;
                 }
             }
-            if (has_graphics) {
+
+            if (has_graphics && has_present) {
+                graphics_queue_family_ = graphics_family;
+                present_queue_family_ = present_family;
                 physical_device_ = device_candidate;
                 break;
             }
@@ -1639,60 +1646,77 @@ class VulkanRenderer : public IRenderer {
         graphics_queue_ = device_.getQueue(graphics_queue_family_, 0);
     }
 
-    void CreateSurface(const SwapChainDesc& desc) {
+    // 4. CreateSurface 함수 수정: 두 개의 void* 포인터 사용
+    vk::SurfaceKHR CreateSurface(const WindowHandle& desc) {
+        VkSurfaceKHR raw_surface;
+
+        // 플랫폼별로 handle1과 handle2를 해석
+        if (desc.handle1 != nullptr || desc.handle2 != nullptr) {
 #ifdef _WIN32
-        // Win32 Surface
-        VkWin32SurfaceCreateInfoKHR create_info{};
-        create_info.sType = VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR;
-        create_info.hwnd = static_cast<HWND>(desc.window_handle.win32.hwnd);
-        create_info.hinstance = static_cast<HINSTANCE>(desc.window_handle.win32.hinstance);
+            // Windows
+            HWND hwnd = static_cast<HWND>(desc.handle1);
+            HINSTANCE hinstance = static_cast<HINSTANCE>(desc.handle2);
 
-        VkSurfaceKHR raw_surface;
-        if (vkCreateWin32SurfaceKHR(static_cast<VkInstance>(instance_), &create_info, nullptr, &raw_surface) !=
-            VK_SUCCESS) {
-            throw std::runtime_error("Failed to create Win32 surface.");
-        }
-        surface_ = vk::SurfaceKHR(raw_surface);
+            VkWin32SurfaceCreateInfoKHR create_info{};
+            create_info.sType = VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR;
+            create_info.hwnd = hwnd;
+            create_info.hinstance = hinstance;
+
+            if (vkCreateWin32SurfaceKHR(static_cast<VkInstance>(instance_), &create_info, nullptr, &raw_surface) !=
+                VK_SUCCESS) {
+                throw std::runtime_error("Failed to create Win32 surface.");
+            }
 #elif defined(__linux__)
-        // Xlib Surface (example)
-        VkXlibSurfaceCreateInfoKHR create_info{};
-        create_info.sType = VK_STRUCTURE_TYPE_XLIB_SURFACE_CREATE_INFO_KHR;
-        create_info.dpy = static_cast<Display*>(desc.window_handle.xlib.display);
-        create_info.window = static_cast<Window>(desc.window_handle.xlib.window);
+            // Xlib
+            Display* display = static_cast<Display*>(desc.handle1);
+            Window window = static_cast<Window>(desc.handle2);
 
-        VkSurfaceKHR raw_surface;
-        if (vkCreateXlibSurfaceKHR(static_cast<VkInstance>(instance_), &create_info, nullptr, &raw_surface) !=
-            VK_SUCCESS) {
-            throw std::runtime_error("Failed to create Xlib surface.");
-        }
-        surface_ = vk::SurfaceKHR(raw_surface);
+            VkXlibSurfaceCreateInfoKHR create_info{};
+            create_info.sType = VK_STRUCTURE_TYPE_XLIB_SURFACE_CREATE_INFO_KHR;
+            create_info.dpy = display;
+            create_info.window = window;
+
+            VkSurfaceKHR raw_surface;
+            if (vkCreateXlibSurfaceKHR(static_cast<VkInstance>(instance_), &create_info, nullptr, &raw_surface) !=
+                VK_SUCCESS) {
+                throw std::runtime_error("Failed to create Xlib surface.");
+            }
 #elif defined(__ANDROID__)
-        // Android Surface
-        VkAndroidSurfaceCreateInfoKHR create_info{};
-        create_info.sType = VK_STRUCTURE_TYPE_ANDROID_SURFACE_CREATE_INFO_KHR;
-        create_info.window = static_cast<ANativeWindow*>(desc.window_handle.android.window);
+            // Android
+            ANativeWindow* window = static_cast<ANativeWindow*>(desc.handle1);
+            // handle2은 사용되지 않을 수 있음
 
-        VkSurfaceKHR raw_surface;
-        if (vkCreateAndroidSurfaceKHR(static_cast<VkInstance>(instance_), &create_info, nullptr, &raw_surface) !=
-            VK_SUCCESS) {
-            throw std::runtime_error("Failed to create Android surface.");
-        }
-        surface_ = vk::SurfaceKHR(raw_surface);
+            VkAndroidSurfaceCreateInfoKHR create_info{};
+            create_info.sType = VK_STRUCTURE_TYPE_ANDROID_SURFACE_CREATE_INFO_KHR;
+            create_info.window = window;
+
+            VkSurfaceKHR raw_surface;
+            if (vkCreateAndroidSurfaceKHR(static_cast<VkInstance>(instance_), &create_info, nullptr, &raw_surface) !=
+                VK_SUCCESS) {
+                throw std::runtime_error("Failed to create Android surface.");
+            }
 #elif defined(__APPLE__)
-        // MoltenVK Surface (macOS/iOS)
-        VkMetalSurfaceCreateInfoEXT create_info{};
-        create_info.sType = VK_STRUCTURE_TYPE_METAL_SURFACE_CREATE_INFO_EXT;
-        create_info.pLayer = static_cast<id<CAMetalLayer>>(desc.window_handle.cocoa.view);
+            // macOS/iOS (Metal)
+            id<CAMetalLayer> view = (__bridge id<CAMetalLayer>)(desc.handle1);
+            // handle2은 사용되지 않을 수 있음
 
-        VkSurfaceKHR raw_surface;
-        if (vkCreateMetalSurfaceEXT(static_cast<VkInstance>(instance_), &create_info, nullptr, &raw_surface) !=
-            VK_SUCCESS) {
-            throw std::runtime_error("Failed to create Metal surface.");
-        }
-        surface_ = vk::SurfaceKHR(raw_surface);
+            VkMetalSurfaceCreateInfoEXT create_info{};
+            create_info.sType = VK_STRUCTURE_TYPE_METAL_SURFACE_CREATE_INFO_EXT;
+            create_info.pLayer = (__bridge void*)view;
+
+            VkSurfaceKHR raw_surface;
+            if (vkCreateMetalSurfaceEXT(static_cast<VkInstance>(instance_), &create_info, nullptr, &raw_surface) !=
+                VK_SUCCESS) {
+                throw std::runtime_error("Failed to create Metal surface.");
+            }
 #else
-        throw std::runtime_error("Unsupported platform for surface creation.");
+            throw std::runtime_error("Unsupported platform for surface creation.");
 #endif
+        } else {
+            throw std::runtime_error("Invalid WindowHandle: both handles are null.");
+        }
+
+        return vk::SurfaceKHR(raw_surface);
     }
 
     RenderPassHandle CreateRenderPassInternal(const RenderPassDesc& desc) {
@@ -1721,7 +1745,7 @@ class VulkanRenderer : public IRenderer {
 
         // Setup color attachments
         for (size_t i = 0; i < desc.color_formats.size(); i++) {
-            attachments[i].format = MapFormat(desc.color_formats[i]);
+            attachments[i].format = Convert(desc.color_formats[i]);
             attachments[i].samples = vk::SampleCountFlagBits::e1;
             attachments[i].loadOp = (desc.color_attachment_options[i].load_op == AttachmentLoadOp::kClear)
                                         ? vk::AttachmentLoadOp::eClear
@@ -1742,7 +1766,7 @@ class VulkanRenderer : public IRenderer {
 
         // Setup depth attachment if present
         if (has_depth) {
-            attachments[desc.color_formats.size()].format = MapFormat(desc.depth_format);
+            attachments[desc.color_formats.size()].format = Convert(desc.depth_format);
             attachments[desc.color_formats.size()].samples = vk::SampleCountFlagBits::e1;
             attachments[desc.color_formats.size()].loadOp =
                 (desc.depth_attachment_options.load_op == AttachmentLoadOp::kClear)  ? vk::AttachmentLoadOp::eClear
@@ -2189,7 +2213,7 @@ class VulkanRenderer : public IRenderer {
         }
     }
 
-    vk::Format MapFormat(Format format) {
+    vk::Format Convert(Format format) {
         switch (format) {
             case Format::kRGBA8:
                 return vk::Format::eR8G8B8A8Unorm;
@@ -2251,7 +2275,7 @@ class VulkanRenderer : public IRenderer {
     }
 
     // Converts PolygonMode to vk::PolygonMode.
-    vk::PolygonMode MapFormat(PolygonMode mode) {
+    vk::PolygonMode Convert(PolygonMode mode) {
         switch (mode) {
             case PolygonMode::kFill:
                 return vk::PolygonMode::eFill;
@@ -2265,7 +2289,7 @@ class VulkanRenderer : public IRenderer {
     }
 
     // Converts CullMode to vk::CullModeFlags.
-    vk::CullModeFlags MapFormat(CullMode mode) {
+    vk::CullModeFlags Convert(CullMode mode) {
         switch (mode) {
             case CullMode::kNone:
                 return vk::CullModeFlagBits::eNone;
@@ -2281,7 +2305,7 @@ class VulkanRenderer : public IRenderer {
     }
 
     // Converts FrontFace to vk::FrontFace.
-    vk::FrontFace MapFormat(FrontFace face) {
+    vk::FrontFace Convert(FrontFace face) {
         switch (face) {
             case FrontFace::kCcw:
                 return vk::FrontFace::eCounterClockwise;
@@ -2290,6 +2314,25 @@ class VulkanRenderer : public IRenderer {
             default:
                 throw std::runtime_error("Invalid FrontFace.");
         }
+    }
+
+    vk::ImageUsageFlags Convert(TextureUsage usage) {
+        vk::ImageUsageFlags vk_usage = {};
+
+        if ((usage & TextureUsage::kRenderTarget) == TextureUsage::kRenderTarget) {
+            vk_usage |= vk::ImageUsageFlagBits::eColorAttachment;
+        }
+        if ((usage & TextureUsage::kDepthStencil) == TextureUsage::kDepthStencil) {
+            vk_usage |= vk::ImageUsageFlagBits::eDepthStencilAttachment;
+        }
+        if ((usage & TextureUsage::kStorage) == TextureUsage::kStorage) {
+            vk_usage |= vk::ImageUsageFlagBits::eStorage;
+        }
+        if ((usage & TextureUsage::kInputAttachment) == TextureUsage::kInputAttachment) {
+            vk_usage |= vk::ImageUsageFlagBits::eInputAttachment;
+        }
+
+        return vk_usage;
     }
 
     // #TODO xxHash로 교체
@@ -2344,6 +2387,48 @@ class VulkanRenderer : public IRenderer {
 
         return seed;
     }
+
+#if 0  // xxDesc
+uint64_t VulkanRenderer::HashDesc(const RenderPassDesc& desc) {
+    XXH64_state_t* state = XXH64_createState();
+    XXH64_reset(state, 0);
+
+    for (const auto& format : desc.color_formats) {
+        XXH64_update(state, &format, sizeof(format));
+    }
+
+    XXH64_update(state, &desc.depth_format, sizeof(desc.depth_format));
+
+    for (const auto& clear_color : desc.clear_colors) {
+        XXH64_update(state, clear_color.data(), clear_color.size() * sizeof(float));
+    }
+
+    XXH64_update(state, &desc.clear_depth, sizeof(desc.clear_depth));
+    XXH64_update(state, &desc.clear_depth_value, sizeof(desc.clear_depth_value));
+    XXH64_update(state, &desc.clear_stencil_value, sizeof(desc.clear_stencil_value));
+
+    for (const auto& color_op : desc.color_attachment_options) {
+        XXH64_update(state, &color_op.load_op, sizeof(color_op.load_op));
+        XXH64_update(state, &color_op.store_op, sizeof(color_op.store_op));
+    }
+
+    XXH64_update(state, &desc.depth_attachment_options.load_op, sizeof(desc.depth_attachment_options.load_op));
+    XXH64_update(state, &desc.depth_attachment_options.store_op, sizeof(desc.depth_attachment_options.store_op));
+
+    for (const auto& subpass : desc.subpasses) {
+        for (const auto& color_attachment : subpass.color_attachments) {
+            XXH64_update(state, &color_attachment.attachment, sizeof(color_attachment.attachment));
+        }
+        if (subpass.depth_attachment.attachment != 0) {
+            XXH64_update(state, &subpass.depth_attachment.attachment, sizeof(subpass.depth_attachment.attachment));
+        }
+    }
+
+    uint64_t hash = XXH64_digest(state);
+    XXH64_freeState(state);
+    return hash;
+}
+#endif
 };
 
 // Implementation
