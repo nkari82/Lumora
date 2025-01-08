@@ -122,7 +122,7 @@ struct BufferDesc {
 
 enum class TextureUsage : uint32_t {
     kSampled = 0x1,          // 샘플링 가능한 텍스처
-    kRenderTarget = 0x2,     // 렌더 타겟으로 사용
+    kRenderTarget = 0x2,     // 렌더 타겟으로 사용 (Output Attachment)
     kDepthStencil = 0x4,     // Depth/Stencil 용도로 사용
     kStorage = 0x8,          // Storage Image로 사용
     kInputAttachment = 0x10  // Input Attachment로 사용 (렌더패스에서)
