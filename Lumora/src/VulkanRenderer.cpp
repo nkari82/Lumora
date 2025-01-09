@@ -90,13 +90,7 @@ struct VulkanTexture : VulkanRef {
     vk::Image image;
     VmaAllocation allocation;
     vk::ImageView image_view;
-    vk::Format format;
-    vk::Extent3D extent;
-    uint32_t mip_levels;
-    uint32_t array_layers;
-    TextureUsage usage;
     SamplerHandle sampler_handle;
-    MemoryUsage memory_usage;
     TextureCreationType creation_type = TextureCreationType::kRegular;  // New member
 };
 
@@ -133,8 +127,8 @@ struct VulkanSwapChain : VulkanRef {
     SwapChainDesc desc;
     vk::SwapchainKHR swapchain;
     vk::SurfaceKHR surface;  // Each swapchain's Surface
-    vk::Format color_format;
-    vk::Format depth_format;
+    vk::Format chosen_color_format = vk::Format::eUndefined;
+    vk::Format chosen_depth_format = vk::Format::eUndefined;
 
     // Command Pool
     vk::CommandPool command_pool;
@@ -179,13 +173,17 @@ class VulkanRenderer : public IRenderer {
         swapchain_data.surface = CreateSurface(desc.window_handle);
 
         auto surface_formats = physical_device_.getSurfaceFormatsKHR(swapchain_data.surface);
-        vk::SurfaceFormatKHR chosen_format = ChooseSurfaceFormat(surface_formats);
+        vk::SurfaceFormatKHR chosen_format = ChooseSurfaceFormat(surface_formats, Convert(desc.color_format));
 
         auto present_modes = physical_device_.getSurfacePresentModesKHR(swapchain_data.surface);
         vk::PresentModeKHR chosen_present_mode = ChoosePresentMode(present_modes);
 
         auto capabilities = physical_device_.getSurfaceCapabilitiesKHR(swapchain_data.surface);
         vk::Extent2D chosen_extent = ChooseExtent(capabilities, desc.width, desc.height);
+
+        swapchain_data.chosen_color_format = chosen_format.format;
+        if (desc.depth_format != Format::kUndefined)
+            swapchain_data.chosen_depth_format = FindDepthFormat(Convert(desc.depth_format));
 
         uint32_t image_count = desc.buffer_count;
         if (capabilities.maxImageCount > 0 && image_count > capabilities.maxImageCount) {
@@ -351,7 +349,6 @@ class VulkanRenderer : public IRenderer {
         image_info.usage = Convert(desc.usage);
 
         VmaAllocationCreateInfo alloc_info = {};
-        vtexture.memory_usage = desc.memory_usage;
         switch (desc.memory_usage) {
             case MemoryUsage::kGpuOnly:
                 alloc_info.usage = VMA_MEMORY_USAGE_GPU_ONLY;
@@ -374,10 +371,6 @@ class VulkanRenderer : public IRenderer {
 
         vtexture.image = vk::Image(image);
         vtexture.allocation = allocation;
-        vtexture.format = image_info.format;
-        vtexture.extent = image_info.extent;
-        vtexture.mip_levels = image_info.mipLevels;
-        vtexture.array_layers = image_info.arrayLayers;
         vtexture.creation_type = TextureCreationType::kRegular;  // Default creation_type
 
         // Determine aspect mask
@@ -390,7 +383,7 @@ class VulkanRenderer : public IRenderer {
         }
 
         // Create image view using the shared CreateView method
-        vtexture.image_view = CreateView(vtexture.image, vtexture.format, aspect_mask);
+        vtexture.image_view = CreateView(vtexture.image, image_info.format, aspect_mask);
 
         TextureHandle handle;
         handle.id = GenerateUniqueID();
@@ -819,9 +812,9 @@ class VulkanRenderer : public IRenderer {
         // RenderPass 생성 (SwapChainDesc를 기반으로)
         RenderPassDesc render_pass_desc;
         render_pass_desc.color_formats = {sc_data.desc.color_format};
-        render_pass_desc.depth_format = sc_data.desc.depth_format;
+        render_pass_desc.depth_format = Convert(sc_data.chosen_depth_format);
         render_pass_desc.clear_colors = {{0.0f, 0.0f, 0.0f, 1.0f}};
-        render_pass_desc.clear_depth = (sc_data.desc.depth_format != Format::kUndefined);
+        render_pass_desc.clear_depth = (sc_data.chosen_depth_format != vk::Format::eUndefined);
         render_pass_desc.clear_depth_value = 1.0f;
         render_pass_desc.clear_stencil_value = 0;
         render_pass_desc.color_attachment_options = {
@@ -831,21 +824,19 @@ class VulkanRenderer : public IRenderer {
                 AttachmentOptions{.load_op = AttachmentLoadOp::kClear, .store_op = AttachmentStoreOp::kStore};
         }
 
-        // #FIXME (If pDepthStencilAttachment is not NULL) RenderPass 생성 또는 조회
         RenderPassHandle renderpass_handle = CreateRenderPassInternal(render_pass_desc);
 
         // VulkanFrameBuffer 생성
         VulkanFrameBuffer vframebuffer;
         vframebuffer.renderpass_handle = renderpass_handle;
 
-        // 스왑체인 이미지별로 Framebuffer 생성
-
         // 깊이 텍스처가 필요한 경우
         TextureHandle depth_handle = TextureHandle{0};
         if (sc_data.desc.depth_format != Format::kUndefined) {
             // 깊이 텍스처 생성
             depth_handle = CreateTexture({
-                .format = sc_data.desc.depth_format,
+                .type = TextureType::k2D,
+                .format = Convert(sc_data.chosen_depth_format),
                 .usage = TextureUsage::kDepthStencil,
                 .width = sc_data.desc.width,
                 .height = sc_data.desc.height,
@@ -860,7 +851,7 @@ class VulkanRenderer : public IRenderer {
 
         for (const auto& image : swapchain_images) {
             // CreateView 메소드를 사용하여 이미지 뷰 생성
-            vk::ImageView image_view = CreateView(image, sc_data.color_format, vk::ImageAspectFlagBits::eColor);
+            vk::ImageView image_view = CreateView(image, sc_data.chosen_color_format, vk::ImageAspectFlagBits::eColor);
 
             // TextureHandle 생성 (kSwapChain 타입)
             TextureHandle texture_handle;
@@ -868,13 +859,19 @@ class VulkanRenderer : public IRenderer {
 
             // VulkanTexture 구조체 채우기
             VulkanTexture vtexture;
+            vtexture.desc = {
+                .type = TextureType::k2D,
+                .format = Convert(sc_data.chosen_color_format),
+                .usage = TextureUsage::kRenderTarget,
+                .width = sc_data.desc.width,
+                .height = sc_data.desc.height,
+                .depth = 1,
+                .mip_levels = 1,
+                .array_layers = 1,
+            };
+
             vtexture.image = image;
             vtexture.image_view = image_view;
-            vtexture.format = sc_data.color_format;
-            vtexture.extent = vk::Extent3D{sc_data.desc.width, sc_data.desc.height, 1};
-            vtexture.mip_levels = 1;
-            vtexture.array_layers = 1;
-            vtexture.usage = TextureUsage::kRenderTarget;
             vtexture.creation_type = TextureCreationType::kSwapChain;
 
             // textures_ 맵에 추가
@@ -1675,13 +1672,16 @@ class VulkanRenderer : public IRenderer {
         }
     }
 
-    vk::SurfaceFormatKHR ChooseSurfaceFormat(const std::vector<vk::SurfaceFormatKHR>& available_formats) {
+    vk::SurfaceFormatKHR ChooseSurfaceFormat(const std::vector<vk::SurfaceFormatKHR>& available_formats,
+                                             vk::Format request_format) {
+        request_format = (request_format == vk::Format::eUndefined) ? vk::Format::eB8G8R8A8Unorm : request_format;
         for (const auto& available_format : available_formats) {
-            if (available_format.format == vk::Format::eB8G8R8A8Unorm &&
+            if (available_format.format == request_format &&
                 available_format.colorSpace == vk::ColorSpaceKHR::eSrgbNonlinear) {
                 return available_format;
             }
         }
+
         return available_formats[0];
     }
 
@@ -1788,9 +1788,6 @@ class VulkanRenderer : public IRenderer {
         if (has_depth) {
             attachment_count += 1;
         }
-
-        auto valid = FindSupportedFormat({Convert(desc.depth_format)}, vk::ImageTiling::eOptimal,
-                                         vk::FormatFeatureFlagBits::eDepthStencilAttachment);
 
         std::vector<vk::AttachmentDescription> attachments;
         std::vector<vk::AttachmentReference> color_attachment_refs;
@@ -2246,6 +2243,31 @@ class VulkanRenderer : public IRenderer {
         }
     }
 
+    Format Convert(vk::Format format) {
+        switch (format) {
+            case vk::Format::eR8G8B8A8Srgb:
+                return Format::kR8G8B8A8Srgb;
+            case vk::Format::eB8G8R8A8Unorm:
+                return Format::kB8G8R8A8Unorm;
+            case vk::Format::eD16Unorm:
+                return Format::kD16Unorm;
+            case vk::Format::eX8D24UnormPack32:
+                return Format::kX8D24UnormPack32;
+            case vk::Format::eD32Sfloat:
+                return Format::kD32Sfloat;
+            case vk::Format::eS8Uint:
+                return Format::kS8Uint;
+            case vk::Format::eD16UnormS8Uint:
+                return Format::kD16UnormS8Uint;
+            case vk::Format::eD24UnormS8Uint:
+                return Format::kD24UnormS8Uint;
+            case vk::Format::eD32SfloatS8Uint:
+                return Format::kD32SfloatS8Uint;
+            default:
+                throw std::invalid_argument("Unsupported format");
+        }
+    }
+
     vk::Format Convert(Format format) {
         switch (format) {
             case Format::kUndefined:
@@ -2503,6 +2525,14 @@ class VulkanRenderer : public IRenderer {
             }
         }
         throw std::runtime_error("No compatible format found.");
+    }
+
+    vk::Format FindDepthFormat(vk::Format request_format) {
+        std::vector<vk::Format> preferred_formats = {request_format, vk::Format::eD32SfloatS8Uint,
+                                                     vk::Format::eD24UnormS8Uint, vk::Format::eD16Unorm};
+
+        return FindSupportedFormat(preferred_formats, vk::ImageTiling::eOptimal,
+                                   vk::FormatFeatureFlagBits::eDepthStencilAttachment);
     }
 
     uint64_t HashDesc(const RenderPassDesc& desc) {
