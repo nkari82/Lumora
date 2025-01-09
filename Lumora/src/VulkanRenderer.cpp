@@ -56,21 +56,6 @@ struct RenderPassDesc {
 
 enum class TextureCreationType { kRegular, kSwapChain };
 
-struct DescriptorBinding {
-    uint32_t binding;                  // Descriptor binding number
-    vk::DescriptorType type;           // Descriptor type (e.g., uniform buffer, sampler)
-    uint32_t count;                    // Descriptor count
-    vk::ShaderStageFlags stage_flags;  // Shader stages that access this binding
-    std::string name;                  // Descriptor name (optional, for debugging)
-};
-
-// Push Constants Reflection Data
-struct PushConstantRange {
-    vk::ShaderStageFlags stage_flags;  // Shader stages that access the push constants
-    uint32_t offset;                   // Byte offset in the push constant block
-    uint32_t size;                     // Size of the push constant block in bytes
-};
-
 struct HandleHash {
     std::size_t operator()(const ResourceHandle& handle) const { return static_cast<std::size_t>(handle.id); }
 };
@@ -113,9 +98,12 @@ struct VulkanShader : VulkanRef {
     vk::ShaderModule shader_module;
 
     // Reflection Data
-    std::vector<InputAttribute> input_attributes;         // Vertex shader input attributes
-    std::vector<DescriptorBinding> descriptor_bindings;   // Shader resource bindings
-    std::vector<PushConstantRange> push_constant_ranges;  // Push constant ranges
+    std::vector<vk::VertexInputAttributeDescription> vertex_input_attributes;
+    std::vector<vk::DescriptorSetLayoutBinding> descriptor_set_layout_bindings;
+    std::vector<vk::PushConstantRange> push_constant_ranges;
+    std::vector<vk::DescriptorSetLayoutBinding> storage_buffer_bindings;
+    std::vector<vk::DescriptorSetLayoutBinding> sampler_bindings;
+    uint32_t vertex_stride{0};
 };
 
 struct VulkanPipeline : VulkanRef {
@@ -481,22 +469,24 @@ class VulkanRenderer : public IRenderer {
                 for (const auto& input : resources.stage_inputs) {
                     spirv_cross::SPIRType type = compiler.get_type(input.type_id);
                     uint32_t location = compiler.get_decoration(input.id, spv::DecorationLocation);
+                    uint32_t binding = compiler.get_decoration(input.id, spv::DecorationBinding);
+                    uint32_t offset = compiler.get_decoration(input.id, spv::DecorationOffset);
 
                     // Determine Vulkan format from SPIRType
-                    Format format = Convert(type);
+                    vk::Format format = Convert(type);
 
-                    // Calculate offset (requires manual or additional logic for accurate alignment)
-                    // Here, we assume tightly packed attributes for simplicity
-                    uint32_t offset = 0;
-                    for (const auto& attr : vshader.input_attributes) {
-                        offset += GetFormatSize(attr.format);
-                    }
-
-                    vshader.input_attributes.push_back(InputAttribute{location, format, offset});
+                    // Populate vk::VertexInputAttributeDescription
+                    vk::VertexInputAttributeDescription attr_desc{};
+                    attr_desc.location = location;
+                    attr_desc.binding = binding;  // Typically 0 for single binding
+                    attr_desc.format = format;
+                    attr_desc.offset = offset;
+                    vshader.vertex_input_attributes.push_back(attr_desc);
+                    vshader.vertex_stride += GetFormatSize(format);
                 }
             }
 
-            // Extract descriptor bindings (Uniform Buffers and Samplers)
+            // Extract descriptor bindings (Uniform Buffers and Sampled Images)
             for (const auto& resource : resources.uniform_buffers) {
                 uint32_t binding = compiler.get_decoration(resource.id, spv::DecorationBinding);
                 uint32_t set = compiler.get_decoration(resource.id, spv::DecorationDescriptorSet);
@@ -504,8 +494,15 @@ class VulkanRenderer : public IRenderer {
                 uint32_t count = 1;  // Adjust if using arrays
                 vk::ShaderStageFlags stage_flags = Convert(desc.stage);
 
-                vshader.descriptor_bindings.push_back(
-                    DescriptorBinding{binding, type, count, stage_flags, compiler.get_name(resource.id)});
+                // Populate vk::DescriptorSetLayoutBinding
+                vk::DescriptorSetLayoutBinding layout_binding{};
+                layout_binding.binding = binding;
+                layout_binding.descriptorType = type;
+                layout_binding.descriptorCount = count;
+                layout_binding.stageFlags = stage_flags;
+                layout_binding.pImmutableSamplers = nullptr;  // Optional
+
+                vshader.descriptor_set_layout_bindings.push_back(layout_binding);
             }
 
             for (const auto& resource : resources.sampled_images) {
@@ -515,23 +512,74 @@ class VulkanRenderer : public IRenderer {
                 uint32_t count = 1;  // Adjust if using arrays
                 vk::ShaderStageFlags stage_flags = Convert(desc.stage);
 
-                vshader.descriptor_bindings.push_back(
-                    DescriptorBinding{binding, type, count, stage_flags, compiler.get_name(resource.id)});
+                // Populate vk::DescriptorSetLayoutBinding
+                vk::DescriptorSetLayoutBinding layout_binding{};
+                layout_binding.binding = binding;
+                layout_binding.descriptorType = type;
+                layout_binding.descriptorCount = count;
+                layout_binding.stageFlags = stage_flags;
+                layout_binding.pImmutableSamplers = nullptr;  // Optional
+
+                vshader.descriptor_set_layout_bindings.push_back(layout_binding);
+            }
+
+            // Extract storage buffers
+            for (const auto& resource : resources.storage_buffers) {
+                uint32_t binding = compiler.get_decoration(resource.id, spv::DecorationBinding);
+                uint32_t set = compiler.get_decoration(resource.id, spv::DecorationDescriptorSet);
+                vk::DescriptorType type = vk::DescriptorType::eStorageBuffer;
+                uint32_t count = 1;  // Adjust if using arrays
+                vk::ShaderStageFlags stage_flags = Convert(desc.stage);
+
+                // Populate vk::DescriptorSetLayoutBinding
+                vk::DescriptorSetLayoutBinding layout_binding{};
+                layout_binding.binding = binding;
+                layout_binding.descriptorType = type;
+                layout_binding.descriptorCount = count;
+                layout_binding.stageFlags = stage_flags;
+                layout_binding.pImmutableSamplers = nullptr;  // Optional
+
+                vshader.storage_buffer_bindings.push_back(layout_binding);
+            }
+
+            // Extract samplers (if separate from sampled images)
+            for (const auto& resource : resources.separate_samplers) {
+                uint32_t binding = compiler.get_decoration(resource.id, spv::DecorationBinding);
+                uint32_t set = compiler.get_decoration(resource.id, spv::DecorationDescriptorSet);
+                vk::DescriptorType type = vk::DescriptorType::eSampler;
+                uint32_t count = 1;  // Adjust if using arrays
+                vk::ShaderStageFlags stage_flags = Convert(desc.stage);
+
+                // Populate vk::DescriptorSetLayoutBinding
+                vk::DescriptorSetLayoutBinding layout_binding{};
+                layout_binding.binding = binding;
+                layout_binding.descriptorType = type;
+                layout_binding.descriptorCount = count;
+                layout_binding.stageFlags = stage_flags;
+                layout_binding.pImmutableSamplers = nullptr;  // Optional
+
+                vshader.sampler_bindings.push_back(layout_binding);
             }
 
             // Extract push constants
-            auto push_constant_ranges = compiler.get_shader_resources().push_constant_buffers;
-            for (const auto& push_constant : resources.push_constant_buffers) {
+            auto push_constants = compiler.get_shader_resources().push_constant_buffers;
+            for (const auto& push_constant : push_constants) {
                 spirv_cross::SPIRType type = compiler.get_type(push_constant.type_id);
                 uint32_t offset = compiler.get_decoration(push_constant.id, spv::DecorationOffset);
                 uint32_t size = compiler.get_declared_struct_size(type);
 
                 vk::ShaderStageFlags stage_flags = Convert(desc.stage);
 
-                vshader.push_constant_ranges.push_back(PushConstantRange{stage_flags, offset, size});
+                // Populate vk::PushConstantRange
+                vk::PushConstantRange push_constant_range{};
+                push_constant_range.stageFlags = stage_flags;
+                push_constant_range.offset = offset;
+                push_constant_range.size = size;
+
+                vshader.push_constant_ranges.push_back(push_constant_range);
             }
 
-            // Additional resource types (storage buffers, samplers, etc.) can be handled similarly
+            // Additional resource types (e.g., storage buffers, separate samplers) are handled similarly
         } catch (const spirv_cross::CompilerError& e) {
             throw std::runtime_error(std::string("SPIRV-Cross reflection error: ") + e.what());
         }
@@ -548,7 +596,7 @@ class VulkanRenderer : public IRenderer {
         VulkanPipeline vpipeline;
         vpipeline.desc = desc;  // Store pipeline description
 
-        // Setup shader stages as before
+        // Setup shader stages
         std::vector<vk::PipelineShaderStageCreateInfo> shader_stages;
 
         // Vertex Shader Stage
@@ -579,45 +627,27 @@ class VulkanRenderer : public IRenderer {
             shader_stages.push_back(frag_shader_stage_info);
         }
 
-        // Assuming a single shader is used to create the pipeline layout
-        // If multiple shaders are used, ensure they are compatible
-        VulkanShader combined_shader = {};
+        // Select a shader to base the pipeline layout on (e.g., vertex shader)
+        VulkanShader* base_shader = nullptr;
         if (desc.vertex_shader.id != 0) {
-            combined_shader = shaders_.at(desc.vertex_shader);
+            base_shader = &shaders_.at(desc.vertex_shader);
         } else if (desc.fragment_shader.id != 0) {
-            combined_shader = shaders_.at(desc.fragment_shader);
+            base_shader = &shaders_.at(desc.fragment_shader);
+        }
+
+        if (!base_shader) {
+            throw std::runtime_error("No shader available to create pipeline layout.");
         }
 
         // Create Pipeline Layout based on shader reflection data
-        vk::PipelineLayout pipeline_layout = CreatePipelineLayout(combined_shader);
-        vpipeline.layout = pipeline_layout;  // Store the pipeline layout
-
-        // Vertex Input Configuration using Reflection Data
-        VertexLayoutDesc vertex_layout_desc = {};
-        if (desc.vertex_shader.id != 0) {
-            vertex_layout_desc = {};  // Initialize or retain existing data
-
-            // Populate vertex_layout_desc from reflection data
-            for (const auto& attr : combined_shader.input_attributes) {
-                vertex_layout_desc.attributes.push_back(attr);
-                vertex_layout_desc.stride += GetFormatSize(attr.format);
-            }
-        }
+        vpipeline.layout = CreatePipelineLayout(*base_shader);
 
         // Vertex Input Binding Descriptions
         std::vector<vk::VertexInputBindingDescription> binding_descriptions = {
-            vk::VertexInputBindingDescription{0, vertex_layout_desc.stride, vk::VertexInputRate::eVertex}};
+            vk::VertexInputBindingDescription{0, base_shader->vertex_stride, vk::VertexInputRate::eVertex}};
 
         // Vertex Input Attribute Descriptions
-        std::vector<vk::VertexInputAttributeDescription> attribute_descriptions;
-        for (const auto& attr : vertex_layout_desc.attributes) {
-            vk::VertexInputAttributeDescription attribute{};
-            attribute.location = attr.location;
-            attribute.binding = 0;                                    // Assuming single binding
-            attribute.format = static_cast<vk::Format>(attr.format);  // Ensure correct mapping
-            attribute.offset = attr.offset;
-            attribute_descriptions.push_back(attribute);
-        }
+        std::vector<vk::VertexInputAttributeDescription> attribute_descriptions = base_shader->vertex_input_attributes;
 
         vk::PipelineVertexInputStateCreateInfo vertex_input_info{};
         vertex_input_info.vertexBindingDescriptionCount = static_cast<uint32_t>(binding_descriptions.size());
@@ -630,7 +660,7 @@ class VulkanRenderer : public IRenderer {
         input_assembly.topology = vk::PrimitiveTopology::eTriangleList;
         input_assembly.primitiveRestartEnable = VK_FALSE;
 
-        // Viewport and Scissor (as per existing implementation)
+        // Viewport and Scissor
         vk::Viewport viewport{};
         viewport.x = desc.viewport.x;
         viewport.y = desc.viewport.y;
@@ -650,41 +680,41 @@ class VulkanRenderer : public IRenderer {
         viewport_state.scissorCount = 1;
         viewport_state.pScissors = &scissor;
 
-        // Rasterizer Configuration (as per existing implementation)
+        // Rasterizer Configuration
         vk::PipelineRasterizationStateCreateInfo rasterizer{};
         rasterizer.depthClampEnable = desc.rasterization.depth_clamp_enable;
         rasterizer.rasterizerDiscardEnable = desc.rasterization.rasterizer_discard_enable;
         rasterizer.polygonMode = Convert(desc.rasterization.polygon_mode);
-        rasterizer.lineWidth = 1.0f;  // Anti-aliasing can be handled separately
+        rasterizer.lineWidth = 1.0f;  // Can be adjusted
         rasterizer.cullMode = Convert(desc.rasterization.cull_mode);
         rasterizer.frontFace = Convert(desc.rasterization.front_face);
         rasterizer.depthBiasEnable = VK_FALSE;
 
-        // Multisampling Configuration (as per existing implementation)
+        // Multisampling Configuration
         vk::PipelineMultisampleStateCreateInfo multisampling{};
         multisampling.sampleShadingEnable = VK_FALSE;
-        // multisampling.rasterizationSamples = Convert(desc.sample_count);
+        multisampling.rasterizationSamples = Convert(desc.sample_count);
 
-        // Depth Stencil Configuration (as per existing implementation)
+        // Depth Stencil Configuration
         vk::PipelineDepthStencilStateCreateInfo depth_stencil{};
         depth_stencil.depthTestEnable = desc.depth_stencil.depth_test_enable;
         depth_stencil.depthWriteEnable = desc.depth_stencil.depth_write_enable;
-        // depth_stencil.depthCompareOp = Convert(desc.depth_stencil.depth_compare_op);
+        depth_stencil.depthCompareOp = Convert(desc.depth_stencil.depth_compare_op);
         depth_stencil.depthBoundsTestEnable = VK_FALSE;
         depth_stencil.stencilTestEnable = desc.depth_stencil.stencil_test_enable;
         // Additional stencil settings can be configured here
 
-        // Color Blending Configuration (as per existing implementation)
+        // Color Blending Configuration
         std::vector<vk::PipelineColorBlendAttachmentState> color_blend_attachments;
         for (const auto& blend_state : desc.color_blends) {
             vk::PipelineColorBlendAttachmentState color_blend{};
             color_blend.blendEnable = blend_state.blend_enable;
-            color_blend.srcColorBlendFactor = static_cast<vk::BlendFactor>(blend_state.src_color_blend_factor);
-            color_blend.dstColorBlendFactor = static_cast<vk::BlendFactor>(blend_state.dst_color_blend_factor);
-            color_blend.colorBlendOp = static_cast<vk::BlendOp>(blend_state.color_blend_op);
-            color_blend.srcAlphaBlendFactor = static_cast<vk::BlendFactor>(blend_state.src_alpha_blend_factor);
-            color_blend.dstAlphaBlendFactor = static_cast<vk::BlendFactor>(blend_state.dst_alpha_blend_factor);
-            color_blend.alphaBlendOp = static_cast<vk::BlendOp>(blend_state.alpha_blend_op);
+            color_blend.srcColorBlendFactor = Convert(blend_state.src_color_blend_factor);
+            color_blend.dstColorBlendFactor = Convert(blend_state.dst_color_blend_factor);
+            color_blend.colorBlendOp = Convert(blend_state.color_blend_op);
+            color_blend.srcAlphaBlendFactor = Convert(blend_state.src_alpha_blend_factor);
+            color_blend.dstAlphaBlendFactor = Convert(blend_state.dst_alpha_blend_factor);
+            color_blend.alphaBlendOp = Convert(blend_state.alpha_blend_op);
             color_blend.colorWriteMask = vk::ColorComponentFlagBits::eR | vk::ColorComponentFlagBits::eG |
                                          vk::ColorComponentFlagBits::eB | vk::ColorComponentFlagBits::eA;
             color_blend_attachments.push_back(color_blend);
@@ -717,7 +747,7 @@ class VulkanRenderer : public IRenderer {
         pipeline_info.layout = vpipeline.layout;
         // pipeline_info.renderPass = render_pass_;  // Use the appropriate render pass
         pipeline_info.subpass = 0;
-        pipeline_info.basePipelineHandle = nullptr;  // #TODO 요건 뭐지?
+        pipeline_info.basePipelineHandle = nullptr;
 
         try {
             vpipeline.pipelines[0] = device_.createGraphicsPipeline(nullptr, pipeline_info).value;
@@ -2307,6 +2337,83 @@ class VulkanRenderer : public IRenderer {
         }
     }
 
+    vk::CompareOp Convert(CompareOp op) {
+        switch (op) {
+            case CompareOp::kNever:
+                return vk::CompareOp::eNever;
+            case CompareOp::kLess:
+                return vk::CompareOp::eLess;
+            case CompareOp::kEqual:
+                return vk::CompareOp::eEqual;
+            case CompareOp::kLessOrEqual:
+                return vk::CompareOp::eLessOrEqual;
+            case CompareOp::kGreater:
+                return vk::CompareOp::eGreater;
+            case CompareOp::kNotEqual:
+                return vk::CompareOp::eNotEqual;
+            case CompareOp::kGreaterOrEqual:
+                return vk::CompareOp::eGreaterOrEqual;
+            case CompareOp::kAlways:
+                return vk::CompareOp::eAlways;
+            default:
+                return vk::CompareOp::eNever;
+        }
+    }
+
+    vk::BlendFactor Convert(BlendFactor factor) {
+        switch (factor) {
+            case BlendFactor::kZero:
+                return vk::BlendFactor::eZero;
+            case BlendFactor::kOne:
+                return vk::BlendFactor::eOne;
+            case BlendFactor::kSrcColor:
+                return vk::BlendFactor::eSrcColor;
+            case BlendFactor::kOneMinusSrcColor:
+                return vk::BlendFactor::eOneMinusSrcColor;
+            case BlendFactor::kDstColor:
+                return vk::BlendFactor::eDstColor;
+            case BlendFactor::kOneMinusDstColor:
+                return vk::BlendFactor::eOneMinusDstColor;
+            case BlendFactor::kSrcAlpha:
+                return vk::BlendFactor::eSrcAlpha;
+            case BlendFactor::kOneMinusSrcAlpha:
+                return vk::BlendFactor::eOneMinusSrcAlpha;
+            case BlendFactor::kDstAlpha:
+                return vk::BlendFactor::eDstAlpha;
+            case BlendFactor::kOneMinusDstAlpha:
+                return vk::BlendFactor::eOneMinusDstAlpha;
+            case BlendFactor::kConstantColor:
+                return vk::BlendFactor::eConstantColor;
+            case BlendFactor::kOneMinusConstantColor:
+                return vk::BlendFactor::eOneMinusConstantColor;
+            case BlendFactor::kConstantAlpha:
+                return vk::BlendFactor::eConstantAlpha;
+            case BlendFactor::kOneMinusConstantAlpha:
+                return vk::BlendFactor::eOneMinusConstantAlpha;
+            case BlendFactor::kSrcAlphaSaturate:
+                return vk::BlendFactor::eSrcAlphaSaturate;
+            default:
+                return vk::BlendFactor::eZero;
+        }
+    }
+
+    vk::BlendOp Convert(BlendOp op) {
+        switch (op) {
+            case BlendOp::kAdd:
+                return vk::BlendOp::eAdd;
+            case BlendOp::kSubtract:
+                return vk::BlendOp::eSubtract;
+            case BlendOp::kReverseSubtract:
+                return vk::BlendOp::eReverseSubtract;
+            case BlendOp::kMin:
+                return vk::BlendOp::eMin;
+            case BlendOp::kMax:
+                return vk::BlendOp::eMax;
+            default:
+                return vk::BlendOp::eAdd;
+        }
+    }
+
     Format Convert(vk::Format format) {
         switch (format) {
             case vk::Format::eR8G8B8A8Srgb:
@@ -2596,6 +2703,63 @@ class VulkanRenderer : public IRenderer {
         }
     };
 
+    // Converts ShaderStage enum to vk::ShaderStageFlags
+    vk::ShaderStageFlags Convert(ShaderStage stage) {
+        switch (stage) {
+            case ShaderStage::kVertex:
+                return vk::ShaderStageFlagBits::eVertex;
+            case ShaderStage::kFragment:
+                return vk::ShaderStageFlagBits::eFragment;
+            case ShaderStage::kCompute:
+                return vk::ShaderStageFlagBits::eCompute;
+            // Add other shader stages as needed
+            default:
+                return vk::ShaderStageFlagBits::eVertex;
+        }
+    }
+
+    vk::SampleCountFlagBits Convert(SampleCount sample) {
+        switch (sample) {
+            case SampleCount::k1:
+                return vk::SampleCountFlagBits::e1;
+            case SampleCount::k2:
+                return vk::SampleCountFlagBits::e2;
+            case SampleCount::k4:
+                return vk::SampleCountFlagBits::e4;
+
+            case SampleCount::k8:
+                return vk::SampleCountFlagBits::e8;
+            case SampleCount::k16:
+                return vk::SampleCountFlagBits::e16;
+            case SampleCount::k32:
+                return vk::SampleCountFlagBits::e32;
+            case SampleCount::k64:
+                return vk::SampleCountFlagBits::e64;
+            default:
+                return vk::SampleCountFlagBits::e1;
+        }
+    }
+
+    // Determines Vulkan Format based on SPIRV-Cross SPIRType
+    vk::Format Convert(const spirv_cross::SPIRType& type) {
+        if (type.basetype == spirv_cross::SPIRType::Float) {
+            switch (type.vecsize) {
+                case 1:
+                    return vk::Format::eR32Sfloat;
+                case 2:
+                    return vk::Format::eR32G32Sfloat;
+                case 3:
+                    return vk::Format::eR32G32B32Sfloat;
+                case 4:
+                    return vk::Format::eR32G32B32A32Sfloat;
+                default:
+                    throw std::runtime_error("Unsupported SPIRType vecsize for float.");
+            }
+        }
+        // Handle other base types (Int, UInt, etc.) as needed
+        throw std::runtime_error("Unsupported SPIRType basetype for reflection.");
+    }
+
     vk::Format FindSupportedFormat(const std::vector<vk::Format>& candidates, vk::ImageTiling tiling,
                                    vk::FormatFeatureFlags features) {
         for (vk::Format format : candidates) {
@@ -2658,72 +2822,20 @@ class VulkanRenderer : public IRenderer {
         return hash;
     }
 
-    // Converts ShaderStage enum to vk::ShaderStageFlags
-    vk::ShaderStageFlags Convert(ShaderStage stage) {
-        switch (stage) {
-            case ShaderStage::kVertex:
-                return vk::ShaderStageFlagBits::eVertex;
-            case ShaderStage::kFragment:
-                return vk::ShaderStageFlagBits::eFragment;
-            case ShaderStage::kCompute:
-                return vk::ShaderStageFlagBits::eCompute;
-            // Add other shader stages as needed
-            default:
-                return vk::ShaderStageFlagBits::eVertex;
-        }
-    }
-
-    // Determines Vulkan Format based on SPIRV-Cross SPIRType
-    Format Convert(const spirv_cross::SPIRType& type) {
-        if (type.basetype == spirv_cross::SPIRType::Float) {
-            switch (type.vecsize) {
-                case 1:
-                    return Format::kR32Sfloat;
-                case 2:
-                    return Format::kR32G32Sfloat;
-                case 3:
-                    return Format::kR32G32B32Sfloat;
-                case 4:
-                    return Format::kR32G32B32A32Sfloat;
-                default:
-                    throw std::runtime_error("Unsupported SPIRType vecsize for float.");
-            }
-        }
-        // Handle other base types (Int, UInt, etc.) as needed
-        throw std::runtime_error("Unsupported SPIRType basetype for reflection.");
-    }
-
-    // #TODO CreateShader에서 DescriptorBiding이런거 없이 바로 vk 구조체로 사용하자.
-    vk::DescriptorSetLayoutBinding Convert(const DescriptorBinding& binding) {
-        vk::DescriptorSetLayoutBinding layout_binding{};
-        layout_binding.binding = binding.binding;
-        layout_binding.descriptorType = binding.type;
-        layout_binding.descriptorCount = binding.count;
-        layout_binding.stageFlags = binding.stage_flags;
-        layout_binding.pImmutableSamplers = nullptr;  // Adjust if using immutable samplers
-
-        return layout_binding;
-    }
-
-    // Converts PushConstantRange to vk::PushConstantRange
-    vk::PushConstantRange Convert(const PushConstantRange& push_constant) {
-        vk::PushConstantRange push_constant_range{};
-        push_constant_range.stageFlags = push_constant.stage_flags;
-        push_constant_range.offset = push_constant.offset;
-        push_constant_range.size = push_constant.size;
-
-        return push_constant_range;
-    }
-
+    // Converts a vector of DescriptorSetLayoutBindings to vk::DescriptorSetLayoutCreateInfo
     vk::DescriptorSetLayout CreateDescriptorSetLayout(const VulkanShader& shader) {
-        std::vector<vk::DescriptorSetLayoutBinding> bindings;
-        for (const auto& binding : shader.descriptor_bindings) {
-            bindings.push_back(Convert(binding));
-        }
+        std::vector<vk::DescriptorSetLayoutBinding> all_bindings;
+
+        // Combine all descriptor bindings
+        all_bindings.insert(all_bindings.end(), shader.descriptor_set_layout_bindings.begin(),
+                            shader.descriptor_set_layout_bindings.end());
+        all_bindings.insert(all_bindings.end(), shader.storage_buffer_bindings.begin(),
+                            shader.storage_buffer_bindings.end());
+        all_bindings.insert(all_bindings.end(), shader.sampler_bindings.begin(), shader.sampler_bindings.end());
 
         vk::DescriptorSetLayoutCreateInfo layout_info{};
-        layout_info.bindingCount = static_cast<uint32_t>(bindings.size());
-        layout_info.pBindings = bindings.data();
+        layout_info.bindingCount = static_cast<uint32_t>(all_bindings.size());
+        layout_info.pBindings = all_bindings.data();
 
         try {
             return device_.createDescriptorSetLayout(layout_info);
@@ -2737,14 +2849,11 @@ class VulkanRenderer : public IRenderer {
         vk::DescriptorSetLayout descriptor_set_layout = CreateDescriptorSetLayout(shader);
 
         // Collect Push Constant Ranges
-        std::vector<vk::PushConstantRange> push_constant_ranges;
-        for (const auto& push_constant : shader.push_constant_ranges) {
-            push_constant_ranges.push_back(Convert(push_constant));
-        }
+        std::vector<vk::PushConstantRange> push_constant_ranges = shader.push_constant_ranges;
 
         // Create Pipeline Layout
         vk::PipelineLayoutCreateInfo pipeline_layout_info{};
-        pipeline_layout_info.setLayoutCount = 1;  // Adjust if multiple descriptor sets
+        pipeline_layout_info.setLayoutCount = 1;  // Assuming single descriptor set
         pipeline_layout_info.pSetLayouts = &descriptor_set_layout;
         pipeline_layout_info.pushConstantRangeCount = static_cast<uint32_t>(push_constant_ranges.size());
         pipeline_layout_info.pPushConstantRanges = push_constant_ranges.data();
@@ -2757,15 +2866,15 @@ class VulkanRenderer : public IRenderer {
     }
 
     // Gets the byte size of a given Vulkan Format
-    uint32_t GetFormatSize(Format format) {
+    uint32_t GetFormatSize(vk::Format format) {
         switch (format) {
-            case Format::kR32Sfloat:
+            case vk::Format::eR32Sfloat:
                 return 4;
-            case Format::kR32G32Sfloat:
+            case vk::Format::eR32G32Sfloat:
                 return 8;
-            case Format::kR32G32B32Sfloat:
+            case vk::Format::eR32G32B32Sfloat:
                 return 12;
-            case Format::kR32G32B32A32Sfloat:
+            case vk::Format::eR32G32B32A32Sfloat:
                 return 16;
             // Add additional format sizes as needed
             default:

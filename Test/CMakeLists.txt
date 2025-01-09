@@ -1,5 +1,7 @@
 project(Test LANGUAGES CXX)
 
+find_package(Vulkan REQUIRED)
+
 add_executable(Test
     testLumora.cpp
 )
@@ -15,4 +17,5 @@ target_include_directories(Test PRIVATE ../external/glm ../include)
 target_link_libraries(Test
     PRIVATE
     Lumora
+    ${Vulkan_LIBRARIES}
 )

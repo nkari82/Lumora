@@ -222,13 +222,7 @@ struct DepthStencilState {
     bool stencil_test_enable = false;
 };
 
-enum class MultiSamples {
-    k1,
-    k2,
-    k4,
-    k6,
-    k8,
-};
+enum class SampleCount { k1, k2, k4, k6, k8, k16, k32, k64 };
 
 struct PipelineDesc {
     ShaderHandle vertex_shader;
@@ -239,7 +233,7 @@ struct PipelineDesc {
     RasterizationState rasterization;
     std::vector<ColorBlendState> color_blends;
     DepthStencilState depth_stencil;
-    MultiSamples sample_count = MultiSamples::k1;
+    SampleCount sample_count = SampleCount::k1;
     PolygonMode polygon_mode = PolygonMode::kFill;
     uint32_t subindex = 0;
 };
