@@ -838,8 +838,26 @@ class VulkanRenderer : public IRenderer {
         VulkanFrameBuffer vframebuffer;
         vframebuffer.renderpass_handle = renderpass_handle;
 
-        // FrameBufferDesc 초기화 (프레임버퍼 생성에 필요 없음, 직접 생성)
         // 스왑체인 이미지별로 Framebuffer 생성
+
+        // 깊이 텍스처가 필요한 경우
+        TextureHandle depth_handle = TextureHandle{0};
+        if (sc_data.desc.depth_format != Format::kUndefined) {
+            // 깊이 텍스처 생성
+            depth_handle = CreateTexture({
+                .format = sc_data.desc.depth_format,
+                .usage = TextureUsage::kDepthStencil,
+                .width = sc_data.desc.width,
+                .height = sc_data.desc.height,
+                .depth = 1,
+                .mip_levels = 1,
+                .array_layers = 1,
+                .memory_usage = MemoryUsage::kGpuOnly,  // 필요에 따라 조정
+            });
+        }
+
+        auto depth_it = textures_.find(depth_handle);
+
         for (const auto& image : swapchain_images) {
             // CreateView 메소드를 사용하여 이미지 뷰 생성
             vk::ImageView image_view = CreateView(image, sc_data.color_format, vk::ImageAspectFlagBits::eColor);
@@ -865,27 +883,7 @@ class VulkanRenderer : public IRenderer {
             // Framebuffer 생성 정보 설정
             std::vector<vk::ImageView> attachments = {image_view};
 
-            // 깊이 텍스처가 필요한 경우
-            TextureHandle depth_handle = TextureHandle{0};
-            if (render_pass_desc.clear_depth) {
-                // 깊이 텍스처 생성
-                depth_handle = CreateTexture({
-                    .format = sc_data.desc.depth_format,
-                    .usage = TextureUsage::kDepthStencil,
-                    .width = sc_data.desc.width,
-                    .height = sc_data.desc.height,
-                    .depth = 1,
-                    .mip_levels = 1,
-                    .array_layers = 1,
-                    .memory_usage = MemoryUsage::kGpuOnly,  // 필요에 따라 조정
-                });
-
-                // 깊이 텍스처의 ImageView 가져오기
-                auto depth_it = textures_.find(depth_handle);
-                if (depth_it == textures_.end()) {
-                    throw std::runtime_error("Failed to find depth texture after creation.");
-                }
-
+            if (depth_it != textures_.end()) {
                 // 깊이 어태치먼트 추가
                 attachments.emplace_back(depth_it->second.image_view);
             }
