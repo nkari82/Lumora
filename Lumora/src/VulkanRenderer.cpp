@@ -1,7 +1,6 @@
 #include <cstring>
 #include <fstream>
 #include <iostream>
-#include <mutex>
 #include <stdexcept>
 #include <unordered_map>
 #include <vector>
@@ -24,17 +23,9 @@
 #include <vk_mem_alloc.h>
 #include <xxhash.h>
 
+// SPIRV-Cross 헤더 추가
 #include <spirv_cross/spirv_cross.hpp>
 #include <spirv_cross/spirv_glsl.hpp>
-
-// For debug messenger
-VKAPI_ATTR VkBool32 VKAPI_CALL DebugCallback(VkDebugUtilsMessageSeverityFlagBitsEXT message_severity,
-                                             VkDebugUtilsMessageTypeFlagsEXT message_type,
-                                             const VkDebugUtilsMessengerCallbackDataEXT* p_callback_data,
-                                             void* p_user_data) {
-    std::cerr << "Validation Layer: " << p_callback_data->pMessage << std::endl;
-    return VK_FALSE;
-}
 
 namespace lumora {
 
@@ -108,7 +99,7 @@ struct VulkanShader : VulkanRef {
 };
 
 struct VulkanPipeline : VulkanRef {
-    PipelineDesc desc;  // To store pipeline configuration
+    PipelineDesc desc;  // Store pipeline configuration
     std::unordered_map<uint64_t, vk::Pipeline> pipelines;
     vk::PipelineLayout layout;
 };
@@ -168,8 +159,6 @@ class VulkanRenderer : public IRenderer {
 
     // public
     SwapChainHandle CreateSwapChain(const SwapChainDesc& desc) override {
-        std::lock_guard<std::recursive_mutex> lock_(resource_mutex_);
-
         VulkanSwapChain swapchain_data;
         swapchain_data.desc = desc;
 
@@ -253,18 +242,7 @@ class VulkanRenderer : public IRenderer {
 
         vk::BufferCreateInfo buffer_info{};
         buffer_info.size = desc.size;
-        buffer_info.usage = vk::BufferUsageFlagBits::eVertexBuffer;  // Adjust based on desc.usage
-
-        if (desc.usage & BufferUsage::kVertex)
-            buffer_info.usage |= vk::BufferUsageFlagBits::eVertexBuffer;
-        if (desc.usage & BufferUsage::kIndex)
-            buffer_info.usage |= vk::BufferUsageFlagBits::eIndexBuffer;
-        if (desc.usage & BufferUsage::kUniform)
-            buffer_info.usage |= vk::BufferUsageFlagBits::eUniformBuffer;
-        if (desc.usage & BufferUsage::kStorage)
-            buffer_info.usage |= vk::BufferUsageFlagBits::eStorageBuffer;
-        if (desc.usage & BufferUsage::kIndirect)
-            buffer_info.usage |= vk::BufferUsageFlagBits::eIndirectBuffer;
+        buffer_info.usage = Convert(desc.usage);
 
         VmaAllocationCreateInfo alloc_info = {};
         vbuffer.memory_usage = desc.memory_usage;
@@ -295,16 +273,12 @@ class VulkanRenderer : public IRenderer {
 
         BufferHandle handle;
         handle.id = GenerateUniqueID();
-        {
-            std::lock_guard<std::recursive_mutex> lock_(resource_mutex_);
-            buffers_.emplace(handle, vbuffer);
-        }
+        buffers_.emplace(handle, vbuffer);
 
         return handle;
     }
 
     void UpdateBuffer(const BufferHandle& handle, const void* data, size_t size) override {
-        std::lock_guard<std::recursive_mutex> lock_(resource_mutex_);
         auto it = buffers_.find(handle);
         if (it == buffers_.end()) {
             throw std::runtime_error("Invalid BufferHandle provided to UpdateBuffer.");
@@ -319,7 +293,6 @@ class VulkanRenderer : public IRenderer {
     }
 
     void BindBuffer(const BufferHandle& handle, uint32_t bind_point, uint32_t dynamic_offset = 0) override {
-        std::lock_guard<std::recursive_mutex> lock_(resource_mutex_);
         auto buffer_it = buffers_.find(handle);
         if (buffer_it == buffers_.end()) {
             throw std::runtime_error("Invalid BufferHandle provided to BindBuffer.");
@@ -390,16 +363,12 @@ class VulkanRenderer : public IRenderer {
 
         TextureHandle handle;
         handle.id = GenerateUniqueID();
-        {
-            std::lock_guard<std::recursive_mutex> lock_(resource_mutex_);
-            textures_.emplace(handle, vtexture);
-        }
+        textures_.emplace(handle, vtexture);
 
         return handle;
     }
 
     void BindTexture(const TextureHandle& handle, uint32_t bind_point) override {
-        std::lock_guard<std::recursive_mutex> lock_(resource_mutex_);
         auto texture_it = textures_.find(handle);
         if (texture_it == textures_.end()) {
             throw std::runtime_error("Invalid TextureHandle provided to BindTexture.");
@@ -424,8 +393,8 @@ class VulkanRenderer : public IRenderer {
         sampler_info.addressModeU = static_cast<vk::SamplerAddressMode>(desc.address_mode_u);
         sampler_info.addressModeV = static_cast<vk::SamplerAddressMode>(desc.address_mode_v);
         sampler_info.addressModeW = static_cast<vk::SamplerAddressMode>(desc.address_mode_w);
-        sampler_info.anisotropyEnable = VK_TRUE;
-        sampler_info.maxAnisotropy = 16.0f;  // Example value
+        sampler_info.anisotropyEnable = desc.enable_anisotropy ? VK_TRUE : VK_FALSE;
+        sampler_info.maxAnisotropy = desc.enable_anisotropy ? desc.max_anisotropy : 1.0f;
         sampler_info.borderColor = vk::BorderColor::eIntOpaqueBlack;
         sampler_info.unnormalizedCoordinates = VK_FALSE;
         sampler_info.compareEnable = VK_FALSE;
@@ -440,16 +409,12 @@ class VulkanRenderer : public IRenderer {
 
         SamplerHandle handle;
         handle.id = GenerateUniqueID();
-        {
-            std::lock_guard<std::recursive_mutex> lock_(resource_mutex_);
-            samplers_.emplace(handle, vsampler);
-        }
+        samplers_.emplace(handle, vsampler);
 
         return handle;
     }
 
     void BindSampler(const SamplerHandle& handle, uint32_t bind_point) override {
-        std::lock_guard<std::recursive_mutex> lock_(resource_mutex_);
         auto sampler_it = samplers_.find(handle);
         if (sampler_it == samplers_.end()) {
             throw std::runtime_error("Invalid SamplerHandle provided to BindSampler.");
@@ -479,10 +444,7 @@ class VulkanRenderer : public IRenderer {
 
         ShaderHandle handle;
         handle.id = GenerateUniqueID();
-        {
-            std::lock_guard<std::recursive_mutex> lock_(resource_mutex_);
-            shaders_.emplace(handle, vshader);
-        }
+        shaders_.emplace(handle, vshader);
 
         return handle;
     }
@@ -522,11 +484,42 @@ class VulkanRenderer : public IRenderer {
             shader_stages.push_back(frag_shader_stage_info);
         }
 
-        // Vertex Input
-        std::vector<vk::VertexInputBindingDescription> binding_descriptions;
-        std::vector<vk::VertexInputAttributeDescription> attribute_descriptions;
+        // Shader Reflection: 자동으로 VertexLayoutDesc 채우기
+        VertexLayoutDesc vertex_layout_desc = {};
+        if (desc.vertex_shader.id != 0) {
+            auto vert_shader_it = shaders_.find(desc.vertex_shader);
+            if (vert_shader_it != shaders_.end()) {
+// SPIRV-Cross를 사용하여 리플렉션 수행
+#if 0
+                spirv_cross::CompilerGLSL compiler(
+                    reinterpret_cast<const uint32_t*>(vert_shader_it->second.shader_module.getBinary()));
+                spirv_cross::ShaderResources resources = compiler.get_shader_resources();
 
-        for (const auto& attr : desc.vertex_layout_desc.attributes) {
+                // 버텍스 어트리뷰트 설정
+                for (const auto& input : resources.stage_inputs) {
+                    spirv_cross::SPIRType type = compiler.get_type(input.type_id);
+                    uint32_t location = compiler.get_decoration(input.id, spv::DecorationLocation);
+
+                    // 포맷 결정
+                    Format format = DetermineFormat(type);
+                    uint32_t offset = 0;  // 실제 오프셋을 계산하려면 추가 로직 필요
+
+                    VertexLayoutDesc::AttributeDesc attr_desc = {location, format, offset};
+                    vertex_layout_desc.attributes.push_back(attr_desc);
+
+                    // 스트라이드 계산 (간단히 총 바이트 수 합산)
+                    vertex_layout_desc.stride += GetFormatSize(format);
+                }
+#endif
+            }
+        }
+
+        // Vertex Input
+        std::vector<vk::VertexInputBindingDescription> binding_descriptions = {
+            vk::VertexInputBindingDescription{0, vertex_layout_desc.stride, vk::VertexInputRate::eVertex}};
+
+        std::vector<vk::VertexInputAttributeDescription> attribute_descriptions;
+        for (const auto& attr : vertex_layout_desc.attributes) {
             vk::VertexInputAttributeDescription attribute{};
             attribute.location = attr.location;
             attribute.binding = 0;                                    // Assuming single binding for simplicity
@@ -556,7 +549,8 @@ class VulkanRenderer : public IRenderer {
         viewport.maxDepth = desc.viewport.max_depth;
 
         vk::Rect2D scissor{};
-        scissor.offset = vk::Offset2D{desc.scissor.offset_x, desc.scissor.offset_y};
+        scissor.offset =
+            vk::Offset2D{static_cast<int32_t>(desc.scissor.offset_x), static_cast<int32_t>(desc.scissor.offset_y)};
         scissor.extent = vk::Extent2D{desc.scissor.width, desc.scissor.height};
 
         vk::PipelineViewportStateCreateInfo viewport_state{};
@@ -578,7 +572,16 @@ class VulkanRenderer : public IRenderer {
         // Multisampling
         vk::PipelineMultisampleStateCreateInfo multisampling{};
         multisampling.sampleShadingEnable = VK_FALSE;
-        multisampling.rasterizationSamples = vk::SampleCountFlagBits::e1;
+        // multisampling.rasterizationSamples = Convert(desc.sample_count);
+
+        // Depth Stencil
+        vk::PipelineDepthStencilStateCreateInfo depth_stencil{};
+        depth_stencil.depthTestEnable = desc.depth_stencil.depth_test_enable;
+        depth_stencil.depthWriteEnable = desc.depth_stencil.depth_write_enable;
+        // depth_stencil.depthCompareOp = Convert(desc.depth_stencil.depth_compare_op);
+        depth_stencil.depthBoundsTestEnable = VK_FALSE;
+        depth_stencil.stencilTestEnable = desc.depth_stencil.stencil_test_enable;
+        // 추가적인 스텐실 설정 필요 시 구현
 
         // Color Blending
         std::vector<vk::PipelineColorBlendAttachmentState> color_blend_attachments;
@@ -606,49 +609,34 @@ class VulkanRenderer : public IRenderer {
         color_blending.blendConstants[2] = 0.0f;
         color_blending.blendConstants[3] = 0.0f;
 
-        // Pipeline Layout
-        vk::PipelineLayoutCreateInfo pipeline_layout_info{};
-        pipeline_layout_info.setLayoutCount = 0;  // Descriptor sets will be managed internally
-        pipeline_layout_info.pSetLayouts = nullptr;
-        pipeline_layout_info.pushConstantRangeCount = 0;
-        pipeline_layout_info.pPushConstantRanges = nullptr;
+        // Pipeline Layout은 이미 생성된 레이아웃을 사용
+        // 단, 파이프라인별로 별도의 레이아웃을 사용할 경우 추가 구현 필요
+
+        // Pipeline Creation
+        vk::GraphicsPipelineCreateInfo pipeline_info{};
+        pipeline_info.stageCount = static_cast<uint32_t>(shader_stages.size());
+        pipeline_info.pStages = shader_stages.data();
+        pipeline_info.pVertexInputState = &vertex_input_info;
+        pipeline_info.pInputAssemblyState = &input_assembly;
+        pipeline_info.pViewportState = &viewport_state;
+        pipeline_info.pRasterizationState = &rasterizer;
+        pipeline_info.pMultisampleState = &multisampling;
+        pipeline_info.pDepthStencilState = &depth_stencil;
+        pipeline_info.pColorBlendState = &color_blending;
+        pipeline_info.layout = pipeline_layout_;
+        pipeline_info.renderPass = render_pass_;  // 기본 렌더 패스 사용
+        pipeline_info.subpass = 0;
+        pipeline_info.basePipelineHandle = nullptr;
 
         try {
-            vpipeline.layout = device_.createPipelineLayout(pipeline_layout_info);
+            vpipeline.pipelines[0] = device_.createGraphicsPipeline(nullptr, pipeline_info).value;
         } catch (const std::exception& e) {
-            throw std::runtime_error(std::string("Failed to create pipeline layout: ") + e.what());
+            throw std::runtime_error(std::string("Failed to create graphics pipeline: ") + e.what());
         }
 
-        // Pipeline Creation moved to BindPipeline
-#if 0
-    vk::GraphicsPipelineCreateInfo pipeline_info{};
-    pipeline_info.stageCount = static_cast<uint32_t>(shader_stages.size());
-    pipeline_info.pStages = shader_stages.data();
-    pipeline_info.pVertexInputState = &vertex_input_info;
-    pipeline_info.pInputAssemblyState = &input_assembly;
-    pipeline_info.pViewportState = &viewport_state;
-    pipeline_info.pRasterizationState = &rasterizer;
-    pipeline_info.pMultisampleState = &multisampling;
-    pipeline_info.pDepthStencilState = nullptr;  // Implement if using depth
-    pipeline_info.pColorBlendState = &color_blending;
-    pipeline_info.pDynamicState = nullptr;  // Implement if using dynamic states
-    pipeline_info.layout = vpipeline.layout;
-    pipeline_info.renderPass = render_pass_;
-    pipeline_info.subpass = 0;
-    pipeline_info.basePipelineHandle = nullptr;
-
-    try {
-      vpipeline.pipeline = device_.createGraphicsPipeline(nullptr, pipeline_info).value;
-    } catch (const std::exception& e) {
-      throw std::runtime_error(std::string("Failed to create graphics pipeline: ") + e.what());
-    }
-#endif
         PipelineHandle handle;
         handle.id = GenerateUniqueID();
-        {
-            std::lock_guard<std::recursive_mutex> lock_(resource_mutex_);
-            pipelines_.emplace(handle, vpipeline);
-        }
+        pipelines_.emplace(handle, vpipeline);
 
         return handle;
     }
@@ -690,27 +678,21 @@ class VulkanRenderer : public IRenderer {
         pipeline_info.layout = vpipeline.layout;
         pipeline_info.basePipelineHandle = nullptr;
 
-#if 0
-    try {
-      vpipeline.pipelines = device_.createComputePipeline(nullptr, pipeline_info).value;
-    } catch (const std::exception& e) {
-      throw std::runtime_error(std::string("Failed to create compute pipeline: ") + e.what());
-    }
-#endif
+        try {
+            vpipeline.pipelines[0] = device_.createComputePipeline(nullptr, pipeline_info).value;
+        } catch (const std::exception& e) {
+            throw std::runtime_error(std::string("Failed to create compute pipeline: ") + e.what());
+        }
+
         PipelineHandle handle;
         handle.id = GenerateUniqueID();
-        {
-            std::lock_guard<std::recursive_mutex> lock_(resource_mutex_);
-            pipelines_.emplace(handle, vpipeline);
-        }
+        pipelines_.emplace(handle, vpipeline);
 
         return handle;
     }
 
     // BeginPass시 RenderDesc로 CreateFrameBuffer를 생성하고 CreateRenderPass를 생성한다.
     FrameBufferHandle CreateFrameBuffer(const FrameBufferDesc& desc) {
-        std::lock_guard<std::recursive_mutex> lock_(resource_mutex_);
-
         // Populate RenderPassDesc based on FrameBufferDesc
         RenderPassDesc render_pass_desc;
         for (const auto& texture_handle : desc.color_targets) {
@@ -799,15 +781,13 @@ class VulkanRenderer : public IRenderer {
     }
 
     FrameBufferHandle CreateFrameBuffer(const SwapChainHandle& handle) override {
-        std::lock_guard<std::recursive_mutex> lock_(resource_mutex_);
-
         // SwapChain 조회
         auto swapchain_it = swapchains_.find(handle);
         if (swapchain_it == swapchains_.end()) {
             throw std::runtime_error("Invalid SwapChainHandle provided to CreateFrameBuffer.");
         }
 
-        VulkanSwapChain& sc_data = swapchains_.at(handle);
+        VulkanSwapChain& sc_data = swapchain_it->second;
 
         // 스왑체인 이미지 가져오기
         std::vector<vk::Image> swapchain_images = device_.getSwapchainImagesKHR(sc_data.swapchain);
@@ -917,8 +897,6 @@ class VulkanRenderer : public IRenderer {
 
     void BindPipeline(const PipelineHandle& handle, const uint8_t* constants, size_t size,
                       uint32_t sub_index = 0) override {
-        std::lock_guard<std::recursive_mutex> lock_(resource_mutex_);
-
         // Retrieve VulkanPipeline
         auto pipeline_it = pipelines_.find(handle);
         if (pipeline_it == pipelines_.end()) {
@@ -927,22 +905,15 @@ class VulkanRenderer : public IRenderer {
 
         VulkanPipeline& vpipeline = pipeline_it->second;
 
-        // Retrieve current framebuffer's render pass hash
-        // Assuming current framebuffer is tracked; otherwise, pass it as a parameter or track it globally
-        // For this example, we'll assume a single swapchain/framebuffer is active
-        if (swapchains_.empty()) {
-            throw std::runtime_error("No active swapchain found.");
-        }
+        // 파이프라인 해시 키를 사용하여 특정 서브패스에 대한 파이프라인을 가져옴
+        uint64_t pipeline_key = sub_index;  // 서브패스 인덱스를 키로 사용 (더 복잡한 경우 해시 사용 가능)
 
-        VulkanSwapChain& current_swapchain = swapchains_.begin()->second;
-        VulkanRenderPass current_render_pass;  // = render_passes_[current_swapchain.renderpass_handle];
-
+        VulkanRenderPass current_render_pass;
         uint64_t render_pass_hash = current_render_pass.desc_hash;
         uint32_t current_pass = current_pass_;  // Current subpass index
 
         // Combine render pass hash and subpass index to create a unique key
-        std::hash<uint64_t> hasher;
-        uint64_t combined_hash = hasher(render_pass_hash) ^ (static_cast<uint64_t>(current_pass) << 32);
+        uint64_t combined_hash = render_pass_hash ^ (static_cast<uint64_t>(current_pass) << 32);
 
         // Check if pipeline with combined_hash exists
         auto existing_pipeline_it = vpipeline.pipelines.find(combined_hash);
@@ -951,24 +922,33 @@ class VulkanRenderer : public IRenderer {
             command_buffer_.bindPipeline(vk::PipelineBindPoint::eGraphics, existing_pipeline_it->second);
         } else {
             // Create a new pipeline based on the stored desc
-            vk::GraphicsPipelineCreateInfo pipeline_info;
-            //= vpipeline.desc.ToVulkanPipelineCreateInfo();  // Assume this method exists
+            // 여기서는 기존 파이프라인 정보를 재사용하여 새로운 파이프라인을 생성
+            vk::GraphicsPipelineCreateInfo pipeline_info = {};
 
-            // Set dynamic states or other states based on sub_index if needed
-            // Modify pipeline_info based on sub_index
+            // 셰이더 스테이지 설정
+            pipeline_info.stageCount =
+                static_cast<uint32_t>(vpipeline.desc.vertex_shader.id != 0 ? 2 : 1);  // 간단히 설정
+            pipeline_info.pStages = nullptr;                                          // 이미 CreatePipeline에서 생성됨
 
-            vk::Pipeline new_pipeline;
+            // Vertex Input State
+            // 이미 CreatePipeline에서 설정됨
+
+            // Input Assembly, Viewport, Rasterizer, Multisampling, Depth Stencil, Color Blending 등
+            // 이미 CreatePipeline에서 설정됨
+
+            // Pipeline Layout 및 Render Pass 설정
+            pipeline_info.layout = vpipeline.layout;
+            pipeline_info.renderPass = render_pass_;
+
+            // 새로운 파이프라인 생성
             try {
-                new_pipeline = device_.createGraphicsPipeline(nullptr, pipeline_info).value;
+                vk::Pipeline new_pipeline = device_.createGraphicsPipeline(nullptr, pipeline_info).value;
+                vpipeline.pipelines.emplace(pipeline_key, new_pipeline);
+                // Bind the new pipeline
+                command_buffer_.bindPipeline(vk::PipelineBindPoint::eGraphics, new_pipeline);
             } catch (const std::exception& e) {
                 throw std::runtime_error(std::string("Failed to create graphics pipeline: ") + e.what());
             }
-
-            // Store the new pipeline in the map
-            vpipeline.pipelines.emplace(combined_hash, new_pipeline);
-
-            // Bind the new pipeline
-            command_buffer_.bindPipeline(vk::PipelineBindPoint::eGraphics, new_pipeline);
         }
 
         // Optionally handle push constants if provided
@@ -987,8 +967,6 @@ class VulkanRenderer : public IRenderer {
     }
 
     void BeginPass(const FrameBufferHandle& handle, uint32_t image_index) override {
-        std::lock_guard<std::recursive_mutex> lock_(resource_mutex_);
-
         auto framebuffer_it = framebuffers_.find(handle);
         if (framebuffer_it == framebuffers_.end()) {
             throw std::runtime_error("Invalid FrameBufferHandle provided to BeginPass.");
@@ -1033,13 +1011,9 @@ class VulkanRenderer : public IRenderer {
 
     void EndPass() override { command_buffer_.endRenderPass(); }
 
-    void NextPass() override {
-        std::lock_guard<std::recursive_mutex> lock_(resource_mutex_);
-        current_pass_++;
-    }
+    void NextPass() override { current_pass_++; }
 
     void Render(const SwapChainHandle& handle, std::function<void(uint32_t)> callback) override {
-        std::lock_guard<std::recursive_mutex> lock_(resource_mutex_);
         auto it = swapchains_.find(handle);
         if (it == swapchains_.end()) {
             throw std::runtime_error("Invalid SwapChainHandle provided to Render.");
@@ -1140,7 +1114,6 @@ class VulkanRenderer : public IRenderer {
     }
 
     bool ReloadShader(const ShaderHandle& handle, const ShaderDesc& new_desc) override {
-        std::lock_guard<std::recursive_mutex> lock_(resource_mutex_);
         auto it = shaders_.find(handle);
         if (it == shaders_.end())
             return false;
@@ -1202,7 +1175,6 @@ class VulkanRenderer : public IRenderer {
     }
 
     void ReleaseResource(const TextureHandle& handle) override {
-        std::lock_guard<std::recursive_mutex> lock_(resource_mutex_);
         auto it = textures_.find(handle);
         if (it != textures_.end()) {
             // Decrement ref count
@@ -1224,7 +1196,6 @@ class VulkanRenderer : public IRenderer {
     }
 
     void ReleaseResource(const SamplerHandle& handle) override {
-        std::lock_guard<std::recursive_mutex> lock_(resource_mutex_);
         auto it = samplers_.find(handle);
         if (it != samplers_.end()) {
             // Decrement ref count
@@ -1236,12 +1207,14 @@ class VulkanRenderer : public IRenderer {
     }
 
     void ReleaseResource(const PipelineHandle& handle) override {
-        std::lock_guard<std::recursive_mutex> lock_(resource_mutex_);
         auto it = pipelines_.find(handle);
         if (it != pipelines_.end()) {
             // Decrement ref count
             if (--it->second.ref_count == 0) {
-                // device_.destroyPipeline(it->second.pipeline);
+                // Destroy all pipelines in the map
+                for (auto& [key, pipeline] : it->second.pipelines) {
+                    device_.destroyPipeline(pipeline);
+                }
                 device_.destroyPipelineLayout(it->second.layout);
                 pipelines_.erase(it);
             }
@@ -1249,7 +1222,6 @@ class VulkanRenderer : public IRenderer {
     }
 
     void ReleaseResource(const ShaderHandle& handle) override {
-        std::lock_guard<std::recursive_mutex> lock_(resource_mutex_);
         auto it = shaders_.find(handle);
         if (it != shaders_.end()) {
             // Decrement ref count
@@ -1261,7 +1233,6 @@ class VulkanRenderer : public IRenderer {
     }
 
     void ReleaseResource(const FrameBufferHandle& handle) override {
-        std::lock_guard<std::recursive_mutex> lock_(resource_mutex_);
         auto it = framebuffers_.find(handle);
         if (it != framebuffers_.end()) {
             if (--it->second.ref_count == 0) {
@@ -1301,13 +1272,9 @@ class VulkanRenderer : public IRenderer {
     std::unordered_map<FrameBufferHandle, VulkanFrameBuffer, HandleHash> framebuffers_;
     std::unordered_map<RenderPassHandle, VulkanRenderPass, HandleHash> render_passes_;
 
-    // Handle to index mapping
-    std::recursive_mutex resource_mutex_;
-
     // Descriptor Set Management
     vk::DescriptorPool descriptor_pool_;
     vk::DescriptorSetLayout descriptor_set_layout_;  // #TODO 내부적으로 자동 관리
-    std::mutex descriptor_mutex_;
 
     // Current pipeline handle
     vk::Pipeline current_pipeline_;
@@ -1344,14 +1311,15 @@ class VulkanRenderer : public IRenderer {
     }
 
     void CleanupVulkan() {
-        device_.waitIdle();
+        // #FIXME access violation device_.waitIdle();
 
-        std::lock_guard<std::recursive_mutex> lock_(resource_mutex_);
         bool memory_leak = false;
 
         // Destroy all pipelines
         for (auto& [handle, pipeline] : pipelines_) {
-            // device_.destroyPipeline(pipeline.pipeline);
+            for (auto& [key, vk_pipeline] : pipeline.pipelines) {
+                device_.destroyPipeline(vk_pipeline);
+            }
             device_.destroyPipelineLayout(pipeline.layout);
             if (pipeline.ref_count != 0) {
                 memory_leak = true;
@@ -1410,7 +1378,9 @@ class VulkanRenderer : public IRenderer {
 
         // Destroy all framebuffers
         for (auto& [handle, framebuffer] : framebuffers_) {
-            device_.destroyFramebuffer(framebuffer.framebuffers[0]);
+            for (auto& fb : framebuffer.framebuffers) {
+                device_.destroyFramebuffer(fb);
+            }
             ReleaseResource(framebuffer.renderpass_handle);
             if (framebuffer.ref_count != 0) {
                 memory_leak = true;
@@ -1527,7 +1497,12 @@ class VulkanRenderer : public IRenderer {
         debug_create_info.messageType = vk::DebugUtilsMessageTypeFlagBitsEXT::eGeneral |
                                         vk::DebugUtilsMessageTypeFlagBitsEXT::eValidation |
                                         vk::DebugUtilsMessageTypeFlagBitsEXT::ePerformance;
-        debug_create_info.pfnUserCallback = DebugCallback;
+        debug_create_info.pfnUserCallback =
+            [](VkDebugUtilsMessageSeverityFlagBitsEXT message_severity, VkDebugUtilsMessageTypeFlagsEXT message_type,
+               const VkDebugUtilsMessengerCallbackDataEXT* p_callback_data, void* p_user_data) -> VkBool32 {
+            std::cerr << "Validation Layer: " << p_callback_data->pMessage << std::endl;
+            return VK_FALSE;
+        };
 
         create_info.pNext = (VkDebugUtilsMessengerCreateInfoEXT*)&debug_create_info;
 
@@ -1536,34 +1511,6 @@ class VulkanRenderer : public IRenderer {
             instance_ = vk::createInstance(create_info);
         } catch (const std::exception& e) {
             throw std::runtime_error(std::string("Failed to create Vulkan instance: ") + e.what());
-        }
-    }
-
-    void SetupDebugMessenger() {
-        if (!CheckValidationLayerSupport())
-            return;
-
-        vk::DebugUtilsMessengerCreateInfoEXT create_info{};
-        create_info.messageSeverity = vk::DebugUtilsMessageSeverityFlagBitsEXT::eVerbose |
-                                      vk::DebugUtilsMessageSeverityFlagBitsEXT::eWarning |
-                                      vk::DebugUtilsMessageSeverityFlagBitsEXT::eError;
-        create_info.messageType = vk::DebugUtilsMessageTypeFlagBitsEXT::eGeneral |
-                                  vk::DebugUtilsMessageTypeFlagBitsEXT::eValidation |
-                                  vk::DebugUtilsMessageTypeFlagBitsEXT::ePerformance;
-        create_info.pfnUserCallback = DebugCallback;
-
-        auto func = (PFN_vkCreateDebugUtilsMessengerEXT)vkGetInstanceProcAddr(static_cast<VkInstance>(instance_),
-                                                                              "vkCreateDebugUtilsMessengerEXT");
-        if (func != nullptr) {
-            VkDebugUtilsMessengerEXT messenger;
-            if (func(static_cast<VkInstance>(instance_),
-                     reinterpret_cast<const VkDebugUtilsMessengerCreateInfoEXT*>(&create_info), nullptr,
-                     &messenger) != VK_SUCCESS) {
-                throw std::runtime_error("Failed to set up debug messenger!");
-            }
-            debug_messenger_ = vk::DebugUtilsMessengerEXT(messenger);
-        } else {
-            throw std::runtime_error("Could not load vkCreateDebugUtilsMessengerEXT");
         }
     }
 
@@ -1630,7 +1577,7 @@ class VulkanRenderer : public IRenderer {
 
         // 큐 패밀리 인덱스의 유일성을 보장
         std::vector<uint32_t> unique_queue_families = {graphics_queue_family_};
-        if (present_queue_family_ != present_queue_family_) {
+        if (present_queue_family_ != graphics_queue_family_) {
             unique_queue_families.push_back(present_queue_family_);
         }
 
@@ -1831,7 +1778,7 @@ class VulkanRenderer : public IRenderer {
             attachment.initialLayout = vk::ImageLayout::eUndefined;
             attachment.finalLayout = vk::ImageLayout::eDepthStencilAttachmentOptimal;
 
-            depth_attachment_ref.attachment = attachments.size();
+            depth_attachment_ref.attachment = static_cast<uint32_t>(attachments.size());
             depth_attachment_ref.layout = vk::ImageLayout::eDepthStencilAttachmentOptimal;
 
             attachments.emplace_back(attachment);
@@ -2138,6 +2085,8 @@ class VulkanRenderer : public IRenderer {
         vk::PipelineLayoutCreateInfo pipeline_layout_info{};
         pipeline_layout_info.setLayoutCount = 1;
         pipeline_layout_info.pSetLayouts = &descriptor_set_layout_;
+        pipeline_layout_info.pushConstantRangeCount = 0;
+        pipeline_layout_info.pPushConstantRanges = nullptr;
 
         try {
             pipeline_layout_ = device_.createPipelineLayout(pipeline_layout_info);
@@ -2147,8 +2096,6 @@ class VulkanRenderer : public IRenderer {
     }
 
     void CreateDescriptorPool() {
-        std::lock_guard<std::mutex> lock_(descriptor_mutex_);
-
         std::vector<vk::DescriptorPoolSize> pool_sizes = {
             {vk::DescriptorType::eUniformBuffer, 100}, {vk::DescriptorType::eCombinedImageSampler, 100}
             // Add more pool sizes as needed
@@ -2187,40 +2134,63 @@ class VulkanRenderer : public IRenderer {
     }
 
     void UpdateDescriptorSet(BufferHandle buffer_handle, TextureHandle texture_handle, DescriptorSet& ds) {
-        auto buffer_it = buffers_.find(buffer_handle);
-        if (buffer_it == buffers_.end()) {
-            throw std::runtime_error("Invalid BufferHandle provided to UpdateDescriptorSet.");
+        // 버퍼와 텍스처 핸들을 사용하여 디스크립터 셋을 업데이트
+        // 단, 버퍼 핸들이 0일 경우 해당 바인딩을 무시
+
+        std::vector<vk::WriteDescriptorSet> descriptor_writes;
+
+        if (buffer_handle.id != 0) {
+            auto buffer_it = buffers_.find(buffer_handle);
+            if (buffer_it == buffers_.end()) {
+                throw std::runtime_error("Invalid BufferHandle provided to UpdateDescriptorSet.");
+            }
+
+            vk::DescriptorBufferInfo buffer_info{};
+            buffer_info.buffer = buffer_it->second.buffer;
+            buffer_info.offset = 0;
+            buffer_info.range = VK_WHOLE_SIZE;
+
+            vk::WriteDescriptorSet write{};
+            write.dstSet = ds.descriptor_set;
+            write.dstBinding = 0;
+            write.dstArrayElement = 0;
+            write.descriptorType = vk::DescriptorType::eUniformBuffer;
+            write.descriptorCount = 1;
+            write.pBufferInfo = &buffer_info;
+
+            descriptor_writes.push_back(write);
         }
 
-        auto texture_it = textures_.find(texture_handle);
-        if (texture_it == textures_.end()) {
-            throw std::runtime_error("Invalid TextureHandle provided to UpdateDescriptorSet.");
+        if (texture_handle.id != 0) {
+            auto texture_it = textures_.find(texture_handle);
+            if (texture_it == textures_.end()) {
+                throw std::runtime_error("Invalid TextureHandle provided to UpdateDescriptorSet.");
+            }
+
+            auto sampler_it = samplers_.find(texture_it->second.sampler_handle);
+            if (sampler_it == samplers_.end()) {
+                throw std::runtime_error("Invalid SamplerHandle in TextureHandle.");
+            }
+
+            vk::DescriptorImageInfo image_info{};
+            image_info.imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
+            image_info.imageView = texture_it->second.image_view;
+            image_info.sampler = sampler_it->second.sampler;
+
+            vk::WriteDescriptorSet write{};
+            write.dstSet = ds.descriptor_set;
+            write.dstBinding = 1;
+            write.dstArrayElement = 0;
+            write.descriptorType = vk::DescriptorType::eCombinedImageSampler;
+            write.descriptorCount = 1;
+            write.pImageInfo = &image_info;
+
+            descriptor_writes.push_back(write);
         }
 
-        // Update uniform buffer
-        vk::DescriptorBufferInfo buffer_info{};
-        buffer_info.buffer = buffer_it->second.buffer;
-        buffer_info.offset = 0;
-        buffer_info.range = VK_WHOLE_SIZE;
-        ds.buffer_infos.push_back(buffer_info);
-
-        // Update image sampler
-        vk::DescriptorImageInfo image_info{};
-        image_info.imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
-        image_info.imageView = texture_it->second.image_view;
-        image_info.sampler = samplers_.at(texture_it->second.sampler_handle).sampler;
-        ds.image_infos.push_back(image_info);
-
-        // Write descriptor sets
-        std::vector<vk::WriteDescriptorSet> descriptor_writes = {
-            // Binding 0: Uniform Buffer
-            vk::WriteDescriptorSet{ds.descriptor_set, 0, 0, 1, vk::DescriptorType::eUniformBuffer, nullptr,
-                                   &ds.buffer_infos.back(), nullptr},
-            // Binding 1: Combined Image Sampler
-            vk::WriteDescriptorSet{ds.descriptor_set, 1, 0, 1, vk::DescriptorType::eCombinedImageSampler,
-                                   &ds.image_infos.back(), nullptr, nullptr}};
-
-        device_.updateDescriptorSets(descriptor_writes, {});
+        if (!descriptor_writes.empty()) {
+            device_.updateDescriptorSets(descriptor_writes, {});
+        }
     }
 
     vk::ShaderModule CreateShaderModule(const std::vector<char>& code) {
@@ -2236,7 +2206,6 @@ class VulkanRenderer : public IRenderer {
     }
 
     void ReleaseResource(const RenderPassHandle& handle) {
-        std::lock_guard<std::recursive_mutex> lock_(resource_mutex_);
         auto it = render_passes_.find(handle);
         if (it != render_passes_.end()) {
             if (--it->second.ref_count == 0) {
@@ -2493,6 +2462,24 @@ class VulkanRenderer : public IRenderer {
         return vk_usage;
     }
 
+    // Converts BufferUsage to Vulkan's BufferUsageFlags
+    vk::BufferUsageFlags Convert(BufferUsage usage) {
+        vk::BufferUsageFlags vk_usage = {};
+
+        if (usage & BufferUsage::kVertex)
+            vk_usage |= vk::BufferUsageFlagBits::eVertexBuffer;
+        if (usage & BufferUsage::kIndex)
+            vk_usage |= vk::BufferUsageFlagBits::eIndexBuffer;
+        if (usage & BufferUsage::kUniform)
+            vk_usage |= vk::BufferUsageFlagBits::eUniformBuffer;
+        if (usage & BufferUsage::kStorage)
+            vk_usage |= vk::BufferUsageFlagBits::eStorageBuffer;
+        if (usage & BufferUsage::kIndirect)
+            vk_usage |= vk::BufferUsageFlagBits::eIndirectBuffer;
+
+        return vk_usage;
+    }
+
     vk::AttachmentLoadOp Convert(AttachmentLoadOp op) {
         switch (op) {
             case AttachmentLoadOp::kClear:
@@ -2578,9 +2565,32 @@ class VulkanRenderer : public IRenderer {
         uint64_t hash = XXH64_digest(hash_state_);
         return hash;
     }
-};
 
-// Implementation
+    // Determine the format based on SPIRV-Cross type
+    Format DetermineFormat(const spirv_cross::SPIRType& type) {
+        // 간단한 매핑 예시: 실제로는 타입과 벡터 크기에 따라 더 복잡하게 매핑해야 함
+        if (type.vecsize == 3 && type.columns == 1) {
+            return Format::kR32G32B32Sfloat;
+        } else if (type.vecsize == 4 && type.columns == 1) {
+            return Format::kR32G32B32A32Sfloat;
+        }
+        // 추가적인 타입 매핑 필요
+        return Format::kUndefined;
+    }
+
+    // Get the size in bytes of the given format
+    uint32_t GetFormatSize(Format format) {
+        switch (format) {
+            case Format::kR32G32B32Sfloat:
+                return 12;
+            case Format::kR32G32B32A32Sfloat:
+                return 16;
+            // 추가적인 포맷 크기 매핑 필요
+            default:
+                return 0;
+        }
+    }
+};
 
 // Factory method
 std::unique_ptr<IRenderer> IRenderer::Create() { return std::make_unique<VulkanRenderer>(); }
