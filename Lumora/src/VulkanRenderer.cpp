@@ -54,6 +54,23 @@ struct RenderPassDesc {
     std::vector<SubpassDesc> subpasses;  // RenderPass 내의 서브패스 리스트
 };
 
+enum class TextureCreationType { kRegular, kSwapChain };
+
+struct DescriptorBinding {
+    uint32_t binding;                  // Descriptor binding number
+    vk::DescriptorType type;           // Descriptor type (e.g., uniform buffer, sampler)
+    uint32_t count;                    // Descriptor count
+    vk::ShaderStageFlags stage_flags;  // Shader stages that access this binding
+    std::string name;                  // Descriptor name (optional, for debugging)
+};
+
+// Push Constants Reflection Data
+struct PushConstantRange {
+    vk::ShaderStageFlags stage_flags;  // Shader stages that access the push constants
+    uint32_t offset;                   // Byte offset in the push constant block
+    uint32_t size;                     // Size of the push constant block in bytes
+};
+
 struct HandleHash {
     std::size_t operator()(const ResourceHandle& handle) const { return static_cast<std::size_t>(handle.id); }
 };
@@ -77,8 +94,6 @@ struct VulkanBuffer : VulkanRef {
     MemoryUsage memory_usage;
 };
 
-enum class TextureCreationType { kRegular, kSwapChain };
-
 struct VulkanTexture : VulkanRef {
     TextureDesc desc;
     vk::Image image;
@@ -96,6 +111,11 @@ struct VulkanSampler : VulkanRef {
 struct VulkanShader : VulkanRef {
     ShaderDesc desc;  // To store shader metadata
     vk::ShaderModule shader_module;
+
+    // Reflection Data
+    std::vector<InputAttribute> input_attributes;         // Vertex shader input attributes
+    std::vector<DescriptorBinding> descriptor_bindings;   // Shader resource bindings
+    std::vector<PushConstantRange> push_constant_ranges;  // Push constant ranges
 };
 
 struct VulkanPipeline : VulkanRef {
@@ -426,22 +446,97 @@ class VulkanRenderer : public IRenderer {
 
     ShaderHandle CreateShader(const ShaderDesc& desc) override {
         VulkanShader vshader;
-        vshader.desc = desc;  // Store shader description
+        vshader.desc = desc;  // Store shader metadata
 
-        // Load shader code from file (SPIR-V binary)
+        // Load SPIR-V binary from file
         std::ifstream file(desc.file_path, std::ios::ate | std::ios::binary);
         if (!file.is_open()) {
             throw std::runtime_error("Failed to open shader file.");
         }
 
         size_t file_size = static_cast<size_t>(file.tellg());
-        std::vector<char> buffer(file_size);
+        std::vector<uint32_t> spirv_binary(file_size / sizeof(uint32_t));
         file.seekg(0);
-        file.read(buffer.data(), file_size);
+        file.read(reinterpret_cast<char*>(spirv_binary.data()), file_size);
         file.close();
 
-        vshader.shader_module = CreateShaderModule(buffer);
+        // Create Vulkan shader module
+        vk::ShaderModuleCreateInfo create_info{};
+        create_info.codeSize = spirv_binary.size() * sizeof(uint32_t);
+        create_info.pCode = spirv_binary.data();
 
+        try {
+            vshader.shader_module = device_.createShaderModule(create_info);
+        } catch (const std::exception& e) {
+            throw std::runtime_error(std::string("Failed to create shader module: ") + e.what());
+        }
+
+        // Perform shader reflection using SPIRV-Cross
+        try {
+            spirv_cross::Compiler compiler(spirv_binary);
+            spirv_cross::ShaderResources resources = compiler.get_shader_resources();
+
+            // Extract input attributes (only for vertex shaders)
+            if (desc.stage == ShaderStage::kVertex) {
+                for (const auto& input : resources.stage_inputs) {
+                    spirv_cross::SPIRType type = compiler.get_type(input.type_id);
+                    uint32_t location = compiler.get_decoration(input.id, spv::DecorationLocation);
+
+                    // Determine Vulkan format from SPIRType
+                    Format format = Convert(type);
+
+                    // Calculate offset (requires manual or additional logic for accurate alignment)
+                    // Here, we assume tightly packed attributes for simplicity
+                    uint32_t offset = 0;
+                    for (const auto& attr : vshader.input_attributes) {
+                        offset += GetFormatSize(attr.format);
+                    }
+
+                    vshader.input_attributes.push_back(InputAttribute{location, format, offset});
+                }
+            }
+
+            // Extract descriptor bindings (Uniform Buffers and Samplers)
+            for (const auto& resource : resources.uniform_buffers) {
+                uint32_t binding = compiler.get_decoration(resource.id, spv::DecorationBinding);
+                uint32_t set = compiler.get_decoration(resource.id, spv::DecorationDescriptorSet);
+                vk::DescriptorType type = vk::DescriptorType::eUniformBuffer;
+                uint32_t count = 1;  // Adjust if using arrays
+                vk::ShaderStageFlags stage_flags = Convert(desc.stage);
+
+                vshader.descriptor_bindings.push_back(
+                    DescriptorBinding{binding, type, count, stage_flags, compiler.get_name(resource.id)});
+            }
+
+            for (const auto& resource : resources.sampled_images) {
+                uint32_t binding = compiler.get_decoration(resource.id, spv::DecorationBinding);
+                uint32_t set = compiler.get_decoration(resource.id, spv::DecorationDescriptorSet);
+                vk::DescriptorType type = vk::DescriptorType::eCombinedImageSampler;
+                uint32_t count = 1;  // Adjust if using arrays
+                vk::ShaderStageFlags stage_flags = Convert(desc.stage);
+
+                vshader.descriptor_bindings.push_back(
+                    DescriptorBinding{binding, type, count, stage_flags, compiler.get_name(resource.id)});
+            }
+
+            // Extract push constants
+            auto push_constant_ranges = compiler.get_shader_resources().push_constant_buffers;
+            for (const auto& push_constant : resources.push_constant_buffers) {
+                spirv_cross::SPIRType type = compiler.get_type(push_constant.type_id);
+                uint32_t offset = compiler.get_decoration(push_constant.id, spv::DecorationOffset);
+                uint32_t size = compiler.get_declared_struct_size(type);
+
+                vk::ShaderStageFlags stage_flags = Convert(desc.stage);
+
+                vshader.push_constant_ranges.push_back(PushConstantRange{stage_flags, offset, size});
+            }
+
+            // Additional resource types (storage buffers, samplers, etc.) can be handled similarly
+        } catch (const spirv_cross::CompilerError& e) {
+            throw std::runtime_error(std::string("SPIRV-Cross reflection error: ") + e.what());
+        }
+
+        // Create unique ShaderHandle and store the shader
         ShaderHandle handle;
         handle.id = GenerateUniqueID();
         shaders_.emplace(handle, vshader);
@@ -453,7 +548,7 @@ class VulkanRenderer : public IRenderer {
         VulkanPipeline vpipeline;
         vpipeline.desc = desc;  // Store pipeline description
 
-        // Create shader stages
+        // Setup shader stages as before
         std::vector<vk::PipelineShaderStageCreateInfo> shader_stages;
 
         // Vertex Shader Stage
@@ -484,45 +579,41 @@ class VulkanRenderer : public IRenderer {
             shader_stages.push_back(frag_shader_stage_info);
         }
 
-        // Shader Reflection: 자동으로 VertexLayoutDesc 채우기
+        // Assuming a single shader is used to create the pipeline layout
+        // If multiple shaders are used, ensure they are compatible
+        VulkanShader combined_shader = {};
+        if (desc.vertex_shader.id != 0) {
+            combined_shader = shaders_.at(desc.vertex_shader);
+        } else if (desc.fragment_shader.id != 0) {
+            combined_shader = shaders_.at(desc.fragment_shader);
+        }
+
+        // Create Pipeline Layout based on shader reflection data
+        vk::PipelineLayout pipeline_layout = CreatePipelineLayout(combined_shader);
+        vpipeline.layout = pipeline_layout;  // Store the pipeline layout
+
+        // Vertex Input Configuration using Reflection Data
         VertexLayoutDesc vertex_layout_desc = {};
         if (desc.vertex_shader.id != 0) {
-            auto vert_shader_it = shaders_.find(desc.vertex_shader);
-            if (vert_shader_it != shaders_.end()) {
-// SPIRV-Cross를 사용하여 리플렉션 수행
-#if 0
-                spirv_cross::CompilerGLSL compiler(
-                    reinterpret_cast<const uint32_t*>(vert_shader_it->second.shader_module.getBinary()));
-                spirv_cross::ShaderResources resources = compiler.get_shader_resources();
+            vertex_layout_desc = {};  // Initialize or retain existing data
 
-                // 버텍스 어트리뷰트 설정
-                for (const auto& input : resources.stage_inputs) {
-                    spirv_cross::SPIRType type = compiler.get_type(input.type_id);
-                    uint32_t location = compiler.get_decoration(input.id, spv::DecorationLocation);
-
-                    // 포맷 결정
-                    Format format = DetermineFormat(type);
-                    uint32_t offset = 0;  // 실제 오프셋을 계산하려면 추가 로직 필요
-
-                    VertexLayoutDesc::AttributeDesc attr_desc = {location, format, offset};
-                    vertex_layout_desc.attributes.push_back(attr_desc);
-
-                    // 스트라이드 계산 (간단히 총 바이트 수 합산)
-                    vertex_layout_desc.stride += GetFormatSize(format);
-                }
-#endif
+            // Populate vertex_layout_desc from reflection data
+            for (const auto& attr : combined_shader.input_attributes) {
+                vertex_layout_desc.attributes.push_back(attr);
+                vertex_layout_desc.stride += GetFormatSize(attr.format);
             }
         }
 
-        // Vertex Input
+        // Vertex Input Binding Descriptions
         std::vector<vk::VertexInputBindingDescription> binding_descriptions = {
             vk::VertexInputBindingDescription{0, vertex_layout_desc.stride, vk::VertexInputRate::eVertex}};
 
+        // Vertex Input Attribute Descriptions
         std::vector<vk::VertexInputAttributeDescription> attribute_descriptions;
         for (const auto& attr : vertex_layout_desc.attributes) {
             vk::VertexInputAttributeDescription attribute{};
             attribute.location = attr.location;
-            attribute.binding = 0;                                    // Assuming single binding for simplicity
+            attribute.binding = 0;                                    // Assuming single binding
             attribute.format = static_cast<vk::Format>(attr.format);  // Ensure correct mapping
             attribute.offset = attr.offset;
             attribute_descriptions.push_back(attribute);
@@ -539,7 +630,7 @@ class VulkanRenderer : public IRenderer {
         input_assembly.topology = vk::PrimitiveTopology::eTriangleList;
         input_assembly.primitiveRestartEnable = VK_FALSE;
 
-        // Viewport and Scissor
+        // Viewport and Scissor (as per existing implementation)
         vk::Viewport viewport{};
         viewport.x = desc.viewport.x;
         viewport.y = desc.viewport.y;
@@ -559,31 +650,31 @@ class VulkanRenderer : public IRenderer {
         viewport_state.scissorCount = 1;
         viewport_state.pScissors = &scissor;
 
-        // Rasterizer
+        // Rasterizer Configuration (as per existing implementation)
         vk::PipelineRasterizationStateCreateInfo rasterizer{};
         rasterizer.depthClampEnable = desc.rasterization.depth_clamp_enable;
         rasterizer.rasterizerDiscardEnable = desc.rasterization.rasterizer_discard_enable;
         rasterizer.polygonMode = Convert(desc.rasterization.polygon_mode);
-        rasterizer.lineWidth = 1.0f;  // #TODO anti-aliasing line
+        rasterizer.lineWidth = 1.0f;  // Anti-aliasing can be handled separately
         rasterizer.cullMode = Convert(desc.rasterization.cull_mode);
         rasterizer.frontFace = Convert(desc.rasterization.front_face);
         rasterizer.depthBiasEnable = VK_FALSE;
 
-        // Multisampling
+        // Multisampling Configuration (as per existing implementation)
         vk::PipelineMultisampleStateCreateInfo multisampling{};
         multisampling.sampleShadingEnable = VK_FALSE;
         // multisampling.rasterizationSamples = Convert(desc.sample_count);
 
-        // Depth Stencil
+        // Depth Stencil Configuration (as per existing implementation)
         vk::PipelineDepthStencilStateCreateInfo depth_stencil{};
         depth_stencil.depthTestEnable = desc.depth_stencil.depth_test_enable;
         depth_stencil.depthWriteEnable = desc.depth_stencil.depth_write_enable;
         // depth_stencil.depthCompareOp = Convert(desc.depth_stencil.depth_compare_op);
         depth_stencil.depthBoundsTestEnable = VK_FALSE;
         depth_stencil.stencilTestEnable = desc.depth_stencil.stencil_test_enable;
-        // 추가적인 스텐실 설정 필요 시 구현
+        // Additional stencil settings can be configured here
 
-        // Color Blending
+        // Color Blending Configuration (as per existing implementation)
         std::vector<vk::PipelineColorBlendAttachmentState> color_blend_attachments;
         for (const auto& blend_state : desc.color_blends) {
             vk::PipelineColorBlendAttachmentState color_blend{};
@@ -609,10 +700,10 @@ class VulkanRenderer : public IRenderer {
         color_blending.blendConstants[2] = 0.0f;
         color_blending.blendConstants[3] = 0.0f;
 
-        // Pipeline Layout은 이미 생성된 레이아웃을 사용
-        // 단, 파이프라인별로 별도의 레이아웃을 사용할 경우 추가 구현 필요
+        // Pipeline Layout is already created based on shader reflection data
+        // Use the created pipeline_layout
 
-        // Pipeline Creation
+        // Graphics Pipeline Creation
         vk::GraphicsPipelineCreateInfo pipeline_info{};
         pipeline_info.stageCount = static_cast<uint32_t>(shader_stages.size());
         pipeline_info.pStages = shader_stages.data();
@@ -623,10 +714,10 @@ class VulkanRenderer : public IRenderer {
         pipeline_info.pMultisampleState = &multisampling;
         pipeline_info.pDepthStencilState = &depth_stencil;
         pipeline_info.pColorBlendState = &color_blending;
-        pipeline_info.layout = pipeline_layout_;
-        pipeline_info.renderPass = render_pass_;  // 기본 렌더 패스 사용
+        pipeline_info.layout = vpipeline.layout;
+        // pipeline_info.renderPass = render_pass_;  // Use the appropriate render pass
         pipeline_info.subpass = 0;
-        pipeline_info.basePipelineHandle = nullptr;
+        pipeline_info.basePipelineHandle = nullptr;  // #TODO 요건 뭐지?
 
         try {
             vpipeline.pipelines[0] = device_.createGraphicsPipeline(nullptr, pipeline_info).value;
@@ -634,6 +725,7 @@ class VulkanRenderer : public IRenderer {
             throw std::runtime_error(std::string("Failed to create graphics pipeline: ") + e.what());
         }
 
+        // Store the pipeline with a unique handle
         PipelineHandle handle;
         handle.id = GenerateUniqueID();
         pipelines_.emplace(handle, vpipeline);
@@ -2566,28 +2658,118 @@ class VulkanRenderer : public IRenderer {
         return hash;
     }
 
-    // Determine the format based on SPIRV-Cross type
-    Format DetermineFormat(const spirv_cross::SPIRType& type) {
-        // 간단한 매핑 예시: 실제로는 타입과 벡터 크기에 따라 더 복잡하게 매핑해야 함
-        if (type.vecsize == 3 && type.columns == 1) {
-            return Format::kR32G32B32Sfloat;
-        } else if (type.vecsize == 4 && type.columns == 1) {
-            return Format::kR32G32B32A32Sfloat;
+    // Converts ShaderStage enum to vk::ShaderStageFlags
+    vk::ShaderStageFlags Convert(ShaderStage stage) {
+        switch (stage) {
+            case ShaderStage::kVertex:
+                return vk::ShaderStageFlagBits::eVertex;
+            case ShaderStage::kFragment:
+                return vk::ShaderStageFlagBits::eFragment;
+            case ShaderStage::kCompute:
+                return vk::ShaderStageFlagBits::eCompute;
+            // Add other shader stages as needed
+            default:
+                return vk::ShaderStageFlagBits::eVertex;
         }
-        // 추가적인 타입 매핑 필요
-        return Format::kUndefined;
     }
 
-    // Get the size in bytes of the given format
+    // Determines Vulkan Format based on SPIRV-Cross SPIRType
+    Format Convert(const spirv_cross::SPIRType& type) {
+        if (type.basetype == spirv_cross::SPIRType::Float) {
+            switch (type.vecsize) {
+                case 1:
+                    return Format::kR32Sfloat;
+                case 2:
+                    return Format::kR32G32Sfloat;
+                case 3:
+                    return Format::kR32G32B32Sfloat;
+                case 4:
+                    return Format::kR32G32B32A32Sfloat;
+                default:
+                    throw std::runtime_error("Unsupported SPIRType vecsize for float.");
+            }
+        }
+        // Handle other base types (Int, UInt, etc.) as needed
+        throw std::runtime_error("Unsupported SPIRType basetype for reflection.");
+    }
+
+    // #TODO CreateShader에서 DescriptorBiding이런거 없이 바로 vk 구조체로 사용하자.
+    vk::DescriptorSetLayoutBinding Convert(const DescriptorBinding& binding) {
+        vk::DescriptorSetLayoutBinding layout_binding{};
+        layout_binding.binding = binding.binding;
+        layout_binding.descriptorType = binding.type;
+        layout_binding.descriptorCount = binding.count;
+        layout_binding.stageFlags = binding.stage_flags;
+        layout_binding.pImmutableSamplers = nullptr;  // Adjust if using immutable samplers
+
+        return layout_binding;
+    }
+
+    // Converts PushConstantRange to vk::PushConstantRange
+    vk::PushConstantRange Convert(const PushConstantRange& push_constant) {
+        vk::PushConstantRange push_constant_range{};
+        push_constant_range.stageFlags = push_constant.stage_flags;
+        push_constant_range.offset = push_constant.offset;
+        push_constant_range.size = push_constant.size;
+
+        return push_constant_range;
+    }
+
+    vk::DescriptorSetLayout CreateDescriptorSetLayout(const VulkanShader& shader) {
+        std::vector<vk::DescriptorSetLayoutBinding> bindings;
+        for (const auto& binding : shader.descriptor_bindings) {
+            bindings.push_back(Convert(binding));
+        }
+
+        vk::DescriptorSetLayoutCreateInfo layout_info{};
+        layout_info.bindingCount = static_cast<uint32_t>(bindings.size());
+        layout_info.pBindings = bindings.data();
+
+        try {
+            return device_.createDescriptorSetLayout(layout_info);
+        } catch (const std::exception& e) {
+            throw std::runtime_error(std::string("Failed to create descriptor set layout: ") + e.what());
+        }
+    }
+
+    vk::PipelineLayout CreatePipelineLayout(const VulkanShader& shader) {
+        // Create Descriptor Set Layout
+        vk::DescriptorSetLayout descriptor_set_layout = CreateDescriptorSetLayout(shader);
+
+        // Collect Push Constant Ranges
+        std::vector<vk::PushConstantRange> push_constant_ranges;
+        for (const auto& push_constant : shader.push_constant_ranges) {
+            push_constant_ranges.push_back(Convert(push_constant));
+        }
+
+        // Create Pipeline Layout
+        vk::PipelineLayoutCreateInfo pipeline_layout_info{};
+        pipeline_layout_info.setLayoutCount = 1;  // Adjust if multiple descriptor sets
+        pipeline_layout_info.pSetLayouts = &descriptor_set_layout;
+        pipeline_layout_info.pushConstantRangeCount = static_cast<uint32_t>(push_constant_ranges.size());
+        pipeline_layout_info.pPushConstantRanges = push_constant_ranges.data();
+
+        try {
+            return device_.createPipelineLayout(pipeline_layout_info);
+        } catch (const std::exception& e) {
+            throw std::runtime_error(std::string("Failed to create pipeline layout: ") + e.what());
+        }
+    }
+
+    // Gets the byte size of a given Vulkan Format
     uint32_t GetFormatSize(Format format) {
         switch (format) {
+            case Format::kR32Sfloat:
+                return 4;
+            case Format::kR32G32Sfloat:
+                return 8;
             case Format::kR32G32B32Sfloat:
                 return 12;
             case Format::kR32G32B32A32Sfloat:
                 return 16;
-            // 추가적인 포맷 크기 매핑 필요
+            // Add additional format sizes as needed
             default:
-                return 0;
+                throw std::runtime_error("Unsupported Format for size calculation.");
         }
     }
 };

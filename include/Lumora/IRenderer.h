@@ -135,8 +135,11 @@ struct SamplerDesc {
     float max_anisotropy = 1.0f;
 };
 
+enum class ShaderStage : uint32_t { kVertex = 1 << 0, kFragment = 1 << 1, kCompute = 1 << 2 };
+
 struct ShaderDesc {
     std::string file_path;
+    ShaderStage stage;
 };
 
 enum class CullMode { kNone, kFront, kBack, kFrontAndBack };
@@ -167,14 +170,15 @@ enum class BlendOp { kAdd, kSubtract, kReverseSubtract, kMin, kMax };
 
 enum class CompareOp { kNever, kLess, kEqual, kLessOrEqual, kGreater, kNotEqual, kGreaterOrEqual, kAlways };
 
+struct InputAttribute {
+    uint32_t location;
+    Format format;
+    uint32_t offset;
+};
+
 struct VertexLayoutDesc {
-    struct AttributeDesc {
-        uint32_t location;
-        Format format;
-        uint32_t offset;
-    };
     uint32_t stride;
-    std::vector<AttributeDesc> attributes;
+    std::vector<InputAttribute> attributes;
 };
 
 struct ViewportDesc {
