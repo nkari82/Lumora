@@ -1812,14 +1812,8 @@ class VulkanRenderer : public IRenderer {
         if (has_depth) {
             attachments[desc.color_formats.size()].format = Convert(desc.depth_format);
             attachments[desc.color_formats.size()].samples = vk::SampleCountFlagBits::e1;
-            attachments[desc.color_formats.size()].loadOp =
-                (desc.depth_attachment_options.load_op == AttachmentLoadOp::kClear)  ? vk::AttachmentLoadOp::eClear
-                : (desc.depth_attachment_options.load_op == AttachmentLoadOp::kLoad) ? vk::AttachmentLoadOp::eLoad
-                                                                                     : vk::AttachmentLoadOp::eDontCare;
-            attachments[desc.color_formats.size()].storeOp =
-                (desc.depth_attachment_options.store_op == AttachmentStoreOp::kStore)
-                    ? vk::AttachmentStoreOp::eStore
-                    : vk::AttachmentStoreOp::eDontCare;
+            attachments[desc.color_formats.size()].loadOp = Convert(desc.depth_attachment_options.load_op);
+            attachments[desc.color_formats.size()].storeOp = Convert(desc.depth_attachment_options.store_op);
             attachments[desc.color_formats.size()].stencilLoadOp = vk::AttachmentLoadOp::eDontCare;
             attachments[desc.color_formats.size()].stencilStoreOp = vk::AttachmentStoreOp::eDontCare;
             attachments[desc.color_formats.size()].initialLayout = vk::ImageLayout::eUndefined;
