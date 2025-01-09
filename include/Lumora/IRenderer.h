@@ -66,7 +66,7 @@ struct SwapChainDesc {
     uint32_t width = 1280;
     uint32_t height = 720;
     Format color_format = Format::kR8G8B8Srgb;
-    Format depth_format = Format::kD24UnormS8Uint;
+    Format depth_format = Format::kD32SfloatS8Uint;
     int32_t buffer_count = 2;
     bool vsync = true;
 };
