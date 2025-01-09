@@ -1797,14 +1797,8 @@ class VulkanRenderer : public IRenderer {
         for (size_t i = 0; i < desc.color_formats.size(); i++) {
             attachments[i].format = Convert(desc.color_formats[i]);
             attachments[i].samples = vk::SampleCountFlagBits::e1;
-            attachments[i].loadOp = (desc.color_attachment_options[i].load_op == AttachmentLoadOp::kClear)
-                                        ? vk::AttachmentLoadOp::eClear
-                                    : (desc.color_attachment_options[i].load_op == AttachmentLoadOp::kLoad)
-                                        ? vk::AttachmentLoadOp::eLoad
-                                        : vk::AttachmentLoadOp::eDontCare;
-            attachments[i].storeOp = (desc.color_attachment_options[i].store_op == AttachmentStoreOp::kStore)
-                                         ? vk::AttachmentStoreOp::eStore
-                                         : vk::AttachmentStoreOp::eDontCare;
+            attachments[i].loadOp = Convert(desc.color_attachment_options[i].load_op);
+            attachments[i].storeOp = Convert(desc.color_attachment_options[i].store_op);
             attachments[i].stencilLoadOp = vk::AttachmentLoadOp::eDontCare;
             attachments[i].stencilStoreOp = vk::AttachmentStoreOp::eDontCare;
             attachments[i].initialLayout = vk::ImageLayout::eUndefined;
@@ -2368,6 +2362,30 @@ class VulkanRenderer : public IRenderer {
 
         return vk_usage;
     }
+
+    vk::AttachmentLoadOp Convert(AttachmentLoadOp op) {
+        switch (op) {
+            case AttachmentLoadOp::kClear:
+                return vk::AttachmentLoadOp::eClear;
+            case AttachmentLoadOp::kLoad:
+                return vk::AttachmentLoadOp::eLoad;
+            case AttachmentLoadOp::kDontCare:
+                return vk::AttachmentLoadOp::eDontCare;
+            default:
+                return vk::AttachmentLoadOp::eClear;
+        }
+    };
+
+    vk::AttachmentStoreOp Convert(AttachmentStoreOp op) {
+        switch (op) {
+            case AttachmentStoreOp::kStore:
+                return vk::AttachmentStoreOp::eStore;
+            case AttachmentStoreOp::kDontCare:
+                return vk::AttachmentStoreOp::eDontCare;
+            default:
+                return vk::AttachmentStoreOp::eStore;
+        }
+    };
 
     uint64_t HashDesc(const RenderPassDesc& desc) {
         XXH64_reset(hash_state_, 0);
