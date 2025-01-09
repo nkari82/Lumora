@@ -298,6 +298,52 @@ struct FrameBufferDesc {
     std::vector<SubpassDesc> subpasses;
 };
 
+// Renderer Interface
+class IRenderer {
+   public:
+    virtual ~IRenderer() = default;
+
+    virtual void Open(const char* app_name, const WindowHandle& wh) = 0;
+    virtual void Close() = 0;
+
+    virtual SwapChainHandle CreateSwapChain(const SwapChainDesc& desc) = 0;
+    virtual BufferHandle CreateBuffer(const BufferDesc& desc) = 0;
+    virtual FrameBufferHandle CreateFrameBuffer(const FrameBufferDesc& desc) = 0;
+    virtual FrameBufferHandle CreateFrameBuffer(const SwapChainHandle& handle) = 0;
+    virtual void UpdateBuffer(const BufferHandle& handle, const void* data, size_t size) = 0;
+    virtual void BindBuffer(const BufferHandle& handle, uint32_t bind_point, uint32_t dynamic_offset = 0) = 0;
+    virtual TextureHandle CreateTexture(const TextureDesc& desc) = 0;
+    virtual void BindTexture(const TextureHandle& handle, uint32_t bind_point) = 0;
+    virtual SamplerHandle CreateSampler(const SamplerDesc& desc) = 0;
+    virtual void BindSampler(const SamplerHandle& handle, uint32_t bind_point) = 0;
+    virtual ShaderHandle CreateShader(const ShaderDesc& desc) = 0;
+    virtual PipelineHandle CreatePipeline(const PipelineDesc& desc) = 0;
+    virtual PipelineHandle CreatePipeline(const ComputePipelineDesc& desc) = 0;
+    virtual void BindPipeline(const PipelineHandle& handle, const uint8_t* constants, size_t size,
+                              uint32_t sub_index = 0) = 0;
+
+    virtual void DispatchCompute(uint32_t group_x, uint32_t group_y, uint32_t group_z) = 0;
+
+    virtual void BeginPass(const FrameBufferHandle& handle, uint32_t image_index) = 0;
+    virtual void EndPass() = 0;
+    virtual void NextPass() = 0;
+    virtual void Render(const SwapChainHandle& handle, std::function<void(uint32_t)> callback) = 0;
+    virtual void DrawIndexed(uint32_t index_count, uint32_t instance_count = 1, uint32_t first_index = 0,
+                             int32_t vertex_offset = 0, uint32_t first_instance = 0) = 0;
+    virtual bool ReloadShader(const ShaderHandle& handle, const ShaderDesc& new_desc) = 0;
+
+    virtual void ReleaseResource(const SwapChainHandle& handle) = 0;
+    virtual void ReleaseResource(const TextureHandle& handle) = 0;
+    virtual void ReleaseResource(const SamplerHandle& handle) = 0;
+    virtual void ReleaseResource(const PipelineHandle& handle) = 0;
+    virtual void ReleaseResource(const ShaderHandle& handle) = 0;
+    virtual void ReleaseResource(const FrameBufferHandle& handle) = 0;
+
+    static std::unique_ptr<IRenderer> Create();
+};
+
+}  // namespace lumora
+
 // example
 // 단일 서브패스
 // FrameBufferDesc pass_desc{};
@@ -357,49 +403,3 @@ struct FrameBufferDesc {
 //   renderer->DrawIndexed(36); // e.g. a cube with 36 indices
 //   renderer->EndPass();
 // }});
-
-// Renderer Interface
-class IRenderer {
-   public:
-    virtual ~IRenderer() = default;
-
-    virtual void Open(const char* app_name, const WindowHandle& wh) = 0;
-    virtual void Close() = 0;
-
-    virtual SwapChainHandle CreateSwapChain(const SwapChainDesc& desc) = 0;
-    virtual BufferHandle CreateBuffer(const BufferDesc& desc) = 0;
-    virtual FrameBufferHandle CreateFrameBuffer(const FrameBufferDesc& desc) = 0;
-    virtual FrameBufferHandle CreateFrameBuffer(const SwapChainHandle& handle) = 0;
-    virtual void UpdateBuffer(const BufferHandle& handle, const void* data, size_t size) = 0;
-    virtual void BindBuffer(const BufferHandle& handle, uint32_t bind_point, uint32_t dynamic_offset = 0) = 0;
-    virtual TextureHandle CreateTexture(const TextureDesc& desc) = 0;
-    virtual void BindTexture(const TextureHandle& handle, uint32_t bind_point) = 0;
-    virtual SamplerHandle CreateSampler(const SamplerDesc& desc) = 0;
-    virtual void BindSampler(const SamplerHandle& handle, uint32_t bind_point) = 0;
-    virtual ShaderHandle CreateShader(const ShaderDesc& desc) = 0;
-    virtual PipelineHandle CreatePipeline(const PipelineDesc& desc) = 0;
-    virtual PipelineHandle CreatePipeline(const ComputePipelineDesc& desc) = 0;
-    virtual void BindPipeline(const PipelineHandle& handle, const uint8_t* constants, size_t size,
-                              uint32_t sub_index = 0) = 0;
-
-    virtual void DispatchCompute(uint32_t group_x, uint32_t group_y, uint32_t group_z) = 0;
-
-    virtual void BeginPass(const FrameBufferHandle& handle, uint32_t image_index) = 0;
-    virtual void EndPass() = 0;
-    virtual void NextPass() = 0;
-    virtual void Render(const SwapChainHandle& handle, std::function<void(uint32_t)> callback) = 0;
-    virtual void DrawIndexed(uint32_t index_count, uint32_t instance_count = 1, uint32_t first_index = 0,
-                             int32_t vertex_offset = 0, uint32_t first_instance = 0) = 0;
-    virtual bool ReloadShader(const ShaderHandle& handle, const ShaderDesc& new_desc) = 0;
-
-    virtual void ReleaseResource(const SwapChainHandle& handle) = 0;
-    virtual void ReleaseResource(const TextureHandle& handle) = 0;
-    virtual void ReleaseResource(const SamplerHandle& handle) = 0;
-    virtual void ReleaseResource(const PipelineHandle& handle) = 0;
-    virtual void ReleaseResource(const ShaderHandle& handle) = 0;
-    virtual void ReleaseResource(const FrameBufferHandle& handle) = 0;
-
-    static std::unique_ptr<IRenderer> Create();
-};
-
-}  // namespace lumora

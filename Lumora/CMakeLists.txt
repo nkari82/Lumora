@@ -10,8 +10,10 @@ if (WIN32)
     add_definitions(-DVK_USE_PLATFORM_WIN32_KHR)
 endif()
 
+
 # Vulkan
 find_package(Vulkan REQUIRED)
+
 
 # 라이브러리 프로젝트: 정적 or 동적
 add_library(Lumora STATIC
@@ -28,11 +30,8 @@ target_include_directories(Lumora
 		../external/VulkanMemoryAllocator/include 
 		../external/Vulkan-Hpp/include 
         ../external/xxHash
+        ${Vulkan_INCLUDE_DIRS}
 )
 
 # Vulkan
-target_link_libraries(Lumora PRIVATE Vulkan::Vulkan)
-
-# 필요하다면 VMA 소스도 포함 or external로 연결
-# target_sources(LumoraRenderer PRIVATE path/to/vk_mem_alloc.cpp)
-# ...
+target_link_libraries(Lumora PRIVATE Vulkan::Vulkan ${Vulkan_LIBRARIES})
