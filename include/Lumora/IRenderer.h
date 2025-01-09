@@ -8,6 +8,8 @@
 #include <variant>
 #include <vector>
 
+#include "Format.h"
+
 namespace lumora {
 
 // Resource handle definition
@@ -24,37 +26,6 @@ struct SamplerHandle : ResourceHandle {};
 struct PipelineHandle : ResourceHandle {};
 struct ShaderHandle : ResourceHandle {};
 struct FrameBufferHandle : ResourceHandle {};
-
-enum class Format {
-    kUnknown,
-    kRGBA8,
-    kBGRA8,
-    kRGBA16F,
-    kRGBA32F,
-    kRGB8,
-    kRGB16F,
-    kRGB32F,
-    kDepth24Stencil8,
-    kDepth32F,
-    kR8,
-    kR16F,
-    kR32F,
-    kRG8,
-    kRG16F,
-    kRG32F,
-    kSRGB8,
-    kSRGBA8,
-    kSRGBA8Unorm,
-    kRGBA8Unorm,
-    kBGRA8Unorm,
-    kRGB8Unorm,
-    kR8Unorm,
-    kRG8Unorm,
-    kRGBA16Unorm,
-    kRGB16Unorm,
-    kR16Unorm,
-    kRG16Unorm
-};
 
 enum class MemoryUsage { kAuto, kGpuOnly, kCpuToGpu };
 
@@ -94,8 +65,8 @@ struct SwapChainDesc {
     WindowHandle window_handle;
     uint32_t width = 1280;
     uint32_t height = 720;
-    Format color_format = Format::kSRGBA8Unorm;
-    Format depth_format = Format::kDepth24Stencil8;
+    Format color_format = Format::kR8G8B8Srgb;
+    Format depth_format = Format::kD24UnormS8Uint;
     int32_t buffer_count = 2;
     bool vsync = true;
 };
@@ -134,7 +105,7 @@ enum class TextureType {
 };
 
 struct TextureDesc {
-    Format format = Format::kSRGBA8Unorm;
+    Format format = Format::kR8G8B8Srgb;
     TextureUsage usage = TextureUsage::kSampled;
     uint32_t width = 0;   // 텍스처의 너비
     uint32_t height = 0;  // 텍스처의 높이

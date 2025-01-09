@@ -19,6 +19,7 @@
 #define XXH_STATIC_LINKING_ONLY
 #define XXH_IMPLEMENTATION
 #define VMA_IMPLEMENTATION
+// #define XXH_NAMESPACE
 #include <Lumora/IRenderer.h>
 #include <vk_mem_alloc.h>
 #include <xxhash.h>
@@ -731,7 +732,7 @@ class VulkanRenderer : public IRenderer {
             }
             render_pass_desc.depth_format = depth_it->second.desc.format;
         } else {
-            render_pass_desc.depth_format = Format::kUnknown;
+            render_pass_desc.depth_format = Format::kUndefined;
         }
 
         // Assign other members from FrameBufferDesc to RenderPassDesc
@@ -820,7 +821,7 @@ class VulkanRenderer : public IRenderer {
         render_pass_desc.color_formats = {sc_data.desc.color_format};
         render_pass_desc.depth_format = sc_data.desc.depth_format;
         render_pass_desc.clear_colors = {{0.0f, 0.0f, 0.0f, 1.0f}};
-        render_pass_desc.clear_depth = sc_data.desc.depth_format != Format::kUnknown;
+        render_pass_desc.clear_depth = (sc_data.desc.depth_format != Format::kUndefined);
         render_pass_desc.clear_depth_value = 1.0f;
         render_pass_desc.clear_stencil_value = 0;
         render_pass_desc.color_attachment_options = {
@@ -1055,7 +1056,7 @@ class VulkanRenderer : public IRenderer {
         vk::Fence in_flight_fence = sc_data.in_flight_fences[frame];
 
         // Wait for the previous frame to finish
-        device_.waitForFences(in_flight_fence, VK_TRUE, UINT64_MAX);
+        std::ignore = device_.waitForFences(in_flight_fence, VK_TRUE, UINT64_MAX);
 
         // Reset the fence for the current frame
         device_.resetFences(in_flight_fence);
@@ -1784,46 +1785,58 @@ class VulkanRenderer : public IRenderer {
         }
 
         size_t attachment_count = desc.color_formats.size();
-        bool has_depth = (desc.depth_format != Format::kUnknown);
+        bool has_depth = (desc.depth_format != Format::kUndefined);
+
         if (has_depth) {
             attachment_count += 1;
         }
 
-        std::vector<vk::AttachmentDescription> attachments(attachment_count);
-        std::vector<vk::AttachmentReference> color_attachment_refs(desc.color_formats.size());
-        std::vector<vk::AttachmentReference> depth_attachment_ref;
+        auto valid = FindSupportedFormat({Convert(desc.depth_format)}, vk::ImageTiling::eOptimal,
+                                         vk::FormatFeatureFlagBits::eDepthStencilAttachment);
+
+        std::vector<vk::AttachmentDescription> attachments;
+        std::vector<vk::AttachmentReference> color_attachment_refs;
+        vk::AttachmentReference depth_attachment_ref{};
+
+        attachments.reserve(attachment_count);
+        color_attachment_refs.reserve(desc.color_formats.size());
 
         // Setup color attachments
         for (size_t i = 0; i < desc.color_formats.size(); i++) {
-            attachments[i].format = Convert(desc.color_formats[i]);
-            attachments[i].samples = vk::SampleCountFlagBits::e1;
-            attachments[i].loadOp = Convert(desc.color_attachment_options[i].load_op);
-            attachments[i].storeOp = Convert(desc.color_attachment_options[i].store_op);
-            attachments[i].stencilLoadOp = vk::AttachmentLoadOp::eDontCare;
-            attachments[i].stencilStoreOp = vk::AttachmentStoreOp::eDontCare;
-            attachments[i].initialLayout = vk::ImageLayout::eUndefined;
-            attachments[i].finalLayout = vk::ImageLayout::ePresentSrcKHR;
+            vk::AttachmentDescription attachment;
+            vk::AttachmentReference ref;
+            attachment.format = Convert(desc.color_formats[i]);
+            attachment.samples = vk::SampleCountFlagBits::e1;
+            attachment.loadOp = Convert(desc.color_attachment_options[i].load_op);
+            attachment.storeOp = Convert(desc.color_attachment_options[i].store_op);
+            attachment.stencilLoadOp = vk::AttachmentLoadOp::eDontCare;
+            attachment.stencilStoreOp = vk::AttachmentStoreOp::eDontCare;
+            attachment.initialLayout = vk::ImageLayout::eUndefined;
+            attachment.finalLayout = vk::ImageLayout::ePresentSrcKHR;
 
-            color_attachment_refs[i].attachment = static_cast<uint32_t>(i);
-            color_attachment_refs[i].layout = vk::ImageLayout::eColorAttachmentOptimal;
+            ref.attachment = static_cast<uint32_t>(i);
+            ref.layout = vk::ImageLayout::eColorAttachmentOptimal;
+
+            attachments.emplace_back(attachment);
+            color_attachment_refs.emplace_back(ref);
         }
 
         // Setup depth attachment if present
         if (has_depth) {
-            attachments[desc.color_formats.size()].format = Convert(desc.depth_format);
-            attachments[desc.color_formats.size()].samples = vk::SampleCountFlagBits::e1;
-            attachments[desc.color_formats.size()].loadOp = Convert(desc.depth_attachment_options.load_op);
-            attachments[desc.color_formats.size()].storeOp = Convert(desc.depth_attachment_options.store_op);
-            attachments[desc.color_formats.size()].stencilLoadOp = vk::AttachmentLoadOp::eDontCare;
-            attachments[desc.color_formats.size()].stencilStoreOp = vk::AttachmentStoreOp::eDontCare;
-            attachments[desc.color_formats.size()].initialLayout = vk::ImageLayout::eUndefined;
-            attachments[desc.color_formats.size()].finalLayout = vk::ImageLayout::eDepthStencilAttachmentOptimal;
+            vk::AttachmentDescription attachment;
+            attachment.format = Convert(desc.depth_format);
+            attachment.samples = vk::SampleCountFlagBits::e1;
+            attachment.loadOp = Convert(desc.depth_attachment_options.load_op);
+            attachment.storeOp = Convert(desc.depth_attachment_options.store_op);
+            attachment.stencilLoadOp = vk::AttachmentLoadOp::eDontCare;
+            attachment.stencilStoreOp = vk::AttachmentStoreOp::eDontCare;
+            attachment.initialLayout = vk::ImageLayout::eUndefined;
+            attachment.finalLayout = vk::ImageLayout::eDepthStencilAttachmentOptimal;
 
-            vk::AttachmentReference depth_ref{};
-            depth_ref.attachment = static_cast<uint32_t>(desc.color_formats.size());
-            depth_ref.layout = vk::ImageLayout::eDepthStencilAttachmentOptimal;
+            depth_attachment_ref.attachment = attachments.size();
+            depth_attachment_ref.layout = vk::ImageLayout::eDepthStencilAttachmentOptimal;
 
-            depth_attachment_ref.push_back(depth_ref);
+            attachments.emplace_back(attachment);
         }
 
         // Define subpasses
@@ -1832,7 +1845,7 @@ class VulkanRenderer : public IRenderer {
         subpass.colorAttachmentCount = static_cast<uint32_t>(color_attachment_refs.size());
         subpass.pColorAttachments = color_attachment_refs.data();
         if (has_depth) {
-            subpass.pDepthStencilAttachment = &depth_attachment_ref[0];
+            subpass.pDepthStencilAttachment = &depth_attachment_ref;
         } else {
             subpass.pDepthStencilAttachment = nullptr;
         }
@@ -2237,62 +2250,162 @@ class VulkanRenderer : public IRenderer {
 
     vk::Format Convert(Format format) {
         switch (format) {
-            case Format::kRGBA8:
-                return vk::Format::eR8G8B8A8Unorm;
-            case Format::kBGRA8:
-                return vk::Format::eB8G8R8A8Unorm;
-            case Format::kRGBA16F:
-                return vk::Format::eR16G16B16A16Sfloat;
-            case Format::kRGBA32F:
-                return vk::Format::eR32G32B32A32Sfloat;
-            case Format::kRGB8:
-                return vk::Format::eR8G8B8Unorm;
-            case Format::kRGB16F:
-                return vk::Format::eR16G16B16Sfloat;
-            case Format::kRGB32F:
-                return vk::Format::eR32G32B32Sfloat;
-            case Format::kDepth24Stencil8:
-                return vk::Format::eD24UnormS8Uint;
-            case Format::kDepth32F:
-                return vk::Format::eD32Sfloat;
-            case Format::kR8:
-                return vk::Format::eR8Unorm;
-            case Format::kR16F:
-                return vk::Format::eR16Sfloat;
-            case Format::kR32F:
-                return vk::Format::eR32Sfloat;
-            case Format::kRG8:
-                return vk::Format::eR8G8Unorm;
-            case Format::kRG16F:
-                return vk::Format::eR16G16Sfloat;
-            case Format::kRG32F:
-                return vk::Format::eR32G32Sfloat;
-            case Format::kSRGB8:
+            case Format::kUndefined:
+                return vk::Format::eUndefined;
+            case Format::kR8G8B8Srgb:
                 return vk::Format::eR8G8B8Srgb;
-            case Format::kSRGBA8:
+            case Format::kB8G8R8Unorm:
+                return vk::Format::eB8G8R8Unorm;
+            case Format::kB8G8R8Snorm:
+                return vk::Format::eB8G8R8Snorm;
+            case Format::kB8G8R8Uscaled:
+                return vk::Format::eB8G8R8Uscaled;
+            case Format::kB8G8R8Sscaled:
+                return vk::Format::eB8G8R8Sscaled;
+            case Format::kB8G8R8Uint:
+                return vk::Format::eB8G8R8Uint;
+            case Format::kB8G8R8Sint:
+                return vk::Format::eB8G8R8Sint;
+            case Format::kB8G8R8Srgb:
+                return vk::Format::eB8G8R8Srgb;
+            case Format::kR8G8B8A8Unorm:
+                return vk::Format::eR8G8B8A8Unorm;
+            case Format::kR8G8B8A8Snorm:
+                return vk::Format::eR8G8B8A8Snorm;
+            case Format::kR8G8B8A8Uscaled:
+                return vk::Format::eR8G8B8A8Uscaled;
+            case Format::kR8G8B8A8Sscaled:
+                return vk::Format::eR8G8B8A8Sscaled;
+            case Format::kR8G8B8A8Uint:
+                return vk::Format::eR8G8B8A8Uint;
+            case Format::kR8G8B8A8Sint:
+                return vk::Format::eR8G8B8A8Sint;
+            case Format::kR8G8B8A8Srgb:
                 return vk::Format::eR8G8B8A8Srgb;
-            case Format::kSRGBA8Unorm:
-                return vk::Format::eR8G8B8A8Unorm;
-            case Format::kRGBA8Unorm:
-                return vk::Format::eR8G8B8A8Unorm;
-            case Format::kBGRA8Unorm:
+            case Format::kB8G8R8A8Unorm:
                 return vk::Format::eB8G8R8A8Unorm;
-            case Format::kRGB8Unorm:
-                return vk::Format::eR8G8B8Unorm;
-            case Format::kR8Unorm:
-                return vk::Format::eR8Unorm;
-            case Format::kRG8Unorm:
-                return vk::Format::eR8G8Unorm;
-            case Format::kRGBA16Unorm:
-                return vk::Format::eR16G16B16A16Unorm;
-            case Format::kRGB16Unorm:
-                return vk::Format::eR16G16B16Unorm;
+            case Format::kB8G8R8A8Snorm:
+                return vk::Format::eB8G8R8A8Snorm;
+            case Format::kB8G8R8A8Uscaled:
+                return vk::Format::eB8G8R8A8Uscaled;
+            case Format::kB8G8R8A8Sscaled:
+                return vk::Format::eB8G8R8A8Sscaled;
+            case Format::kB8G8R8A8Uint:
+                return vk::Format::eB8G8R8A8Uint;
+            case Format::kB8G8R8A8Sint:
+                return vk::Format::eB8G8R8A8Sint;
+            case Format::kB8G8R8A8Srgb:
+                return vk::Format::eB8G8R8A8Srgb;
+            case Format::kA8B8G8R8UnormPack32:
+                return vk::Format::eA8B8G8R8UnormPack32;
+            case Format::kA8B8G8R8SnormPack32:
+                return vk::Format::eA8B8G8R8SnormPack32;
+            case Format::kA8B8G8R8UscaledPack32:
+                return vk::Format::eA8B8G8R8UscaledPack32;
+            case Format::kA8B8G8R8SscaledPack32:
+                return vk::Format::eA8B8G8R8SscaledPack32;
+            case Format::kA8B8G8R8UintPack32:
+                return vk::Format::eA8B8G8R8UintPack32;
+            case Format::kA8B8G8R8SintPack32:
+                return vk::Format::eA8B8G8R8SintPack32;
+            case Format::kA8B8G8R8SrgbPack32:
+                return vk::Format::eA8B8G8R8SrgbPack32;
             case Format::kR16Unorm:
                 return vk::Format::eR16Unorm;
-            case Format::kRG16Unorm:
+            case Format::kR16Snorm:
+                return vk::Format::eR16Snorm;
+            case Format::kR16Uscaled:
+                return vk::Format::eR16Uscaled;
+            case Format::kR16Sscaled:
+                return vk::Format::eR16Sscaled;
+            case Format::kR16Uint:
+                return vk::Format::eR16Uint;
+            case Format::kR16Sint:
+                return vk::Format::eR16Sint;
+            case Format::kR16Sfloat:
+                return vk::Format::eR16Sfloat;
+            case Format::kR16G16Unorm:
                 return vk::Format::eR16G16Unorm;
+            case Format::kR16G16Snorm:
+                return vk::Format::eR16G16Snorm;
+            case Format::kR16G16Uscaled:
+                return vk::Format::eR16G16Uscaled;
+            case Format::kR16G16Sscaled:
+                return vk::Format::eR16G16Sscaled;
+            case Format::kR16G16Uint:
+                return vk::Format::eR16G16Uint;
+            case Format::kR16G16Sint:
+                return vk::Format::eR16G16Sint;
+            case Format::kR16G16Sfloat:
+                return vk::Format::eR16G16Sfloat;
+            case Format::kR16G16B16Unorm:
+                return vk::Format::eR16G16B16Unorm;
+            case Format::kR16G16B16Snorm:
+                return vk::Format::eR16G16B16Snorm;
+            case Format::kR16G16B16Uscaled:
+                return vk::Format::eR16G16B16Uscaled;
+            case Format::kR16G16B16Sscaled:
+                return vk::Format::eR16G16B16Sscaled;
+            case Format::kR16G16B16Uint:
+                return vk::Format::eR16G16B16Uint;
+            case Format::kR16G16B16Sint:
+                return vk::Format::eR16G16B16Sint;
+            case Format::kR16G16B16Sfloat:
+                return vk::Format::eR16G16B16Sfloat;
+            case Format::kR16G16B16A16Unorm:
+                return vk::Format::eR16G16B16A16Unorm;
+            case Format::kR16G16B16A16Snorm:
+                return vk::Format::eR16G16B16A16Snorm;
+            case Format::kR16G16B16A16Uscaled:
+                return vk::Format::eR16G16B16A16Uscaled;
+            case Format::kR16G16B16A16Sscaled:
+                return vk::Format::eR16G16B16A16Sscaled;
+            case Format::kR16G16B16A16Uint:
+                return vk::Format::eR16G16B16A16Uint;
+            case Format::kR16G16B16A16Sint:
+                return vk::Format::eR16G16B16A16Sint;
+            case Format::kR16G16B16A16Sfloat:
+                return vk::Format::eR16G16B16A16Sfloat;
+            case Format::kR32Uint:
+                return vk::Format::eR32Uint;
+            case Format::kR32Sint:
+                return vk::Format::eR32Sint;
+            case Format::kR32Sfloat:
+                return vk::Format::eR32Sfloat;
+            case Format::kR32G32Uint:
+                return vk::Format::eR32G32Uint;
+            case Format::kR32G32Sint:
+                return vk::Format::eR32G32Sint;
+            case Format::kR32G32Sfloat:
+                return vk::Format::eR32G32Sfloat;
+            case Format::kR32G32B32Uint:
+                return vk::Format::eR32G32B32Uint;
+            case Format::kR32G32B32Sint:
+                return vk::Format::eR32G32B32Sint;
+            case Format::kR32G32B32Sfloat:
+                return vk::Format::eR32G32B32Sfloat;
+            case Format::kR32G32B32A32Uint:
+                return vk::Format::eR32G32B32A32Uint;
+            case Format::kR32G32B32A32Sint:
+                return vk::Format::eR32G32B32A32Sint;
+            case Format::kR32G32B32A32Sfloat:
+                return vk::Format::eR32G32B32A32Sfloat;
+            case Format::kD16Unorm:
+                return vk::Format::eD16Unorm;
+            case Format::kX8D24UnormPack32:
+                return vk::Format::eX8D24UnormPack32;
+            case Format::kD32Sfloat:
+                return vk::Format::eD32Sfloat;
+            case Format::kS8Uint:
+                return vk::Format::eS8Uint;
+            case Format::kD16UnormS8Uint:
+                return vk::Format::eD16UnormS8Uint;
+            case Format::kD24UnormS8Uint:
+                return vk::Format::eD24UnormS8Uint;
+            case Format::kD32SfloatS8Uint:
+                return vk::Format::eD32SfloatS8Uint;
             default:
-                return vk::Format::eUndefined;
+                throw std::invalid_argument("Unsupported format");
         }
     }
 
@@ -2380,6 +2493,19 @@ class VulkanRenderer : public IRenderer {
                 return vk::AttachmentStoreOp::eStore;
         }
     };
+
+    vk::Format FindSupportedFormat(const std::vector<vk::Format>& candidates, vk::ImageTiling tiling,
+                                   vk::FormatFeatureFlags features) {
+        for (vk::Format format : candidates) {
+            vk::FormatProperties props = physical_device_.getFormatProperties(format);
+
+            if ((tiling == vk::ImageTiling::eOptimal && (props.optimalTilingFeatures & features) == features) ||
+                (tiling == vk::ImageTiling::eLinear && (props.linearTilingFeatures & features) == features)) {
+                return format;
+            }
+        }
+        throw std::runtime_error("No compatible format found.");
+    }
 
     uint64_t HashDesc(const RenderPassDesc& desc) {
         XXH64_reset(hash_state_, 0);

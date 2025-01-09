@@ -47,7 +47,8 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow) {
     swapDesc.window_handle = wh;
     swapDesc.width = 1280;
     swapDesc.height = 720;
-    swapDesc.color_format = lumora::Format::kSRGBA8Unorm;
+    swapDesc.color_format = lumora::Format::kR8G8B8Srgb;
+    swapDesc.depth_format = lumora::Format::kD24UnormS8Uint;
     swapDesc.buffer_count = 2;
     swapDesc.vsync = true;
 
