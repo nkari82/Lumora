@@ -128,9 +128,10 @@ struct VulkanRenderPass : VulkanRef {
 struct VulkanSwapChain : VulkanRef {
     SwapChainDesc desc;
     vk::SwapchainKHR swapchain;
-    vk::SurfaceKHR surface;  // Each swapchain's Surface
-    vk::Format chosen_color_format = vk::Format::eUndefined;
+    vk::SurfaceKHR surface;
+    vk::SurfaceFormatKHR chosen_color_format;
     vk::Format chosen_depth_format = vk::Format::eUndefined;
+    vk::PresentModeKHR chosen_present_mode;
 
     // Command Pool
     vk::CommandPool command_pool;
@@ -182,15 +183,14 @@ class VulkanRenderer : public IRenderer {
         swapchain_data.surface = CreateSurface(desc.window_handle);
 
         auto surface_formats = physical_device_.getSurfaceFormatsKHR(swapchain_data.surface);
-        vk::SurfaceFormatKHR chosen_format = ChooseSurfaceFormat(surface_formats, Convert(desc.color_format));
+        swapchain_data.chosen_color_format = ChooseSurfaceFormat(surface_formats, Convert(desc.color_format));
 
         auto present_modes = physical_device_.getSurfacePresentModesKHR(swapchain_data.surface);
-        vk::PresentModeKHR chosen_present_mode = ChoosePresentMode(present_modes);
+        swapchain_data.chosen_present_mode = ChoosePresentMode(present_modes);
 
         auto capabilities = physical_device_.getSurfaceCapabilitiesKHR(swapchain_data.surface);
         vk::Extent2D chosen_extent = ChooseExtent(capabilities, desc.width, desc.height);
 
-        swapchain_data.chosen_color_format = chosen_format.format;
         if (desc.depth_format != Format::kUndefined)
             swapchain_data.chosen_depth_format = FindDepthFormat(Convert(desc.depth_format));
 
@@ -203,8 +203,8 @@ class VulkanRenderer : public IRenderer {
         swapchain_info.sType = vk::StructureType::eSwapchainCreateInfoKHR;
         swapchain_info.surface = swapchain_data.surface;
         swapchain_info.minImageCount = image_count;
-        swapchain_info.imageFormat = chosen_format.format;
-        swapchain_info.imageColorSpace = chosen_format.colorSpace;
+        swapchain_info.imageFormat = swapchain_data.chosen_color_format.format;
+        swapchain_info.imageColorSpace = swapchain_data.chosen_color_format.colorSpace;
         swapchain_info.imageExtent = chosen_extent;
         swapchain_info.imageArrayLayers = 1;
         swapchain_info.imageUsage = vk::ImageUsageFlagBits::eColorAttachment;
@@ -221,7 +221,7 @@ class VulkanRenderer : public IRenderer {
 
         swapchain_info.preTransform = capabilities.currentTransform;
         swapchain_info.compositeAlpha = vk::CompositeAlphaFlagBitsKHR::eOpaque;
-        swapchain_info.presentMode = chosen_present_mode;
+        swapchain_info.presentMode = swapchain_data.chosen_present_mode;
         swapchain_info.clipped = VK_TRUE;
         swapchain_info.oldSwapchain = nullptr;
 
@@ -965,7 +965,8 @@ class VulkanRenderer : public IRenderer {
 
         for (const auto& image : swapchain_images) {
             // CreateView 메소드를 사용하여 이미지 뷰 생성
-            vk::ImageView image_view = CreateView(image, sc_data.chosen_color_format, vk::ImageAspectFlagBits::eColor);
+            vk::ImageView image_view =
+                CreateView(image, sc_data.chosen_color_format.format, vk::ImageAspectFlagBits::eColor);
 
             // TextureHandle 생성 (kSwapChain 타입)
             TextureHandle texture_handle;
@@ -975,7 +976,7 @@ class VulkanRenderer : public IRenderer {
             VulkanTexture vtexture;
             vtexture.desc = {
                 .type = TextureType::k2D,
-                .format = Convert(sc_data.chosen_color_format),
+                .format = Convert(sc_data.chosen_color_format.format),
                 .usage = TextureUsage::kRenderTarget,
                 .width = sc_data.desc.width,
                 .height = sc_data.desc.height,
@@ -1151,7 +1152,66 @@ class VulkanRenderer : public IRenderer {
 
     void EndPass() override { command_buffer_.endRenderPass(); }
 
-    void NextPass() override { current_pass_++; }
+    void NextPass() override {
+        command_buffer_.nextSubpass(vk::SubpassContents::eInline);
+        current_pass_++;
+    }
+
+    void Resize(uint32_t new_width, uint32_t new_height) override { Resize(main_swap_chain_, new_width, new_height); }
+
+    void Resize(const SwapChainHandle& handle, uint32_t new_width, uint32_t new_height) override {
+        auto it = swapchains_.find(handle);
+        if (it == swapchains_.end()) {
+            return;  // 잘못된 핸들이면 무시
+        }
+        VulkanSwapChain& sc_data = it->second;
+
+        // 1) GPU 대기
+        device_.waitIdle();
+
+        // 2) 백업: 기존 스왑체인 handle
+        vk::SwapchainKHR old_swapchain = sc_data.swapchain;
+
+        // 3) 프레임버퍼 해제 (스왑체인 이미지를 참조하므로)
+        if (sc_data.framebuffer_handle.id != 0) {
+            ReleaseResource(sc_data.framebuffer_handle);
+            sc_data.framebuffer_handle = {};
+        }
+
+        // 4) 새 스왑체인 정보
+        auto capabilities = physical_device_.getSurfaceCapabilitiesKHR(sc_data.surface);
+        vk::Extent2D new_extent = ChooseExtent(capabilities, new_width, new_height);
+
+        // 5) createInfo에 oldSwapchain 설정
+        vk::SwapchainCreateInfoKHR sci{};
+        sci.surface = sc_data.surface;
+        sci.minImageCount = std::max<uint32_t>(2u, static_cast<uint32_t>(sc_data.desc.buffer_count));
+        sci.imageFormat = sc_data.chosen_color_format.format;
+        sci.imageColorSpace = sc_data.chosen_color_format.colorSpace;
+        sci.imageExtent = new_extent;
+        sci.imageArrayLayers = 1;
+        sci.imageUsage = vk::ImageUsageFlagBits::eColorAttachment;
+        sci.presentMode = sc_data.chosen_present_mode;
+        sci.clipped = VK_TRUE;
+        sci.oldSwapchain = old_swapchain;  // 구 스왑체인 지정!
+
+        // 6) 새 스왑체인 생성
+        sc_data.swapchain = device_.createSwapchainKHR(sci);
+
+        // 7) 구 스왑체인은 여기서 destroy
+        //    새 스왑체인 생성 후 oldSwapchain을 안전하게 파괴할 수 있음
+        if (old_swapchain) {
+            device_.destroySwapchainKHR(old_swapchain);
+        }
+
+        // 업데이트 정보
+        sc_data.desc.width = new_width;
+        sc_data.desc.height = new_height;
+        sc_data.current_frame = 0;
+
+        // 8) 새 스왑체인 이미지 기반 프레임버퍼 생성
+        sc_data.framebuffer_handle = CreateFrameBuffer(handle);
+    }
 
     void Render(std::function<void()> callback) override { Render(main_swap_chain_, callback); }
 
