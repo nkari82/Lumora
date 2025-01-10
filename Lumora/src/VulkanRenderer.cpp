@@ -141,6 +141,8 @@ struct VulkanSwapChain : VulkanRef {
     std::vector<vk::Semaphore> render_finished_semaphores;
     std::vector<vk::Fence> in_flight_fences;
     size_t current_frame;
+
+    FrameBufferHandle framebuffer_handle;
 };
 
 struct DescriptorSet {
@@ -151,19 +153,26 @@ struct DescriptorSet {
 
 class VulkanRenderer : public IRenderer {
    public:
-    VulkanRenderer() {
-        // Constructor
+    VulkanRenderer() {}
+
+    ~VulkanRenderer() override { Close(); }
+
+    void Open(const char* app_name, const SwapChainDesc& desc) override {
         hash_state_ = XXH64_createState();
+
+        main_window_handle_ = desc.window_handle;
+
+        InitVulkan(app_name, main_window_handle_);
+
+        main_swap_chain_ = CreateSwapChain(desc);
+
+        CreateFrameBuffer(main_swap_chain_);
     }
 
-    ~VulkanRenderer() override {
+    void Close() override {
         XXH64_freeState(hash_state_);
-        Close();
+        CleanupVulkan();
     }
-
-    void Open(const char* app_name, const WindowHandle& wh) override { InitVulkan(app_name, wh); }
-
-    void Close() override { CleanupVulkan(); }
 
     // public
     SwapChainHandle CreateSwapChain(const SwapChainDesc& desc) override {
@@ -1014,6 +1023,7 @@ class VulkanRenderer : public IRenderer {
         FrameBufferHandle fb_handle;
         fb_handle.id = GenerateUniqueID();
         framebuffers_.emplace(fb_handle, vframebuffer);
+        sc_data.framebuffer_handle = fb_handle;
         return fb_handle;
     }
 
@@ -1088,13 +1098,21 @@ class VulkanRenderer : public IRenderer {
         command_buffer_.dispatch(group_x, group_y, group_z);
     }
 
-    void BeginPass(const FrameBufferHandle& handle, uint32_t image_index) override {
-        auto framebuffer_it = framebuffers_.find(handle);
-        if (framebuffer_it == framebuffers_.end()) {
-            throw std::runtime_error("Invalid FrameBufferHandle provided to BeginPass.");
+    void BeginPass(const FrameBufferHandle& handle) override {
+        uint32_t image_index{0};
+        // 실제 FB 결정
+        FrameBufferHandle actual_fb = handle;
+        if (actual_fb.id == 0) {
+            actual_fb = current_fb_handle_;
+            image_index = current_image_index_;
         }
 
-        VulkanFrameBuffer& vframebuffer = framebuffer_it->second;
+        auto fb_it = framebuffers_.find(actual_fb);
+        if (fb_it == framebuffers_.end()) {
+            throw std::runtime_error("Invalid FrameBufferHandle in BeginPass.");
+        }
+
+        VulkanFrameBuffer& vframebuffer = fb_it->second;
 
         // 현재 RenderPassHandle 할당 (단계 3)
         current_render_pass_handle_ = vframebuffer.renderpass_handle;
@@ -1135,13 +1153,17 @@ class VulkanRenderer : public IRenderer {
 
     void NextPass() override { current_pass_++; }
 
-    void Render(const SwapChainHandle& handle, std::function<void(uint32_t)> callback) override {
+    void Render(std::function<void()> callback) override { Render(main_swap_chain_, callback); }
+
+    void Render(const SwapChainHandle& handle, std::function<void()> callback) override {
         auto it = swapchains_.find(handle);
         if (it == swapchains_.end()) {
             throw std::runtime_error("Invalid SwapChainHandle provided to Render.");
         }
 
         VulkanSwapChain& sc_data = it->second;
+        VulkanFrameBuffer& vframebuffer = framebuffers_.at(sc_data.framebuffer_handle);
+        current_fb_handle_ = sc_data.framebuffer_handle;
 
         // Synchronization primitives
         size_t frame = sc_data.current_frame;
@@ -1156,9 +1178,8 @@ class VulkanRenderer : public IRenderer {
         device_.resetFences(in_flight_fence);
 
         // Acquire the next image from the swapchain
-        uint32_t image_index = 0;  // 현재 스왑체인 이미지
         vk::Result result = device_.acquireNextImageKHR(sc_data.swapchain, UINT64_MAX, image_available_semaphore,
-                                                        nullptr, &image_index);
+                                                        nullptr, &current_image_index_);
         if (result == vk::Result::eErrorOutOfDateKHR) {
             throw std::runtime_error("Swapchain is out of date.");
         } else if (result != vk::Result::eSuccess && result != vk::Result::eSuboptimalKHR) {
@@ -1179,7 +1200,7 @@ class VulkanRenderer : public IRenderer {
         }
 
         // 사용자 정의 렌더링 명령 실행 (콜백에서 BeginPass와 EndPass를 호출함)
-        callback(image_index);
+        callback();
 
         // 커맨드 버퍼 종료
         try {
@@ -1213,7 +1234,7 @@ class VulkanRenderer : public IRenderer {
         present_info.pWaitSemaphores = signal_semaphores;
         present_info.swapchainCount = 1;
         present_info.pSwapchains = &sc_data.swapchain;
-        present_info.pImageIndices = &image_index;
+        present_info.pImageIndices = &current_image_index_;
 
         try {
             vk::Result present_result = graphics_queue_.presentKHR(present_info);
@@ -1262,38 +1283,38 @@ class VulkanRenderer : public IRenderer {
 
     void ReleaseResource(const SwapChainHandle& handle) {
         auto it = swapchains_.find(handle);
-        if (it != swapchains_.end()) {
-            VulkanSwapChain& sc_data = it->second;
+        if (it == swapchains_.end())
+            return;
 
-            // Synchronization primitives 정리
-            for (auto& semaphore : sc_data.image_available_semaphores) {
-                device_.destroySemaphore(semaphore);
-            }
-            for (auto& semaphore : sc_data.render_finished_semaphores) {
-                device_.destroySemaphore(semaphore);
-            }
-            for (auto& fence : sc_data.in_flight_fences) {
-                device_.destroyFence(fence);
-            }
+        VulkanSwapChain& sc_data = it->second;
 
-            // Command Pool 정리
-            if (sc_data.command_pool) {
-                device_.destroyCommandPool(sc_data.command_pool);
-            }
-
-            // Swapchain 정리
-            if (sc_data.swapchain) {
-                device_.destroySwapchainKHR(sc_data.swapchain);
-            }
-
-            // Surface 정리
-            if (sc_data.surface) {
-                instance_.destroySurfaceKHR(sc_data.surface);
-            }
-
-            // 스왑체인 맵에서 제거
-            swapchains_.erase(it);
+        for (auto& sem : sc_data.image_available_semaphores) {
+            device_.destroySemaphore(sem);
         }
+        for (auto& sem : sc_data.render_finished_semaphores) {
+            device_.destroySemaphore(sem);
+        }
+        for (auto& f : sc_data.in_flight_fences) {
+            device_.destroyFence(f);
+        }
+        if (sc_data.command_pool) {
+            device_.destroyCommandPool(sc_data.command_pool);
+        }
+        if (sc_data.swapchain) {
+            device_.destroySwapchainKHR(sc_data.swapchain);
+        }
+
+        // frame_buffer 해제
+        if (sc_data.framebuffer_handle.id != 0) {
+            ReleaseResource(sc_data.framebuffer_handle);
+        }
+
+        // surface 해제 여부
+        if (handle.id != main_swap_chain_.id && sc_data.surface) {
+            instance_.destroySurfaceKHR(sc_data.surface);
+        }
+
+        swapchains_.erase(it);
     }
 
     void ReleaseResource(const TextureHandle& handle) override {
@@ -1367,12 +1388,18 @@ class VulkanRenderer : public IRenderer {
 
    private:
     // Vulkan core components
-    XXH64_state_t* hash_state_;
     vk::Instance instance_;
+    vk::SurfaceKHR main_surface_{nullptr};
     vk::PhysicalDevice physical_device_;
     vk::Device device_;
     vk::RenderPass render_pass_;
     vk::CommandBuffer command_buffer_;  // current command buffer
+
+    WindowHandle main_window_handle_;
+    SwapChainHandle main_swap_chain_;
+    XXH64_state_t* hash_state_{nullptr};
+    FrameBufferHandle current_fb_handle_;
+    uint32_t current_image_index_{0};
 
     uint32_t graphics_queue_family_;  // Graphics Queue Family Index
     uint32_t present_queue_family_;   // Present Queue Family Index
@@ -1409,13 +1436,11 @@ class VulkanRenderer : public IRenderer {
         // Create Vulkan Instance
         CreateInstance(app_name);
 
-        vk::SurfaceKHR surface = CreateSurface(wh);
+        main_surface_ = CreateSurface(wh);
 
-        PickPhysicalDevice(surface);
+        PickPhysicalDevice(main_surface_);
 
-        CreateLogicalDevice(surface);
-
-        instance_.destroySurfaceKHR(surface);
+        CreateLogicalDevice(main_surface_);
 
         // Initialize VMA
         VmaAllocatorCreateInfo allocator_info = {};
@@ -1433,8 +1458,6 @@ class VulkanRenderer : public IRenderer {
     }
 
     void CleanupVulkan() {
-        // #FIXME access violation device_.waitIdle();
-
         bool memory_leak = false;
 
         // Destroy all pipelines
@@ -1554,6 +1577,8 @@ class VulkanRenderer : public IRenderer {
         if (descriptor_pool_) {
             device_.destroyDescriptorPool(descriptor_pool_);
         }
+
+        instance_.destroySurfaceKHR(main_surface_);
 
         // Destroy Debug Messenger
         if (debug_messenger_) {
@@ -1780,8 +1805,14 @@ class VulkanRenderer : public IRenderer {
     }
 
     vk::SurfaceKHR CreateSurface(const WindowHandle& window_handle) {
-        VkSurfaceKHR raw_surface;
+        bool is_main_window = (window_handle.display == main_window_handle_.display) &&
+                              (window_handle.platform == main_window_handle_.platform);
 
+        if (is_main_window && main_surface_) {
+            return main_surface_;
+        }
+
+        VkSurfaceKHR raw_surface;
 #ifdef _WIN32
         HWND hwnd = static_cast<HWND>(window_handle.display);
         HINSTANCE hinstance = static_cast<HINSTANCE>(window_handle.platform);

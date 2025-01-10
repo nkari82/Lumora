@@ -38,10 +38,6 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow) {
 
     lumora::WindowHandle wh = {reinterpret_cast<void*>(hwnd), reinterpret_cast<void*>(hInstance)};
 
-    // Create Renderer
-    std::unique_ptr<lumora::IRenderer> renderer = lumora::IRenderer::Create();
-    renderer->Open("Vulkan Renderer Test", wh);
-
     // Create SwapChain
     lumora::SwapChainDesc swapDesc;
     swapDesc.window_handle = wh;
@@ -52,8 +48,9 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow) {
     swapDesc.buffer_count = 2;
     swapDesc.vsync = true;
 
-    lumora::SwapChainHandle swapchain = renderer->CreateSwapChain(swapDesc);
-    lumora::FrameBufferHandle framebuffer = renderer->CreateFrameBuffer(swapchain);
+    // Create Renderer
+    std::unique_ptr<lumora::IRenderer> renderer = lumora::IRenderer::Create();
+    renderer->Open("Vulkan Renderer Test", swapDesc);
 
     // Main Loop
     MSG msg = {};
@@ -72,11 +69,11 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow) {
             break;
 
         // Rendering callback
-        renderer->Render(swapchain, [&](uint32_t image_index) {
+        renderer->Render([&]() {
             // Begin Render Pass
             // lumora::RenderPassDesc passDesc;
             // Setup passDesc as needed
-            renderer->BeginPass(framebuffer, image_index);
+            renderer->BeginPass();
 
             // Bind pipeline, buffers, textures, etc.
             // For example:

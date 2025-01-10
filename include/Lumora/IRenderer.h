@@ -301,7 +301,7 @@ class IRenderer {
    public:
     virtual ~IRenderer() = default;
 
-    virtual void Open(const char* app_name, const WindowHandle& wh) = 0;
+    virtual void Open(const char* app_name, const SwapChainDesc& desc) = 0;
     virtual void Close() = 0;
 
     virtual SwapChainHandle CreateSwapChain(const SwapChainDesc& desc) = 0;
@@ -322,10 +322,11 @@ class IRenderer {
 
     virtual void DispatchCompute(uint32_t group_x, uint32_t group_y, uint32_t group_z) = 0;
 
-    virtual void BeginPass(const FrameBufferHandle& handle, uint32_t image_index) = 0;
+    virtual void BeginPass(const FrameBufferHandle& handle = {}) = 0;
     virtual void EndPass() = 0;
     virtual void NextPass() = 0;
-    virtual void Render(const SwapChainHandle& handle, std::function<void(uint32_t)> callback) = 0;
+    virtual void Render(std::function<void()> callback) = 0;
+    virtual void Render(const SwapChainHandle& handle, std::function<void()> callback) = 0;
     virtual void DrawIndexed(uint32_t index_count, uint32_t instance_count = 1, uint32_t first_index = 0,
                              int32_t vertex_offset = 0, uint32_t first_instance = 0) = 0;
     virtual bool ReloadShader(const ShaderHandle& handle, const ShaderDesc& new_desc) = 0;
@@ -381,8 +382,8 @@ class IRenderer {
 //    },
 // };
 //
-// renderer->Render(swapchain, [&]() {
-//    renderer->BindPass(framebuffer);
+// renderer->Render([&]() {
+//    renderer->BindPass();
 //    renderer->BindPipeline(my_pipeline1);
 //    renderer->DrawIndexed(36);
 //    renderer->NextPass();
