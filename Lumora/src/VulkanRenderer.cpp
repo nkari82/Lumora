@@ -926,15 +926,15 @@ class VulkanRenderer : public IRenderer {
 
         // RenderPass 생성 (SwapChainDesc를 기반으로)
         RenderPassDesc render_pass_desc;
-        render_pass_desc.color_formats = {sc_data.desc.color_format};
+        render_pass_desc.color_formats = {Convert(sc_data.chosen_color_format.format)};
         render_pass_desc.depth_format = Convert(sc_data.chosen_depth_format);
         render_pass_desc.clear_colors = {{0.0f, 0.0f, 0.0f, 1.0f}};
-        render_pass_desc.clear_depth = (sc_data.chosen_depth_format != vk::Format::eUndefined);
+        render_pass_desc.clear_depth = true;
         render_pass_desc.clear_depth_value = 1.0f;
         render_pass_desc.clear_stencil_value = 0;
         render_pass_desc.color_attachment_options = {
             AttachmentOptions{.load_op = AttachmentLoadOp::kClear, .store_op = AttachmentStoreOp::kStore}};
-        if (render_pass_desc.clear_depth) {
+        if (sc_data.chosen_depth_format != vk::Format::eUndefined) {
             render_pass_desc.depth_attachment_options =
                 AttachmentOptions{.load_op = AttachmentLoadOp::kClear, .store_op = AttachmentStoreOp::kStore};
         }
@@ -979,8 +979,8 @@ class VulkanRenderer : public IRenderer {
                 .type = TextureType::k2D,
                 .format = Convert(sc_data.chosen_color_format.format),
                 .usage = TextureUsage::kRenderTarget,
-                .width = sc_data.desc.width,
-                .height = sc_data.desc.height,
+                .width = sc_data.chosen_extent.width,
+                .height = sc_data.chosen_extent.height,
                 .depth = 1,
                 .mip_levels = 1,
                 .array_layers = 1,
@@ -997,7 +997,6 @@ class VulkanRenderer : public IRenderer {
             std::vector<vk::ImageView> attachments = {image_view};
 
             if (depth_it != textures_.end()) {
-                // 깊이 어태치먼트 추가
                 attachments.emplace_back(depth_it->second.image_view);
             }
 
@@ -1006,8 +1005,8 @@ class VulkanRenderer : public IRenderer {
             framebuffer_info.renderPass = render_passes_.at(renderpass_handle).renderpass;
             framebuffer_info.attachmentCount = static_cast<uint32_t>(attachments.size());
             framebuffer_info.pAttachments = attachments.data();
-            framebuffer_info.width = sc_data.desc.width;
-            framebuffer_info.height = sc_data.desc.height;
+            framebuffer_info.width = sc_data.chosen_extent.width;
+            framebuffer_info.height = sc_data.chosen_extent.height;
             framebuffer_info.layers = 1;
 
             // Framebuffer 생성
@@ -1017,6 +1016,19 @@ class VulkanRenderer : public IRenderer {
             } catch (const std::exception& e) {
                 throw std::runtime_error(std::string("Failed to create framebuffer: ") + e.what());
             }
+
+            FrameBufferDesc desc;
+            desc.width = sc_data.chosen_extent.width;
+            desc.height = sc_data.chosen_extent.height;
+            desc.color_targets.emplace_back(texture_handle);
+            desc.depth_target = texture_handle;
+            desc.clear_colors = render_pass_desc.clear_colors;
+            desc.clear_depth = render_pass_desc.clear_depth;
+            desc.clear_depth_value = render_pass_desc.clear_depth_value;
+            desc.clear_stencil_value = render_pass_desc.clear_stencil_value;
+            desc.color_attachment_options = render_pass_desc.color_attachment_options;
+            desc.depth_attachment_options = render_pass_desc.depth_attachment_options;
+            desc.subpasses = render_pass_desc.subpasses;
 
             // 생성된 Framebuffer를 VulkanFrameBuffer의 벡터에 추가
             vframebuffer.framebuffers.emplace_back(framebuffer);
