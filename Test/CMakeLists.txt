@@ -1,7 +1,5 @@
 project(Test LANGUAGES CXX)
 
-find_package(Vulkan REQUIRED)
-
 add_executable(Test
     testLumora.cpp
 )
