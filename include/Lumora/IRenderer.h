@@ -286,17 +286,12 @@ struct SubpassDesc {
 };
 
 struct RenderPassConfig {
-    // 클리어 옵션
-    std::vector<std::array<float, 4>> clear_colors;  // 각 컬러 타겟에 대한 클리어 색상
-    bool clear_depth = true;                         // 깊이 클리어 여부
-    float clear_depth_value = 1.0f;                  // 깊이 클리어 값
-    uint32_t clear_stencil_value = 0;                // 스텐실 클리어 값
-
-    // Attachment 옵션
+    std::vector<std::array<float, 4>> clear_colors;           // 각 컬러 타겟에 대한 클리어 색상
+    bool clear_depth = true;                                  // 깊이 클리어 여부
+    float clear_depth_value = 1.0f;                           // 깊이 클리어 값
+    uint32_t clear_stencil_value = 0;                         // 스텐실 클리어 값
     std::vector<AttachmentOptions> color_attachment_options;  // 각 컬러 타겟의 옵션
     AttachmentOptions depth_attachment_options;               // 깊이 타겟의 옵션
-
-    // 서브패스
     std::vector<SubpassDesc> subpasses;
 };
 

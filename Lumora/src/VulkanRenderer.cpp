@@ -902,6 +902,7 @@ class VulkanRenderer : public IRenderer {
         }
 
         VulkanSwapChain& sc_data = swapchain_it->second;
+        bool has_depth = (sc_data.chosen_depth_format != vk::Format::eUndefined);
 
         // 스왑체인 이미지 가져오기
         std::vector<vk::Image> swapchain_images = device_.getSwapchainImagesKHR(sc_data.swapchain);
@@ -916,10 +917,29 @@ class VulkanRenderer : public IRenderer {
         render_pass_desc.config.clear_stencil_value = 0;
         render_pass_desc.config.color_attachment_options = {
             AttachmentOptions{.load_op = AttachmentLoadOp::kClear, .store_op = AttachmentStoreOp::kStore}};
-        if (sc_data.chosen_depth_format != vk::Format::eUndefined) {
+        if (has_depth) {
             render_pass_desc.config.depth_attachment_options =
                 AttachmentOptions{.load_op = AttachmentLoadOp::kClear, .store_op = AttachmentStoreOp::kStore};
         }
+
+        // 서브패스 설정
+        SubpassDesc subpass;
+
+        // 컬러 어태치먼트 참조
+        SubpassAttachment colorAttachmentRef;
+        colorAttachmentRef.attachment = 0;                         // 첫 번째 컬러 어태치먼트 인덱스
+        colorAttachmentRef.access = AttachmentAccess::kReadWrite;  // 읽기/쓰기 접근
+        subpass.color_attachments.push_back(colorAttachmentRef);
+
+        // 깊이 어태치먼트 참조
+        if (has_depth) {
+            SubpassAttachment depthAttachmentRef;
+            depthAttachmentRef.attachment = 0;                         // 깊이 어태치먼트는 인덱스 0으로 가정
+            depthAttachmentRef.access = AttachmentAccess::kReadWrite;  // 읽기/쓰기 접근
+            subpass.depth_attachment = depthAttachmentRef;
+        }
+
+        render_pass_desc.config.subpasses.push_back(subpass);
 
         RenderPassHandle renderpass_handle = CreateRenderPassInternal(render_pass_desc);
 
@@ -1935,104 +1955,112 @@ class VulkanRenderer : public IRenderer {
             return it->first;
         }
 
-        size_t attachment_count = desc.color_formats.size();
-        bool has_depth = (desc.depth_format != Format::kUndefined);
+        const RenderPassConfig& config = desc.config;
 
-        if (has_depth) {
-            attachment_count += 1;
-        }
-
+        // Prepare attachment descriptions and references
         std::vector<vk::AttachmentDescription> attachments;
         std::vector<vk::AttachmentReference> color_attachment_refs;
         vk::AttachmentReference depth_attachment_ref{};
 
-        attachments.reserve(attachment_count);
-        color_attachment_refs.reserve(desc.color_formats.size());
-
-        // Setup color attachments
-        for (size_t i = 0; i < desc.color_formats.size(); i++) {
-            vk::AttachmentDescription attachment;
-            vk::AttachmentReference ref;
+        // Configure color attachments using RenderPassConfig
+        for (size_t i = 0; i < config.color_attachment_options.size(); ++i) {
+            vk::AttachmentDescription attachment{};
             attachment.format = Convert(desc.color_formats[i]);
             attachment.samples = vk::SampleCountFlagBits::e1;
-            attachment.loadOp = Convert(desc.config.color_attachment_options[i].load_op);
-            attachment.storeOp = Convert(desc.config.color_attachment_options[i].store_op);
+            attachment.loadOp = Convert(config.color_attachment_options[i].load_op);
+            attachment.storeOp = Convert(config.color_attachment_options[i].store_op);
             attachment.stencilLoadOp = vk::AttachmentLoadOp::eDontCare;
             attachment.stencilStoreOp = vk::AttachmentStoreOp::eDontCare;
             attachment.initialLayout = vk::ImageLayout::eUndefined;
             attachment.finalLayout = vk::ImageLayout::ePresentSrcKHR;
 
-            ref.attachment = static_cast<uint32_t>(i);
+            vk::AttachmentReference ref{};
+            ref.attachment = static_cast<uint32_t>(attachments.size());
             ref.layout = vk::ImageLayout::eColorAttachmentOptimal;
 
-            attachments.emplace_back(attachment);
-            color_attachment_refs.emplace_back(ref);
+            attachments.push_back(attachment);
+            color_attachment_refs.push_back(ref);
         }
 
-        // Setup depth attachment if present
-        if (has_depth) {
-            vk::AttachmentDescription attachment;
-            attachment.format = Convert(desc.depth_format);
-            attachment.samples = vk::SampleCountFlagBits::e1;
-            attachment.loadOp = Convert(desc.config.depth_attachment_options.load_op);
-            attachment.storeOp = Convert(desc.config.depth_attachment_options.store_op);
-            attachment.stencilLoadOp = vk::AttachmentLoadOp::eDontCare;
-            attachment.stencilStoreOp = vk::AttachmentStoreOp::eDontCare;
-            attachment.initialLayout = vk::ImageLayout::eUndefined;
-            attachment.finalLayout = vk::ImageLayout::eDepthStencilAttachmentOptimal;
+        // Configure depth attachment if defined
+        if (desc.depth_format != Format::kUndefined) {
+            vk::AttachmentDescription depth_attachment{};
+            depth_attachment.format = Convert(desc.depth_format);
+            depth_attachment.samples = vk::SampleCountFlagBits::e1;
+            depth_attachment.loadOp = Convert(config.depth_attachment_options.load_op);
+            depth_attachment.storeOp = Convert(config.depth_attachment_options.store_op);
+            depth_attachment.stencilLoadOp = vk::AttachmentLoadOp::eDontCare;
+            depth_attachment.stencilStoreOp = vk::AttachmentStoreOp::eDontCare;
+            depth_attachment.initialLayout = vk::ImageLayout::eUndefined;
+            depth_attachment.finalLayout = vk::ImageLayout::eDepthStencilAttachmentOptimal;
 
             depth_attachment_ref.attachment = static_cast<uint32_t>(attachments.size());
             depth_attachment_ref.layout = vk::ImageLayout::eDepthStencilAttachmentOptimal;
 
-            attachments.emplace_back(attachment);
+            attachments.push_back(depth_attachment);
         }
 
-        // Define subpasses
-        vk::SubpassDescription subpass{};
-        subpass.pipelineBindPoint = vk::PipelineBindPoint::eGraphics;
-        subpass.colorAttachmentCount = static_cast<uint32_t>(color_attachment_refs.size());
-        subpass.pColorAttachments = color_attachment_refs.data();
-        if (has_depth) {
-            subpass.pDepthStencilAttachment = &depth_attachment_ref;
-        } else {
-            subpass.pDepthStencilAttachment = nullptr;
+        // Configure subpasses using RenderPassConfig
+        std::vector<vk::SubpassDescription> subpasses;
+        for (const auto& subpass_desc : config.subpasses) {
+            vk::SubpassDescription subpass{};
+            subpass.pipelineBindPoint = vk::PipelineBindPoint::eGraphics;
+
+            // Map color attachments for the subpass
+            std::vector<vk::AttachmentReference> subpass_color_refs;
+            for (const auto& color_attachment : subpass_desc.color_attachments) {
+                vk::AttachmentReference ref{};
+                ref.attachment = color_attachment.attachment;
+                ref.layout = vk::ImageLayout::eColorAttachmentOptimal;
+                subpass_color_refs.push_back(ref);
+            }
+
+            // Map depth attachment for the subpass
+            vk::AttachmentReference* depth_ref = nullptr;
+            if (subpass_desc.depth_attachment.attachment < attachments.size()) {
+                depth_ref = &depth_attachment_ref;
+            }
+
+            subpass.colorAttachmentCount = static_cast<uint32_t>(subpass_color_refs.size());
+            subpass.pColorAttachments = subpass_color_refs.data();
+            subpass.pDepthStencilAttachment = depth_ref;
+
+            subpasses.push_back(subpass);
         }
 
-        // Define subpass dependencies (if any)
+        // Define subpass dependencies
         std::vector<vk::SubpassDependency> dependencies;
-        // Example dependency; adjust as needed
         vk::SubpassDependency dependency{};
         dependency.srcSubpass = VK_SUBPASS_EXTERNAL;
         dependency.dstSubpass = 0;
         dependency.srcStageMask = vk::PipelineStageFlagBits::eColorAttachmentOutput;
-        dependency.srcAccessMask = vk::AccessFlagBits::eNone;
+        dependency.srcAccessMask = vk::AccessFlagBits::eNoneKHR;
         dependency.dstStageMask = vk::PipelineStageFlagBits::eColorAttachmentOutput;
         dependency.dstAccessMask = vk::AccessFlagBits::eColorAttachmentWrite;
-
         dependencies.push_back(dependency);
 
-        // Create render pass
+        // Render pass creation info
         vk::RenderPassCreateInfo render_pass_info{};
         render_pass_info.attachmentCount = static_cast<uint32_t>(attachments.size());
         render_pass_info.pAttachments = attachments.data();
-        render_pass_info.subpassCount = 1;
-        render_pass_info.pSubpasses = &subpass;
+        render_pass_info.subpassCount = static_cast<uint32_t>(subpasses.size());
+        render_pass_info.pSubpasses = subpasses.data();
         render_pass_info.dependencyCount = static_cast<uint32_t>(dependencies.size());
         render_pass_info.pDependencies = dependencies.data();
 
-        VulkanRenderPass vrender_pass;
-
+        // Create render pass
+        VulkanRenderPass vrender_pass{};
         try {
             vrender_pass.renderpass = device_.createRenderPass(render_pass_info);
         } catch (const std::exception& e) {
-            throw std::runtime_error(std::string("Failed to create render pass: ") + e.what());
+            throw std::runtime_error("Failed to create render pass: " + std::string(e.what()));
         }
 
+        // Store render pass in the map
         vrender_pass.desc = desc;
         vrender_pass.ref_count = 1;
-        vrender_pass.desc_hash = hash_key;  // Store the hash
+        vrender_pass.desc_hash = hash_key;
 
-        // Store the render pass
         render_passes_.emplace(handle, vrender_pass);
 
         return handle;
