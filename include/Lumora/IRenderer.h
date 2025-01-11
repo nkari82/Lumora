@@ -8,6 +8,16 @@
 #include <variant>
 #include <vector>
 
+#if defined(_WINDLL)
+#if defined(LUMORA_EXPORTS)
+#define LUMORA_API __declspec(dllexport)
+#else
+#define LUMORA_API __declspec(dllimport)
+#endif
+#else
+#define LUMORA_API
+#endif
+
 #include "Format.h"
 
 namespace lumora {
@@ -297,7 +307,7 @@ struct FrameBufferDesc {
 };
 
 // Renderer Interface
-class IRenderer {
+class LUMORA_API IRenderer {
    public:
     virtual ~IRenderer() = default;
 
