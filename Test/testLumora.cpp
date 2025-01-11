@@ -2,6 +2,7 @@
 #include <Lumora/IRenderer.h>
 #include <windows.h>
 
+#include <iostream>
 #include <thread>
 
 // Window Procedure
@@ -50,7 +51,11 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow) {
 
     // Create Renderer
     std::unique_ptr<lumora::IRenderer> renderer = lumora::IRenderer::Create();
-    renderer->Open("Vulkan Renderer Test", swapDesc);
+    try {
+        renderer->Open("Vulkan Renderer Test", swapDesc);
+    } catch (std::exception& err) {
+        std::cout << err.what();
+    }
 
     // Main Loop
     MSG msg = {};
