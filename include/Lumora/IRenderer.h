@@ -285,13 +285,7 @@ struct SubpassDesc {
     std::vector<SubpassAttachment> input_attachments;  // Input 첨부
 };
 
-struct FrameBufferDesc {
-    std::vector<TextureHandle> color_targets;
-    TextureHandle depth_target;  // Depth 타겟 (optional)
-
-    uint32_t width;
-    uint32_t height;
-
+struct RenderPassConfig {
     // 클리어 옵션
     std::vector<std::array<float, 4>> clear_colors;  // 각 컬러 타겟에 대한 클리어 색상
     bool clear_depth = true;                         // 깊이 클리어 여부
@@ -304,6 +298,14 @@ struct FrameBufferDesc {
 
     // 서브패스
     std::vector<SubpassDesc> subpasses;
+};
+
+struct FrameBufferDesc {
+    std::vector<TextureHandle> color_targets;
+    TextureHandle depth_target;  // Depth 타겟 (optional)
+    uint32_t width;
+    uint32_t height;
+    RenderPassConfig config;
 };
 
 // Renderer Interface

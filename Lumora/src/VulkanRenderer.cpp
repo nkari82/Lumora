@@ -39,19 +39,7 @@ struct RenderPassHandle : ResourceHandle {};
 struct RenderPassDesc {
     std::vector<Format> color_formats;  // MRT를 위한 컬러 타겟 리스트
     Format depth_format;                // Depth 타겟 (optional)
-
-    // 클리어 옵션
-    std::vector<std::array<float, 4>> clear_colors;  // 각 컬러 타겟에 대한 클리어 색상
-    bool clear_depth = true;                         // 깊이 클리어 여부
-    float clear_depth_value = 1.0f;                  // 깊이 클리어 값
-    uint32_t clear_stencil_value = 0;                // 스텐실 클리어 값
-
-    // Attachment 옵션
-    std::vector<AttachmentOptions> color_attachment_options;  // 각 컬러 타겟의 옵션
-    AttachmentOptions depth_attachment_options;               // 깊이 타겟의 옵션
-
-    // 서브패스
-    std::vector<SubpassDesc> subpasses;  // RenderPass 내의 서브패스 리스트
+    RenderPassConfig config;
 };
 
 enum class TextureCreationType { kRegular, kSwapChain };
@@ -846,13 +834,7 @@ class VulkanRenderer : public IRenderer {
         }
 
         // Assign other members from FrameBufferDesc to RenderPassDesc
-        render_pass_desc.clear_colors = desc.clear_colors;
-        render_pass_desc.clear_depth = desc.clear_depth;
-        render_pass_desc.clear_depth_value = desc.clear_depth_value;
-        render_pass_desc.clear_stencil_value = desc.clear_stencil_value;
-        render_pass_desc.color_attachment_options = desc.color_attachment_options;
-        render_pass_desc.depth_attachment_options = desc.depth_attachment_options;
-        render_pass_desc.subpasses = desc.subpasses;
+        render_pass_desc.config = desc.config;
 
         // Create or retrieve RenderPass
         RenderPassHandle renderpass_handle = CreateRenderPassInternal(render_pass_desc);
@@ -928,14 +910,14 @@ class VulkanRenderer : public IRenderer {
         RenderPassDesc render_pass_desc;
         render_pass_desc.color_formats = {Convert(sc_data.chosen_color_format.format)};
         render_pass_desc.depth_format = Convert(sc_data.chosen_depth_format);
-        render_pass_desc.clear_colors = {{0.0f, 0.0f, 0.0f, 1.0f}};
-        render_pass_desc.clear_depth = true;
-        render_pass_desc.clear_depth_value = 1.0f;
-        render_pass_desc.clear_stencil_value = 0;
-        render_pass_desc.color_attachment_options = {
+        render_pass_desc.config.clear_colors = {{0.0f, 0.0f, 0.0f, 1.0f}};
+        render_pass_desc.config.clear_depth = true;
+        render_pass_desc.config.clear_depth_value = 1.0f;
+        render_pass_desc.config.clear_stencil_value = 0;
+        render_pass_desc.config.color_attachment_options = {
             AttachmentOptions{.load_op = AttachmentLoadOp::kClear, .store_op = AttachmentStoreOp::kStore}};
         if (sc_data.chosen_depth_format != vk::Format::eUndefined) {
-            render_pass_desc.depth_attachment_options =
+            render_pass_desc.config.depth_attachment_options =
                 AttachmentOptions{.load_op = AttachmentLoadOp::kClear, .store_op = AttachmentStoreOp::kStore};
         }
 
@@ -1022,13 +1004,7 @@ class VulkanRenderer : public IRenderer {
             desc.height = sc_data.chosen_extent.height;
             desc.color_targets.emplace_back(texture_handle);
             desc.depth_target = texture_handle;
-            desc.clear_colors = render_pass_desc.clear_colors;
-            desc.clear_depth = render_pass_desc.clear_depth;
-            desc.clear_depth_value = render_pass_desc.clear_depth_value;
-            desc.clear_stencil_value = render_pass_desc.clear_stencil_value;
-            desc.color_attachment_options = render_pass_desc.color_attachment_options;
-            desc.depth_attachment_options = render_pass_desc.depth_attachment_options;
-            desc.subpasses = render_pass_desc.subpasses;
+            desc.config = render_pass_desc.config;
 
             // 생성된 Framebuffer를 VulkanFrameBuffer의 벡터에 추가
             vframebuffer.framebuffers.emplace_back(framebuffer);
@@ -1135,15 +1111,16 @@ class VulkanRenderer : public IRenderer {
 
         // 클리어 값 설정
         std::vector<vk::ClearValue> clear_values;
-        for (const auto& color : vrender_pass.desc.clear_colors) {
+        for (const auto& color : vrender_pass.desc.config.clear_colors) {
             vk::ClearColorValue clear_color =
                 vk::ClearColorValue(std::array<float, 4>{color[0], color[1], color[2], color[3]});
             clear_values.emplace_back(clear_color);
         }
-        if (vrender_pass.desc.clear_depth) {
+        // #FIXME 뎁스포맷이 없다면으로 바꿔야됨.
+        if (vrender_pass.desc.config.clear_depth) {
             vk::ClearDepthStencilValue clear_depth = {};
-            clear_depth.depth = vrender_pass.desc.clear_depth_value;
-            clear_depth.stencil = vrender_pass.desc.clear_stencil_value;
+            clear_depth.depth = vrender_pass.desc.config.clear_depth_value;
+            clear_depth.stencil = vrender_pass.desc.config.clear_stencil_value;
             clear_values.emplace_back(clear_depth);
         }
 
@@ -1978,8 +1955,8 @@ class VulkanRenderer : public IRenderer {
             vk::AttachmentReference ref;
             attachment.format = Convert(desc.color_formats[i]);
             attachment.samples = vk::SampleCountFlagBits::e1;
-            attachment.loadOp = Convert(desc.color_attachment_options[i].load_op);
-            attachment.storeOp = Convert(desc.color_attachment_options[i].store_op);
+            attachment.loadOp = Convert(desc.config.color_attachment_options[i].load_op);
+            attachment.storeOp = Convert(desc.config.color_attachment_options[i].store_op);
             attachment.stencilLoadOp = vk::AttachmentLoadOp::eDontCare;
             attachment.stencilStoreOp = vk::AttachmentStoreOp::eDontCare;
             attachment.initialLayout = vk::ImageLayout::eUndefined;
@@ -1997,8 +1974,8 @@ class VulkanRenderer : public IRenderer {
             vk::AttachmentDescription attachment;
             attachment.format = Convert(desc.depth_format);
             attachment.samples = vk::SampleCountFlagBits::e1;
-            attachment.loadOp = Convert(desc.depth_attachment_options.load_op);
-            attachment.storeOp = Convert(desc.depth_attachment_options.store_op);
+            attachment.loadOp = Convert(desc.config.depth_attachment_options.load_op);
+            attachment.storeOp = Convert(desc.config.depth_attachment_options.store_op);
             attachment.stencilLoadOp = vk::AttachmentLoadOp::eDontCare;
             attachment.stencilStoreOp = vk::AttachmentStoreOp::eDontCare;
             attachment.initialLayout = vk::ImageLayout::eUndefined;
@@ -2894,25 +2871,25 @@ class VulkanRenderer : public IRenderer {
 
         XXH64_update(hash_state_, &desc.depth_format, sizeof(desc.depth_format));
 
-        for (const auto& clear_color : desc.clear_colors) {
+        for (const auto& clear_color : desc.config.clear_colors) {
             XXH64_update(hash_state_, clear_color.data(), clear_color.size() * sizeof(float));
         }
 
-        XXH64_update(hash_state_, &desc.clear_depth, sizeof(desc.clear_depth));
-        XXH64_update(hash_state_, &desc.clear_depth_value, sizeof(desc.clear_depth_value));
-        XXH64_update(hash_state_, &desc.clear_stencil_value, sizeof(desc.clear_stencil_value));
+        XXH64_update(hash_state_, &desc.config.clear_depth, sizeof(desc.config.clear_depth));
+        XXH64_update(hash_state_, &desc.config.clear_depth_value, sizeof(desc.config.clear_depth_value));
+        XXH64_update(hash_state_, &desc.config.clear_stencil_value, sizeof(desc.config.clear_stencil_value));
 
-        for (const auto& color_op : desc.color_attachment_options) {
+        for (const auto& color_op : desc.config.color_attachment_options) {
             XXH64_update(hash_state_, &color_op.load_op, sizeof(color_op.load_op));
             XXH64_update(hash_state_, &color_op.store_op, sizeof(color_op.store_op));
         }
 
-        XXH64_update(hash_state_, &desc.depth_attachment_options.load_op,
-                     sizeof(desc.depth_attachment_options.load_op));
-        XXH64_update(hash_state_, &desc.depth_attachment_options.store_op,
-                     sizeof(desc.depth_attachment_options.store_op));
+        XXH64_update(hash_state_, &desc.config.depth_attachment_options.load_op,
+                     sizeof(desc.config.depth_attachment_options.load_op));
+        XXH64_update(hash_state_, &desc.config.depth_attachment_options.store_op,
+                     sizeof(desc.config.depth_attachment_options.store_op));
 
-        for (const auto& subpass : desc.subpasses) {
+        for (const auto& subpass : desc.config.subpasses) {
             for (const auto& color_attachment : subpass.color_attachments) {
                 XXH64_update(hash_state_, &color_attachment.attachment, sizeof(color_attachment.attachment));
             }
