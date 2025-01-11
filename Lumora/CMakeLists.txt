@@ -42,3 +42,16 @@ target_link_libraries(Lumora PRIVATE
     spirv-cross-glsl
     spirv-cross-reflect
     )
+
+
+# DLL 런타임 경로 설정
+set_target_properties(Lumora PROPERTIES
+RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
+)
+
+# 빌드 출력 디렉토리 설정
+set_target_properties(Lumora PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
+    LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib
+    ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib
+)

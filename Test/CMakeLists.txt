@@ -16,3 +16,8 @@ target_link_libraries(Test
     PRIVATE
     Lumora
 )
+
+# 빌드 출력 디렉토리 설정
+set_target_properties(Test PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
+)

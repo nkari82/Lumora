@@ -132,6 +132,7 @@ struct VulkanSwapChain : VulkanRef {
     vk::SurfaceFormatKHR chosen_color_format;
     vk::Format chosen_depth_format = vk::Format::eUndefined;
     vk::PresentModeKHR chosen_present_mode;
+    vk::Extent2D chosen_extent;
 
     // Command Pool
     vk::CommandPool command_pool;
@@ -189,7 +190,7 @@ class VulkanRenderer : public IRenderer {
         swapchain_data.chosen_present_mode = ChoosePresentMode(present_modes);
 
         auto capabilities = physical_device_.getSurfaceCapabilitiesKHR(swapchain_data.surface);
-        vk::Extent2D chosen_extent = ChooseExtent(capabilities, desc.width, desc.height);
+        swapchain_data.chosen_extent = ChooseExtent(capabilities, desc.width, desc.height);
 
         if (desc.depth_format != Format::kUndefined)
             swapchain_data.chosen_depth_format = FindDepthFormat(Convert(desc.depth_format));
@@ -205,7 +206,7 @@ class VulkanRenderer : public IRenderer {
         swapchain_info.minImageCount = image_count;
         swapchain_info.imageFormat = swapchain_data.chosen_color_format.format;
         swapchain_info.imageColorSpace = swapchain_data.chosen_color_format.colorSpace;
-        swapchain_info.imageExtent = chosen_extent;
+        swapchain_info.imageExtent = swapchain_data.chosen_extent;
         swapchain_info.imageArrayLayers = 1;
         swapchain_info.imageUsage = vk::ImageUsageFlagBits::eColorAttachment;
 
@@ -952,8 +953,8 @@ class VulkanRenderer : public IRenderer {
                 .type = TextureType::k2D,
                 .format = Convert(sc_data.chosen_depth_format),
                 .usage = TextureUsage::kDepthStencil,
-                .width = sc_data.desc.width,
-                .height = sc_data.desc.height,
+                .width = sc_data.chosen_extent.width,
+                .height = sc_data.chosen_extent.height,
                 .depth = 1,
                 .mip_levels = 1,
                 .array_layers = 1,
@@ -1180,7 +1181,7 @@ class VulkanRenderer : public IRenderer {
 
         // 4) 새 스왑체인 정보
         auto capabilities = physical_device_.getSurfaceCapabilitiesKHR(sc_data.surface);
-        vk::Extent2D new_extent = ChooseExtent(capabilities, new_width, new_height);
+        sc_data.chosen_extent = ChooseExtent(capabilities, new_width, new_height);
 
         // 5) createInfo에 oldSwapchain 설정
         vk::SwapchainCreateInfoKHR sci{};
@@ -1188,7 +1189,7 @@ class VulkanRenderer : public IRenderer {
         sci.minImageCount = std::max<uint32_t>(2u, static_cast<uint32_t>(sc_data.desc.buffer_count));
         sci.imageFormat = sc_data.chosen_color_format.format;
         sci.imageColorSpace = sc_data.chosen_color_format.colorSpace;
-        sci.imageExtent = new_extent;
+        sci.imageExtent = sc_data.chosen_extent;
         sci.imageArrayLayers = 1;
         sci.imageUsage = vk::ImageUsageFlagBits::eColorAttachment;
         sci.presentMode = sc_data.chosen_present_mode;
