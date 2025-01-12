@@ -270,21 +270,10 @@ struct AttachmentOptions {
     AttachmentStoreOp store_op = AttachmentStoreOp::kStore;  // 기본값: 저장
 };
 
-enum class AttachmentAccess {
-    kRead,       // 읽기 전용
-    kWrite,      // 쓰기 전용
-    kReadWrite,  // 읽기/쓰기
-};
-
-struct SubpassAttachment {
-    uint32_t attachment;      // 참조할 렌더 타겟
-    AttachmentAccess access;  // 접근 방식 (#TODO 현재 사용하지 않고 있음.)
-};
-
 struct SubpassDesc {
-    std::vector<SubpassAttachment> color_attachments;   // 컬러 첨부
-    std::optional<SubpassAttachment> depth_attachment;  // Depth 첨부 (optional)
-    std::vector<SubpassAttachment> input_attachments;   // Input 첨부
+    std::vector<uint32_t> color_attachments;   // 컬러 첨부
+    std::optional<uint32_t> depth_attachment;  // Depth 첨부 (optional)
+    std::vector<uint32_t> input_attachments;   // Input 첨부
 };
 
 struct RenderPassConfig {

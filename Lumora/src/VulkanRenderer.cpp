@@ -18,7 +18,7 @@
 #define XXH_STATIC_LINKING_ONLY
 #define XXH_IMPLEMENTATION
 #define VMA_IMPLEMENTATION
-// #define XXH_NAMESPACE
+#define XXH_NAMESPACE lumora
 #include <Lumora/IRenderer.h>
 #include <vk_mem_alloc.h>
 #include <xxhash.h>
@@ -26,6 +26,8 @@
 // SPIRV-Cross 헤더 추가
 #include <spirv_cross/spirv_cross.hpp>
 #include <spirv_cross/spirv_glsl.hpp>
+
+#define VULKAN_DEBUG_VALIDATION
 
 namespace lumora {
 
@@ -932,16 +934,13 @@ class VulkanRenderer : public IRenderer {
         SubpassDesc subpass;
 
         // 컬러 어태치먼트 참조
-        SubpassAttachment colorAttachmentRef;
-        colorAttachmentRef.attachment = 0;                         // 첫 번째 컬러 어태치먼트 인덱스
-        colorAttachmentRef.access = AttachmentAccess::kReadWrite;  // 읽기/쓰기 접근
+        uint32_t colorAttachmentRef = 0;  // 첫 번째 컬러 어태치먼트 인덱스
+
         subpass.color_attachments.push_back(colorAttachmentRef);
 
         // 깊이 어태치먼트 참조
         if (has_depth) {
-            SubpassAttachment depthAttachmentRef;
-            depthAttachmentRef.attachment = 0;                         // 깊이 어태치먼트는 인덱스 0으로 가정
-            depthAttachmentRef.access = AttachmentAccess::kReadWrite;  // 읽기/쓰기 접근
+            uint32_t depthAttachmentRef = 0;  // 깊이 어태치먼트는 인덱스 0으로 가정
             subpass.depth_attachment = depthAttachmentRef;
         }
 
@@ -1463,9 +1462,6 @@ class VulkanRenderer : public IRenderer {
     uint32_t present_queue_family_;   // Present Queue Family Index
     vk::Queue graphics_queue_;        // Graphics Queue
 
-    // Debug messenger
-    vk::DebugUtilsMessengerEXT debug_messenger_;
-
     // VMA Allocator
     VmaAllocator allocator_;
 
@@ -1648,16 +1644,6 @@ class VulkanRenderer : public IRenderer {
 
         instance_.destroySurfaceKHR(main_surface_);
 
-        // Destroy Debug Messenger
-        if (debug_messenger_) {
-            auto func = (PFN_vkDestroyDebugUtilsMessengerEXT)vkGetInstanceProcAddr(static_cast<VkInstance>(instance_),
-                                                                                   "vkDestroyDebugUtilsMessengerEXT");
-            if (func != nullptr) {
-                func(static_cast<VkInstance>(instance_), static_cast<VkDebugUtilsMessengerEXT>(debug_messenger_),
-                     nullptr);
-            }
-        }
-
         // Destroy VMA allocator
         if (allocator_) {
             vmaDestroyAllocator(allocator_);
@@ -1675,13 +1661,6 @@ class VulkanRenderer : public IRenderer {
     }
 
     void CreateInstance(const char* app_name) {
-        // Validation layers
-        const std::vector<const char*> validation_layers = {"VK_LAYER_KHRONOS_validation"};
-
-        if (!CheckValidationLayerSupport()) {
-            throw std::runtime_error("Validation layers requested, but not available!");
-        }
-
         // Application info
         vk::ApplicationInfo app_info{};
         app_info.pApplicationName = app_name;
@@ -1700,26 +1679,31 @@ class VulkanRenderer : public IRenderer {
         create_info.enabledExtensionCount = static_cast<uint32_t>(extensions.size());
         create_info.ppEnabledExtensionNames = extensions.data();
 
-        // Enable validation layers
-        create_info.enabledLayerCount = static_cast<uint32_t>(validation_layers.size());
-        create_info.ppEnabledLayerNames = validation_layers.data();
+        if (CheckValidationLayerSupport()) {
+            // Enable validation layers
+            const std::vector<const char*> validation_layers = {"VK_LAYER_KHRONOS_validation"};
 
-        // Debug messenger create info (optional)
-        vk::DebugUtilsMessengerCreateInfoEXT debug_create_info = {};
-        debug_create_info.messageSeverity = vk::DebugUtilsMessageSeverityFlagBitsEXT::eVerbose |
-                                            vk::DebugUtilsMessageSeverityFlagBitsEXT::eWarning |
-                                            vk::DebugUtilsMessageSeverityFlagBitsEXT::eError;
-        debug_create_info.messageType = vk::DebugUtilsMessageTypeFlagBitsEXT::eGeneral |
-                                        vk::DebugUtilsMessageTypeFlagBitsEXT::eValidation |
-                                        vk::DebugUtilsMessageTypeFlagBitsEXT::ePerformance;
-        debug_create_info.pfnUserCallback =
-            [](VkDebugUtilsMessageSeverityFlagBitsEXT message_severity, VkDebugUtilsMessageTypeFlagsEXT message_type,
-               const VkDebugUtilsMessengerCallbackDataEXT* p_callback_data, void* p_user_data) -> VkBool32 {
-            std::cerr << "Validation Layer: " << p_callback_data->pMessage << std::endl;
-            return VK_FALSE;
-        };
+            create_info.enabledLayerCount = static_cast<uint32_t>(validation_layers.size());
+            create_info.ppEnabledLayerNames = validation_layers.data();
 
-        create_info.pNext = (VkDebugUtilsMessengerCreateInfoEXT*)&debug_create_info;
+            // Debug messenger create info (optional)
+            vk::DebugUtilsMessengerCreateInfoEXT debug_create_info = {};
+            debug_create_info.messageSeverity = vk::DebugUtilsMessageSeverityFlagBitsEXT::eVerbose |
+                                                vk::DebugUtilsMessageSeverityFlagBitsEXT::eWarning |
+                                                vk::DebugUtilsMessageSeverityFlagBitsEXT::eError;
+            debug_create_info.messageType = vk::DebugUtilsMessageTypeFlagBitsEXT::eGeneral |
+                                            vk::DebugUtilsMessageTypeFlagBitsEXT::eValidation |
+                                            vk::DebugUtilsMessageTypeFlagBitsEXT::ePerformance;
+            debug_create_info.pfnUserCallback = [](VkDebugUtilsMessageSeverityFlagBitsEXT message_severity,
+                                                   VkDebugUtilsMessageTypeFlagsEXT message_type,
+                                                   const VkDebugUtilsMessengerCallbackDataEXT* p_callback_data,
+                                                   void* p_user_data) -> VkBool32 {
+                std::cerr << "Validation Layer: " << p_callback_data->pMessage << std::endl;
+                return VK_FALSE;
+            };
+
+            create_info.pNext = (VkDebugUtilsMessengerCreateInfoEXT*)&debug_create_info;
+        }
 
         // Create instance
         try {
@@ -2004,9 +1988,9 @@ class VulkanRenderer : public IRenderer {
             // 컬러 첨부 참조
             std::vector<vk::AttachmentReference> color_refs;
             color_refs.reserve(s.color_attachments.size());
-            for (const auto& ca : s.color_attachments) {
+            for (const auto& attachment : s.color_attachments) {
                 vk::AttachmentReference ref = {};
-                ref.attachment = ca.attachment;
+                ref.attachment = attachment;
                 ref.layout = vk::ImageLayout::eColorAttachmentOptimal;
                 color_refs.push_back(ref);
             }
@@ -2017,9 +2001,9 @@ class VulkanRenderer : public IRenderer {
             // 입력 첨부 참조
             std::vector<vk::AttachmentReference> input_refs;
             input_refs.reserve(s.input_attachments.size());
-            for (const auto& ia : s.input_attachments) {
+            for (const auto& attachment : s.input_attachments) {
                 vk::AttachmentReference ref = {};
-                ref.attachment = ia.attachment;
+                ref.attachment = attachment;
                 ref.layout = vk::ImageLayout::eShaderReadOnlyOptimal;
                 input_refs.push_back(ref);
             }
@@ -2299,6 +2283,7 @@ class VulkanRenderer : public IRenderer {
     }
 
     bool CheckValidationLayerSupport() {
+#if defined(VULKAN_DEBUG_VALIDATION)
         uint32_t layer_count;
         vkEnumerateInstanceLayerProperties(&layer_count, nullptr);
 
@@ -2323,6 +2308,9 @@ class VulkanRenderer : public IRenderer {
         }
 
         return true;
+#else
+        return false;
+#endif
     }
 
     std::vector<const char*> GetRequiredExtensions() {
@@ -2979,7 +2967,7 @@ class VulkanRenderer : public IRenderer {
 
         for (const auto& subpass : config.subpasses) {
             for (const auto& color_attachment : subpass.color_attachments) {
-                XXH64_update(hash_state_, &color_attachment.attachment, sizeof(color_attachment.attachment));
+                XXH64_update(hash_state_, &color_attachment, sizeof(color_attachment));
             }
             if (subpass.depth_attachment.has_value()) {
                 XXH64_update(hash_state_, &subpass.depth_attachment.value(), sizeof(subpass.depth_attachment.value()));
