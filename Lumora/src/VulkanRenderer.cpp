@@ -1165,8 +1165,8 @@ class VulkanRenderer : public IRenderer {
         // 2) 백업: 기존 스왑체인 handle
         vk::SwapchainKHR old_swapchain = sc_data.swapchain;
 
-        // 3) 프레임버퍼 해제 (스왑체인 이미지를 참조하므로) #FIXME RenderPass핸들을 재사용하고 싶은데?
-        ReleaseResource(sc_data.fb_handle);
+        // 3) 백업: 기존 프레임버퍼
+        auto old_fb_handle = sc_data.fb_handle;
 
         // 4) 새 스왑체인 정보
         auto capabilities = physical_device_.getSurfaceCapabilitiesKHR(sc_data.surface);
@@ -1201,6 +1201,9 @@ class VulkanRenderer : public IRenderer {
 
         // 8) 새 스왑체인 이미지 기반 프레임버퍼 생성
         sc_data.fb_handle = CreateFrameBuffer(handle);
+
+        // 9) 구 프레임버퍼 제거.
+        ReleaseResource(old_fb_handle);
     }
 
     void Render(std::function<void()> callback) override { Render(main_swap_chain_, callback); }
