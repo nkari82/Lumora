@@ -1933,8 +1933,8 @@ class VulkanRenderer : public IRenderer {
         }
 
         // 1. 첨부 지점 변환
-        std::vector<vk::AttachmentDescription> vkAttachments;
-        vkAttachments.reserve(color_formats.size() + (depth_format != Format::kUndefined ? 1 : 0));
+        std::vector<vk::AttachmentDescription> attachments;
+        attachments.reserve(color_formats.size() + (depth_format != Format::kUndefined ? 1 : 0));
 
         // 컬러 첨부 지점
         for (size_t i = 0; i < color_formats.size(); ++i) {
@@ -1948,77 +1948,77 @@ class VulkanRenderer : public IRenderer {
             attachment.initialLayout = vk::ImageLayout::eUndefined;
             // 컬러 첨부의 최종 레이아웃을 ePresentSrcKHR로 설정 (예시)
             attachment.finalLayout = vk::ImageLayout::ePresentSrcKHR;
-            vkAttachments.push_back(attachment);
+            attachments.push_back(attachment);
         }
 
         // 깊이 첨부 지점 (옵션)
         bool has_depth = depth_format != Format::kUndefined;
-        size_t depthAttachmentIndex = vkAttachments.size();  // 인덱스
+        size_t depthAttachmentIndex = attachments.size();  // 인덱스
         if (has_depth) {
-            vk::AttachmentDescription depthAttachment = {};
-            depthAttachment.format = Convert(depth_format);
-            depthAttachment.samples = vk::SampleCountFlagBits::e1;  // 예시
-            depthAttachment.loadOp = Convert(config.depth_attachment_options.load_op);
-            depthAttachment.storeOp = Convert(config.depth_attachment_options.store_op);
-            depthAttachment.stencilLoadOp = vk::AttachmentLoadOp::eDontCare;
-            depthAttachment.stencilStoreOp = vk::AttachmentStoreOp::eDontCare;
-            depthAttachment.initialLayout = vk::ImageLayout::eUndefined;
-            depthAttachment.finalLayout = vk::ImageLayout::eDepthStencilAttachmentOptimal;
-            vkAttachments.push_back(depthAttachment);
+            vk::AttachmentDescription depth_attachment = {};
+            depth_attachment.format = Convert(depth_format);
+            depth_attachment.samples = vk::SampleCountFlagBits::e1;  // 예시
+            depth_attachment.loadOp = Convert(config.depth_attachment_options.load_op);
+            depth_attachment.storeOp = Convert(config.depth_attachment_options.store_op);
+            depth_attachment.stencilLoadOp = vk::AttachmentLoadOp::eDontCare;
+            depth_attachment.stencilStoreOp = vk::AttachmentStoreOp::eDontCare;
+            depth_attachment.initialLayout = vk::ImageLayout::eUndefined;
+            depth_attachment.finalLayout = vk::ImageLayout::eDepthStencilAttachmentOptimal;
+            attachments.push_back(depth_attachment);
         }
 
         // 2. 서브패스 변환
-        std::vector<vk::SubpassDescription> vkSubpasses;
-        vkSubpasses.reserve(config.subpasses.size());
+        std::vector<vk::SubpassDescription> subpasses;
+        subpasses.reserve(config.subpasses.size());
 
         // 서브패스의 컬러, 입력, 깊이 첨부 참조를 저장할 임시 벡터
-        std::vector<std::vector<vk::AttachmentReference>> colorAttachmentRefsList;
-        std::vector<std::vector<vk::AttachmentReference>> inputAttachmentRefsList;
-        std::vector<vk::AttachmentReference> depthAttachmentRefs;  // 깊이 첨부 참조 저장
-        for (const auto& subpass : config.subpasses) {
-            vk::SubpassDescription vkSubpass = {};
-            vkSubpass.pipelineBindPoint = vk::PipelineBindPoint::eGraphics;
+        std::vector<std::vector<vk::AttachmentReference>> color_attachment_refs;
+        std::vector<std::vector<vk::AttachmentReference>> input_attachment_refs;
+        std::vector<vk::AttachmentReference> depth_attachment_refs;  // 깊이 첨부 참조 저장
+        for (const auto& s : config.subpasses) {
+            vk::SubpassDescription subpass = {};
+            subpass.pipelineBindPoint = vk::PipelineBindPoint::eGraphics;
 
             // 컬러 첨부 참조
-            std::vector<vk::AttachmentReference> colorRefs;
-            colorRefs.reserve(subpass.color_attachments.size());
-            for (const auto& ca : subpass.color_attachments) {
+            std::vector<vk::AttachmentReference> color_refs;
+            color_refs.reserve(s.color_attachments.size());
+            for (const auto& ca : s.color_attachments) {
                 vk::AttachmentReference ref = {};
                 ref.attachment = ca.attachment;
                 ref.layout = vk::ImageLayout::eColorAttachmentOptimal;
-                colorRefs.push_back(ref);
+                color_refs.push_back(ref);
             }
-            colorAttachmentRefsList.emplace_back(std::move(colorRefs));
-            vkSubpass.colorAttachmentCount = static_cast<uint32_t>(colorAttachmentRefsList.back().size());
-            vkSubpass.pColorAttachments = colorAttachmentRefsList.back().data();
+            color_attachment_refs.emplace_back(std::move(color_refs));
+            subpass.colorAttachmentCount = static_cast<uint32_t>(color_attachment_refs.back().size());
+            subpass.pColorAttachments = color_attachment_refs.back().data();
 
             // 입력 첨부 참조
-            std::vector<vk::AttachmentReference> inputRefs;
-            inputRefs.reserve(subpass.input_attachments.size());
-            for (const auto& ia : subpass.input_attachments) {
+            std::vector<vk::AttachmentReference> input_refs;
+            input_refs.reserve(s.input_attachments.size());
+            for (const auto& ia : s.input_attachments) {
                 vk::AttachmentReference ref = {};
                 ref.attachment = ia.attachment;
                 ref.layout = vk::ImageLayout::eShaderReadOnlyOptimal;
-                inputRefs.push_back(ref);
+                input_refs.push_back(ref);
             }
-            inputAttachmentRefsList.emplace_back(std::move(inputRefs));
-            vkSubpass.inputAttachmentCount = static_cast<uint32_t>(inputAttachmentRefsList.back().size());
-            vkSubpass.pInputAttachments = inputAttachmentRefsList.back().data();
+            input_attachment_refs.emplace_back(std::move(input_refs));
+            subpass.inputAttachmentCount = static_cast<uint32_t>(input_attachment_refs.back().size());
+            subpass.pInputAttachments = input_attachment_refs.back().data();
 
             // 깊이 첨부 참조
-            if (subpass.depth_attachment.has_value()) {
+            if (s.depth_attachment.has_value()) {
                 vk::AttachmentReference ref = {};
                 ref.attachment = depthAttachmentIndex;
                 ref.layout = vk::ImageLayout::eDepthStencilAttachmentOptimal;
-                depthAttachmentRefs.push_back(ref);
-                vkSubpass.pDepthStencilAttachment = &depthAttachmentRefs.back();
+                depth_attachment_refs.push_back(ref);
+                subpass.pDepthStencilAttachment = &depth_attachment_refs.back();
             }
 
-            vkSubpasses.push_back(vkSubpass);
+            subpasses.push_back(subpass);
         }
 
         // 3. 서브패스 의존성 자동 설정
-        std::vector<vk::SubpassDependency> vkDependencies;
+        std::vector<vk::SubpassDependency> dependencies;
 
         if (!config.subpasses.empty()) {
             // 첫 번째 서브패스에 대한 외부 의존성
@@ -2031,7 +2031,7 @@ class VulkanRenderer : public IRenderer {
             externalToFirst.dstAccessMask =
                 vk::AccessFlagBits::eColorAttachmentRead | vk::AccessFlagBits::eColorAttachmentWrite;
             externalToFirst.dependencyFlags = vk::DependencyFlags();
-            vkDependencies.push_back(externalToFirst);
+            dependencies.push_back(externalToFirst);
 
             // 서브패스 간의 의존성 설정
             for (size_t i = 1; i < config.subpasses.size(); ++i) {
@@ -2044,7 +2044,7 @@ class VulkanRenderer : public IRenderer {
                 dep.dstAccessMask =
                     vk::AccessFlagBits::eColorAttachmentRead | vk::AccessFlagBits::eColorAttachmentWrite;
                 dep.dependencyFlags = vk::DependencyFlags();
-                vkDependencies.push_back(dep);
+                dependencies.push_back(dep);
             }
 
             // 마지막 서브패스에 대한 외부 의존성
@@ -2057,21 +2057,21 @@ class VulkanRenderer : public IRenderer {
                 vk::AccessFlagBits::eColorAttachmentRead | vk::AccessFlagBits::eColorAttachmentWrite;
             lastToExternal.dstAccessMask = vk::AccessFlags();  // NONE
             lastToExternal.dependencyFlags = vk::DependencyFlags();
-            vkDependencies.push_back(lastToExternal);
+            dependencies.push_back(lastToExternal);
         }
 
         // 4. RenderPassCreateInfo 설정
         vk::RenderPassCreateInfo renderPassInfo = {};
-        renderPassInfo.attachmentCount = static_cast<uint32_t>(vkAttachments.size());
-        renderPassInfo.pAttachments = vkAttachments.data();
-        renderPassInfo.subpassCount = static_cast<uint32_t>(vkSubpasses.size());
-        renderPassInfo.pSubpasses = vkSubpasses.data();
-        renderPassInfo.dependencyCount = static_cast<uint32_t>(vkDependencies.size());
-        renderPassInfo.pDependencies = vkDependencies.empty() ? nullptr : vkDependencies.data();
+        renderPassInfo.attachmentCount = static_cast<uint32_t>(attachments.size());
+        renderPassInfo.pAttachments = attachments.data();
+        renderPassInfo.subpassCount = static_cast<uint32_t>(subpasses.size());
+        renderPassInfo.pSubpasses = subpasses.data();
+        renderPassInfo.dependencyCount = static_cast<uint32_t>(dependencies.size());
+        renderPassInfo.pDependencies = dependencies.empty() ? nullptr : dependencies.data();
 
         // 5. VkRenderPass 생성
-        vk::RenderPass renderPass;
-        vk::Result result = device_.createRenderPass(&renderPassInfo, nullptr, &renderPass);
+        vk::RenderPass renderpass;
+        vk::Result result = device_.createRenderPass(&renderPassInfo, nullptr, &renderpass);
         if (result != vk::Result::eSuccess) {
             throw std::runtime_error("Failed to create vk::RenderPass!");
         }
@@ -2093,8 +2093,7 @@ class VulkanRenderer : public IRenderer {
             vrender_pass.clear_values.emplace_back(clear_depth);
         }
 
-        vrender_pass.renderpass = renderPass;
-
+        vrender_pass.renderpass = renderpass;
         vrender_pass.ref_count = 1;
         vrender_pass.desc_hash = hash_key;  // Store the hash
 
