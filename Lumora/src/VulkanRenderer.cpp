@@ -95,9 +95,12 @@ struct VulkanPipeline : VulkanRef {
 
 // New Structs for Framebuffer and Render Pass
 struct VulkanFrameBuffer : VulkanRef {
-    FrameBufferDesc desc;                       // To store framebuffer description
+    uint32_t width;
+    uint32_t height;
+    std::vector<TextureHandle> color_textures;
+    TextureHandle depth_texture;
     std::vector<vk::Framebuffer> framebuffers;  // 스왑체인 이미지별 프레임버퍼
-    RenderPassHandle renderpass_handle;
+    RenderPassHandle rp_handle;
 };
 
 struct VulkanRenderPass : VulkanRef {
@@ -830,31 +833,37 @@ class VulkanRenderer : public IRenderer {
         }
 
         // Create or retrieve RenderPass
-        RenderPassHandle renderpass_handle = CreateRenderPassInternal(color_formats, depth_format, desc.config);
+        RenderPassHandle rp_handle = CreateRenderPassInternal(color_formats, depth_format, desc.config);
 
         // Create Framebuffer
         VulkanFrameBuffer vframebuffer;
+
         // Gather image views for attachments
         std::vector<vk::ImageView> attachments;
         for (const auto& color_handle : desc.color_targets) {
-            auto texture_it = textures_.find(color_handle);
-            if (texture_it == textures_.end()) {
+            auto it = textures_.find(color_handle);
+            if (it == textures_.end()) {
                 throw std::runtime_error("Invalid TextureHandle in FrameBufferDesc.color_targets.");
             }
-            attachments.push_back(texture_it->second.image_view);
+            attachments.push_back(it->second.image_view);
+			it->second.ref_count++;
+            vframebuffer.color_textures.emplace_back(color_handle);
         }
 
         if (desc.depth_target.id != 0) {
-            auto depth_it = textures_.find(desc.depth_target);
-            if (depth_it == textures_.end()) {
+            auto it = textures_.find(desc.depth_target);
+            if (it == textures_.end()) {
                 throw std::runtime_error("Invalid TextureHandle in FrameBufferDesc.depth_target.");
             }
-            attachments.push_back(depth_it->second.image_view);
+
+            attachments.push_back(it->second.image_view);
+			it->second.ref_count++;
+            vframebuffer.depth_texture = desc.depth_target;
         }
 
         // Retrieve the RenderPass
-        auto render_pass_it = render_passes_.find(renderpass_handle);
-        if (render_pass_it == render_passes_.end()) {
+        auto render_pass_it = renderpasses_.find(rp_handle);
+        if (render_pass_it == renderpasses_.end()) {
             throw std::runtime_error("RenderPassHandle not found for FrameBufferDesc.");
         }
 
@@ -876,8 +885,10 @@ class VulkanRenderer : public IRenderer {
             throw std::runtime_error(std::string("Failed to create framebuffer: ") + e.what());
         }
 
-        vframebuffer.renderpass_handle = renderpass_handle;
-        vframebuffer.desc = desc;
+        vframebuffer.rp_handle = rp_handle;
+        vframebuffer.width = width;
+        vframebuffer.height = height;
+
         vframebuffer.ref_count = 1;
 
         FrameBufferHandle handle;
@@ -936,11 +947,11 @@ class VulkanRenderer : public IRenderer {
 
         config.subpasses.push_back(subpass);
 
-        RenderPassHandle renderpass_handle = CreateRenderPassInternal(color_formats, depth_format, config);
+        RenderPassHandle rp_handle = CreateRenderPassInternal(color_formats, depth_format, config);
 
         // VulkanFrameBuffer 생성
         VulkanFrameBuffer vframebuffer;
-        vframebuffer.renderpass_handle = renderpass_handle;
+        vframebuffer.rp_handle = rp_handle;
 
         // 깊이 텍스처가 필요한 경우
         TextureHandle depth_handle = TextureHandle{0};
@@ -957,9 +968,8 @@ class VulkanRenderer : public IRenderer {
                 .array_layers = 1,
                 .memory_usage = MemoryUsage::kGpuOnly,  // 필요에 따라 조정
             });
+            vframebuffer.depth_texture = depth_handle;
         }
-
-        auto depth_it = textures_.find(depth_handle);
 
         for (const auto& image : swapchain_images) {
             // CreateView 메소드를 사용하여 이미지 뷰 생성
@@ -987,19 +997,21 @@ class VulkanRenderer : public IRenderer {
             vtexture.image_view = image_view;
             vtexture.creation_type = TextureCreationType::kSwapChain;
 
-            // textures_ 맵에 추가
             textures_.emplace(texture_handle, vtexture);
+            vframebuffer.color_textures.emplace_back(texture_handle);
 
             // Framebuffer 생성 정보 설정
             std::vector<vk::ImageView> attachments = {image_view};
 
-            if (depth_it != textures_.end()) {
-                attachments.emplace_back(depth_it->second.image_view);
+            if (has_depth) {
+                auto depth_it = textures_.find(depth_handle);
+                if (depth_it != textures_.end())
+                    attachments.emplace_back(depth_it->second.image_view);
             }
 
             // FramebufferCreateInfo 설정
             vk::FramebufferCreateInfo framebuffer_info{};
-            framebuffer_info.renderPass = render_passes_.at(renderpass_handle).renderpass;
+            framebuffer_info.renderPass = renderpasses_.at(rp_handle).renderpass;
             framebuffer_info.attachmentCount = static_cast<uint32_t>(attachments.size());
             framebuffer_info.pAttachments = attachments.data();
             framebuffer_info.width = sc_data.chosen_extent.width;
@@ -1014,14 +1026,8 @@ class VulkanRenderer : public IRenderer {
                 throw std::runtime_error(std::string("Failed to create framebuffer: ") + e.what());
             }
 
-            FrameBufferDesc& desc = vframebuffer.desc;
-            desc.width = sc_data.chosen_extent.width;
-            desc.height = sc_data.chosen_extent.height;
-            desc.color_targets.emplace_back(texture_handle);
-            desc.depth_target = texture_handle;
-            desc.config = config;
-
-            // 생성된 Framebuffer를 VulkanFrameBuffer의 벡터에 추가
+            vframebuffer.width = sc_data.chosen_extent.width;
+            vframebuffer.height = sc_data.chosen_extent.height;
             vframebuffer.framebuffers.emplace_back(framebuffer);
         }
 
@@ -1118,17 +1124,17 @@ class VulkanRenderer : public IRenderer {
         }
 
         VulkanFrameBuffer& vframebuffer = fb_it->second;
-        VulkanRenderPass& vrender_pass = render_passes_.at(vframebuffer.renderpass_handle);
-        current_render_pass_handle_ = vframebuffer.renderpass_handle;
+        VulkanRenderPass& vrenderpass = renderpasses_.at(vframebuffer.rp_handle);
+        current_render_pass_handle_ = vframebuffer.rp_handle;
 
         // RenderPass 시작
         vk::RenderPassBeginInfo render_pass_info{};
-        render_pass_info.renderPass = vrender_pass.renderpass;
+        render_pass_info.renderPass = vrenderpass.renderpass;
         render_pass_info.framebuffer = vframebuffer.framebuffers[image_index];
         render_pass_info.renderArea.offset = vk::Offset2D{0, 0};
-        render_pass_info.renderArea.extent = vk::Extent2D{vframebuffer.desc.width, vframebuffer.desc.height};
-        render_pass_info.clearValueCount = static_cast<uint32_t>(vrender_pass.clear_values.size());
-        render_pass_info.pClearValues = vrender_pass.clear_values.data();
+        render_pass_info.renderArea.extent = vk::Extent2D{vframebuffer.width, vframebuffer.height};
+        render_pass_info.clearValueCount = static_cast<uint32_t>(vrenderpass.clear_values.size());
+        render_pass_info.pClearValues = vrenderpass.clear_values.data();
 
         try {
             command_buffer_.beginRenderPass(render_pass_info, vk::SubpassContents::eInline);
@@ -1429,7 +1435,9 @@ class VulkanRenderer : public IRenderer {
         if (it != framebuffers_.end()) {
             if (--it->second.ref_count == 0) {
                 for (auto& framebuffer : it->second.framebuffers) device_.destroyFramebuffer(framebuffer);
-                ReleaseResource(it->second.renderpass_handle);
+                ReleaseResource(it->second.rp_handle);
+                for (auto& h : it->second.color_textures) ReleaseResource(h);
+                ReleaseResource(it->second.depth_texture);
                 framebuffers_.erase(it);
             }
         }
@@ -1468,7 +1476,7 @@ class VulkanRenderer : public IRenderer {
     std::unordered_map<PipelineHandle, VulkanPipeline, HandleHash> pipelines_;
     std::unordered_map<SwapChainHandle, VulkanSwapChain, HandleHash> swapchains_;
     std::unordered_map<FrameBufferHandle, VulkanFrameBuffer, HandleHash> framebuffers_;
-    std::unordered_map<RenderPassHandle, VulkanRenderPass, HandleHash> render_passes_;
+    std::unordered_map<RenderPassHandle, VulkanRenderPass, HandleHash> renderpasses_;
 
     // Descriptor Set Management
     vk::DescriptorPool descriptor_pool_;
@@ -1507,6 +1515,8 @@ class VulkanRenderer : public IRenderer {
     }
 
     void CleanupVulkan() {
+        device_.waitIdle();
+
         bool memory_leak = false;
 
         // Destroy all pipelines
@@ -1575,7 +1585,7 @@ class VulkanRenderer : public IRenderer {
             for (auto& fb : framebuffer.framebuffers) {
                 device_.destroyFramebuffer(fb);
             }
-            ReleaseResource(framebuffer.renderpass_handle);
+            ReleaseResource(framebuffer.rp_handle);
             if (framebuffer.ref_count != 0) {
                 memory_leak = true;
                 std::cerr << "Memory Leak: FrameBuffer ID " << handle.id << " has refCount " << framebuffer.ref_count
@@ -1585,7 +1595,7 @@ class VulkanRenderer : public IRenderer {
         framebuffers_.clear();
 
         // Destroy all render passes
-        for (auto& [handle, render_pass_struct] : render_passes_) {
+        for (auto& [handle, render_pass_struct] : renderpasses_) {
             device_.destroyRenderPass(render_pass_struct.renderpass);
             if (render_pass_struct.ref_count != 0) {
                 memory_leak = true;
@@ -1593,7 +1603,7 @@ class VulkanRenderer : public IRenderer {
                           << render_pass_struct.ref_count << std::endl;
             }
         }
-        render_passes_.clear();
+        renderpasses_.clear();
 
         // Destroy all swapchains and their image views and framebuffers
         for (auto& [handle, sc_data] : swapchains_) {
@@ -1625,6 +1635,14 @@ class VulkanRenderer : public IRenderer {
         // Destroy Descriptor Pool
         if (descriptor_pool_) {
             device_.destroyDescriptorPool(descriptor_pool_);
+        }
+
+        if (descriptor_set_layout_) {
+            device_.destroyDescriptorSetLayout(descriptor_set_layout_);
+        }
+
+        if (pipeline_layout_) {
+            device_.destroyPipelineLayout(pipeline_layout_);
         }
 
         instance_.destroySurfaceKHR(main_surface_);
@@ -1929,8 +1947,8 @@ class VulkanRenderer : public IRenderer {
         RenderPassHandle handle{hash_key};
 
         // Check if render pass already exists
-        auto it = render_passes_.find(handle);
-        if (it != render_passes_.end()) {
+        auto it = renderpasses_.find(handle);
+        if (it != renderpasses_.end()) {
             it->second.ref_count++;
             return it->first;
         }
@@ -2101,7 +2119,7 @@ class VulkanRenderer : public IRenderer {
         vrender_pass.desc_hash = hash_key;  // Store the hash
 
         // Store the render pass
-        render_passes_.emplace(handle, vrender_pass);
+        renderpasses_.emplace(handle, vrender_pass);
 
         return handle;
     }
@@ -2477,11 +2495,11 @@ class VulkanRenderer : public IRenderer {
     }
 
     void ReleaseResource(const RenderPassHandle& handle) {
-        auto it = render_passes_.find(handle);
-        if (it != render_passes_.end()) {
+        auto it = renderpasses_.find(handle);
+        if (it != renderpasses_.end()) {
             if (--it->second.ref_count == 0) {
                 device_.destroyRenderPass(it->second.renderpass);
-                render_passes_.erase(it);
+                renderpasses_.erase(it);
             }
         }
     }
