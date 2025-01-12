@@ -1932,124 +1932,149 @@ class VulkanRenderer : public IRenderer {
             return it->first;
         }
 
-        size_t attachment_count = color_formats.size();
-        bool has_depth = (depth_format != Format::kUndefined);
+        // 1. 첨부 지점 변환
+        std::vector<vk::AttachmentDescription> vkAttachments;
+        vkAttachments.reserve(color_formats.size() + (depth_format != Format::kUndefined ? 1 : 0));
 
-        if (has_depth) {
-            attachment_count += 1;
-        }
-
-        std::vector<vk::AttachmentDescription> attachments;
-        std::vector<vk::AttachmentReference> color_attachment_refs;
-        vk::AttachmentReference depth_attachment_ref{};
-
-        attachments.reserve(attachment_count);
-        color_attachment_refs.reserve(color_formats.size());
-
-        // Setup color attachments
-        for (size_t i = 0; i < color_formats.size(); i++) {
-            vk::AttachmentDescription attachment;
-            vk::AttachmentReference ref;
+        // 컬러 첨부 지점
+        for (size_t i = 0; i < color_formats.size(); ++i) {
+            vk::AttachmentDescription attachment = {};
             attachment.format = Convert(color_formats[i]);
-            attachment.samples = vk::SampleCountFlagBits::e1;
+            attachment.samples = vk::SampleCountFlagBits::e1;  // 예시, 실제 샘플링은 사용자 입력에 따라 다름
             attachment.loadOp = Convert(config.color_attachment_options[i].load_op);
             attachment.storeOp = Convert(config.color_attachment_options[i].store_op);
             attachment.stencilLoadOp = vk::AttachmentLoadOp::eDontCare;
             attachment.stencilStoreOp = vk::AttachmentStoreOp::eDontCare;
             attachment.initialLayout = vk::ImageLayout::eUndefined;
+            // 컬러 첨부의 최종 레이아웃을 ePresentSrcKHR로 설정 (예시)
             attachment.finalLayout = vk::ImageLayout::ePresentSrcKHR;
-
-            ref.attachment = static_cast<uint32_t>(i);
-            ref.layout = vk::ImageLayout::eColorAttachmentOptimal;
-
-            attachments.emplace_back(attachment);
-            color_attachment_refs.emplace_back(ref);
+            vkAttachments.push_back(attachment);
         }
 
-        // Setup depth attachment if present
+        // 깊이 첨부 지점 (옵션)
+        bool has_depth = depth_format != Format::kUndefined;
+        size_t depthAttachmentIndex = vkAttachments.size();  // 인덱스
         if (has_depth) {
-            vk::AttachmentDescription attachment;
-            attachment.format = Convert(depth_format);
-            attachment.samples = vk::SampleCountFlagBits::e1;
-            attachment.loadOp = Convert(config.depth_attachment_options.load_op);
-            attachment.storeOp = Convert(config.depth_attachment_options.store_op);
-            attachment.stencilLoadOp = vk::AttachmentLoadOp::eDontCare;
-            attachment.stencilStoreOp = vk::AttachmentStoreOp::eDontCare;
-            attachment.initialLayout = vk::ImageLayout::eUndefined;
-            attachment.finalLayout = vk::ImageLayout::eDepthStencilAttachmentOptimal;
-
-            depth_attachment_ref.attachment = static_cast<uint32_t>(attachments.size());
-            depth_attachment_ref.layout = vk::ImageLayout::eDepthStencilAttachmentOptimal;
-
-            attachments.emplace_back(attachment);
+            vk::AttachmentDescription depthAttachment = {};
+            depthAttachment.format = Convert(depth_format);
+            depthAttachment.samples = vk::SampleCountFlagBits::e1;  // 예시
+            depthAttachment.loadOp = Convert(config.depth_attachment_options.load_op);
+            depthAttachment.storeOp = Convert(config.depth_attachment_options.store_op);
+            depthAttachment.stencilLoadOp = vk::AttachmentLoadOp::eDontCare;
+            depthAttachment.stencilStoreOp = vk::AttachmentStoreOp::eDontCare;
+            depthAttachment.initialLayout = vk::ImageLayout::eUndefined;
+            depthAttachment.finalLayout = vk::ImageLayout::eDepthStencilAttachmentOptimal;
+            vkAttachments.push_back(depthAttachment);
         }
 
-        // Define subpasses
-#if 0
-        std::vector<vk::SubpassDescription> subpasses;
-        vk::SubpassDescription subpass{};
-        subpass.pipelineBindPoint = vk::PipelineBindPoint::eGraphics;
-        subpass.colorAttachmentCount = static_cast<uint32_t>(color_attachment_refs.size());
-        subpass.pColorAttachments = color_attachment_refs.data();
-        if (has_depth) {
-            subpass.pDepthStencilAttachment = &depth_attachment_ref;
-        } else {
-            subpass.pDepthStencilAttachment = nullptr;
-        }
-        subpasses.emplace_back(subpass);
+        // 2. 서브패스 변환
+        std::vector<vk::SubpassDescription> vkSubpasses;
+        vkSubpasses.reserve(config.subpasses.size());
 
-#else
-        std::vector<std::vector<vk::AttachmentReference>> subpasses_color_attachments;
-        std::vector<vk::AttachmentReference> subpasses_depth_attachments;
-        std::vector<vk::SubpassDescription> subpasses;
-        for (const auto& subpass_desc : config.subpasses) {
-            vk::SubpassDescription subpass{};
-            subpass.pipelineBindPoint = vk::PipelineBindPoint::eGraphics;
+        // 서브패스의 컬러, 입력, 깊이 첨부 참조를 저장할 임시 벡터
+        std::vector<std::vector<vk::AttachmentReference>> colorAttachmentRefsList;
+        std::vector<std::vector<vk::AttachmentReference>> inputAttachmentRefsList;
+        std::vector<vk::AttachmentReference> depthAttachmentRefs;  // 깊이 첨부 참조 저장
+        for (const auto& subpass : config.subpasses) {
+            vk::SubpassDescription vkSubpass = {};
+            vkSubpass.pipelineBindPoint = vk::PipelineBindPoint::eGraphics;
 
-            // Map color attachments for the subpass
-            std::vector<vk::AttachmentReference> subpass_color_refs;
-            for (const auto& color_attachment : subpass_desc.color_attachments) {
-                vk::AttachmentReference ref{};
-                ref.attachment = color_attachment.attachment;
+            // 컬러 첨부 참조
+            std::vector<vk::AttachmentReference> colorRefs;
+            colorRefs.reserve(subpass.color_attachments.size());
+            for (const auto& ca : subpass.color_attachments) {
+                vk::AttachmentReference ref = {};
+                ref.attachment = ca.attachment;
                 ref.layout = vk::ImageLayout::eColorAttachmentOptimal;
-                subpass_color_refs.push_back(ref);
+                colorRefs.push_back(ref);
             }
-            subpasses_color_attachments.emplace_back(std::move(subpass_color_refs));
+            colorAttachmentRefsList.emplace_back(std::move(colorRefs));
+            vkSubpass.colorAttachmentCount = static_cast<uint32_t>(colorAttachmentRefsList.back().size());
+            vkSubpass.pColorAttachments = colorAttachmentRefsList.back().data();
 
-            vk::AttachmentReference depth_ref;
-            depth_ref.attachment = subpass_desc.depth_attachment.attachment;
-            depth_ref.layout = vk::ImageLayout::eDepthStencilAttachmentOptimal;
-            subpasses_depth_attachments.emplace_back(depth_ref);
+            // 입력 첨부 참조
+            std::vector<vk::AttachmentReference> inputRefs;
+            inputRefs.reserve(subpass.input_attachments.size());
+            for (const auto& ia : subpass.input_attachments) {
+                vk::AttachmentReference ref = {};
+                ref.attachment = ia.attachment;
+                ref.layout = vk::ImageLayout::eShaderReadOnlyOptimal;
+                inputRefs.push_back(ref);
+            }
+            inputAttachmentRefsList.emplace_back(std::move(inputRefs));
+            vkSubpass.inputAttachmentCount = static_cast<uint32_t>(inputAttachmentRefsList.back().size());
+            vkSubpass.pInputAttachments = inputAttachmentRefsList.back().data();
 
-            subpass.colorAttachmentCount = static_cast<uint32_t>(subpasses_color_attachments.back().size());
-            subpass.pColorAttachments = subpasses_color_attachments.back().data();
-            subpass.pDepthStencilAttachment = &subpasses_depth_attachments.back();
+            // 깊이 첨부 참조
+            if (subpass.depth_attachment.has_value()) {
+                vk::AttachmentReference ref = {};
+                ref.attachment = depthAttachmentIndex;
+                ref.layout = vk::ImageLayout::eDepthStencilAttachmentOptimal;
+                depthAttachmentRefs.push_back(ref);
+                vkSubpass.pDepthStencilAttachment = &depthAttachmentRefs.back();
+            }
 
-            subpasses.push_back(subpass);
+            vkSubpasses.push_back(vkSubpass);
         }
-#endif
 
-        // Define subpass dependencies (if any)
-        std::vector<vk::SubpassDependency> dependencies;
-        // Example dependency; adjust as needed
-        vk::SubpassDependency dependency{};
-        dependency.srcSubpass = VK_SUBPASS_EXTERNAL;
-        dependency.dstSubpass = 0;
-        dependency.srcStageMask = vk::PipelineStageFlagBits::eColorAttachmentOutput;
-        dependency.srcAccessMask = vk::AccessFlagBits::eNone;
-        dependency.dstStageMask = vk::PipelineStageFlagBits::eColorAttachmentOutput;
-        dependency.dstAccessMask = vk::AccessFlagBits::eColorAttachmentWrite;
+        // 3. 서브패스 의존성 자동 설정
+        std::vector<vk::SubpassDependency> vkDependencies;
 
-        dependencies.push_back(dependency);
+        if (!config.subpasses.empty()) {
+            // 첫 번째 서브패스에 대한 외부 의존성
+            vk::SubpassDependency externalToFirst = {};
+            externalToFirst.srcSubpass = VK_SUBPASS_EXTERNAL;
+            externalToFirst.dstSubpass = 0;
+            externalToFirst.srcStageMask = vk::PipelineStageFlagBits::eBottomOfPipe;
+            externalToFirst.dstStageMask = vk::PipelineStageFlagBits::eColorAttachmentOutput;
+            externalToFirst.srcAccessMask = vk::AccessFlags();  // NONE
+            externalToFirst.dstAccessMask =
+                vk::AccessFlagBits::eColorAttachmentRead | vk::AccessFlagBits::eColorAttachmentWrite;
+            externalToFirst.dependencyFlags = vk::DependencyFlags();
+            vkDependencies.push_back(externalToFirst);
 
-        // Create render pass
-        vk::RenderPassCreateInfo render_pass_info{};
-        render_pass_info.attachmentCount = static_cast<uint32_t>(attachments.size());
-        render_pass_info.pAttachments = attachments.data();
-        render_pass_info.subpassCount = static_cast<uint32_t>(subpasses.size());
-        render_pass_info.pSubpasses = subpasses.data();
-        render_pass_info.dependencyCount = static_cast<uint32_t>(dependencies.size());
-        render_pass_info.pDependencies = dependencies.data();
+            // 서브패스 간의 의존성 설정
+            for (size_t i = 1; i < config.subpasses.size(); ++i) {
+                vk::SubpassDependency dep = {};
+                dep.srcSubpass = static_cast<uint32_t>(i - 1);
+                dep.dstSubpass = static_cast<uint32_t>(i);
+                dep.srcStageMask = vk::PipelineStageFlagBits::eColorAttachmentOutput;
+                dep.dstStageMask = vk::PipelineStageFlagBits::eColorAttachmentOutput;
+                dep.srcAccessMask = vk::AccessFlagBits::eColorAttachmentWrite;
+                dep.dstAccessMask =
+                    vk::AccessFlagBits::eColorAttachmentRead | vk::AccessFlagBits::eColorAttachmentWrite;
+                dep.dependencyFlags = vk::DependencyFlags();
+                vkDependencies.push_back(dep);
+            }
+
+            // 마지막 서브패스에 대한 외부 의존성
+            vk::SubpassDependency lastToExternal = {};
+            lastToExternal.srcSubpass = static_cast<uint32_t>(config.subpasses.size() - 1);
+            lastToExternal.dstSubpass = VK_SUBPASS_EXTERNAL;
+            lastToExternal.srcStageMask = vk::PipelineStageFlagBits::eColorAttachmentOutput;
+            lastToExternal.dstStageMask = vk::PipelineStageFlagBits::eBottomOfPipe;
+            lastToExternal.srcAccessMask =
+                vk::AccessFlagBits::eColorAttachmentRead | vk::AccessFlagBits::eColorAttachmentWrite;
+            lastToExternal.dstAccessMask = vk::AccessFlags();  // NONE
+            lastToExternal.dependencyFlags = vk::DependencyFlags();
+            vkDependencies.push_back(lastToExternal);
+        }
+
+        // 4. RenderPassCreateInfo 설정
+        vk::RenderPassCreateInfo renderPassInfo = {};
+        renderPassInfo.attachmentCount = static_cast<uint32_t>(vkAttachments.size());
+        renderPassInfo.pAttachments = vkAttachments.data();
+        renderPassInfo.subpassCount = static_cast<uint32_t>(vkSubpasses.size());
+        renderPassInfo.pSubpasses = vkSubpasses.data();
+        renderPassInfo.dependencyCount = static_cast<uint32_t>(vkDependencies.size());
+        renderPassInfo.pDependencies = vkDependencies.empty() ? nullptr : vkDependencies.data();
+
+        // 5. VkRenderPass 생성
+        vk::RenderPass renderPass;
+        vk::Result result = device_.createRenderPass(&renderPassInfo, nullptr, &renderPass);
+        if (result != vk::Result::eSuccess) {
+            throw std::runtime_error("Failed to create vk::RenderPass!");
+        }
 
         VulkanRenderPass vrender_pass;
 
@@ -2068,11 +2093,7 @@ class VulkanRenderer : public IRenderer {
             vrender_pass.clear_values.emplace_back(clear_depth);
         }
 
-        try {
-            vrender_pass.renderpass = device_.createRenderPass(render_pass_info);
-        } catch (const std::exception& e) {
-            throw std::runtime_error(std::string("Failed to create render pass: ") + e.what());
-        }
+        vrender_pass.renderpass = renderPass;
 
         vrender_pass.ref_count = 1;
         vrender_pass.desc_hash = hash_key;  // Store the hash
@@ -2939,9 +2960,8 @@ class VulkanRenderer : public IRenderer {
             for (const auto& color_attachment : subpass.color_attachments) {
                 XXH64_update(hash_state_, &color_attachment.attachment, sizeof(color_attachment.attachment));
             }
-            if (subpass.depth_attachment.attachment != 0) {
-                XXH64_update(hash_state_, &subpass.depth_attachment.attachment,
-                             sizeof(subpass.depth_attachment.attachment));
+            if (subpass.depth_attachment.has_value()) {
+                XXH64_update(hash_state_, &subpass.depth_attachment.value(), sizeof(subpass.depth_attachment.value()));
             }
         }
 

@@ -5,6 +5,7 @@
 #include <exception>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <string>
 #include <variant>
 #include <vector>
@@ -277,13 +278,13 @@ enum class AttachmentAccess {
 
 struct SubpassAttachment {
     uint32_t attachment;      // 참조할 렌더 타겟
-    AttachmentAccess access;  // 접근 방식
+    AttachmentAccess access;  // 접근 방식 (#TODO 현재 사용하지 않고 있음.)
 };
 
 struct SubpassDesc {
-    std::vector<SubpassAttachment> color_attachments;  // 컬러 첨부
-    SubpassAttachment depth_attachment;                // Depth 첨부 (optional)
-    std::vector<SubpassAttachment> input_attachments;  // Input 첨부
+    std::vector<SubpassAttachment> color_attachments;   // 컬러 첨부
+    std::optional<SubpassAttachment> depth_attachment;  // Depth 첨부 (optional)
+    std::vector<SubpassAttachment> input_attachments;   // Input 첨부
 };
 
 struct RenderPassConfig {
@@ -293,7 +294,7 @@ struct RenderPassConfig {
     uint32_t clear_stencil_value = 0;                         // 스텐실 클리어 값
     std::vector<AttachmentOptions> color_attachment_options;  // 각 컬러 타겟의 옵션
     AttachmentOptions depth_attachment_options;               // 깊이 타겟의 옵션
-    std::vector<SubpassDesc> subpasses;
+    std::vector<SubpassDesc> subpasses;                       // 서브패스들
 };
 
 struct FrameBufferDesc {
