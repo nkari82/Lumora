@@ -129,7 +129,7 @@ struct VulkanSwapChain : VulkanRef {
     std::vector<vk::Fence> in_flight_fences;
     size_t current_frame;
 
-    FrameBufferHandle framebuffer_handle;
+    FrameBufferHandle fb_handle;
 };
 
 struct DescriptorSet {
@@ -846,7 +846,7 @@ class VulkanRenderer : public IRenderer {
                 throw std::runtime_error("Invalid TextureHandle in FrameBufferDesc.color_targets.");
             }
             attachments.push_back(it->second.image_view);
-			it->second.ref_count++;
+            it->second.ref_count++;
             vframebuffer.color_textures.emplace_back(color_handle);
         }
 
@@ -857,7 +857,7 @@ class VulkanRenderer : public IRenderer {
             }
 
             attachments.push_back(it->second.image_view);
-			it->second.ref_count++;
+            it->second.ref_count++;
             vframebuffer.depth_texture = desc.depth_target;
         }
 
@@ -1034,7 +1034,7 @@ class VulkanRenderer : public IRenderer {
         FrameBufferHandle fb_handle;
         fb_handle.id = GenerateUniqueID();
         framebuffers_.emplace(fb_handle, vframebuffer);
-        sc_data.framebuffer_handle = fb_handle;
+        sc_data.fb_handle = fb_handle;
         return fb_handle;
     }
 
@@ -1165,11 +1165,8 @@ class VulkanRenderer : public IRenderer {
         // 2) 백업: 기존 스왑체인 handle
         vk::SwapchainKHR old_swapchain = sc_data.swapchain;
 
-        // 3) 프레임버퍼 해제 (스왑체인 이미지를 참조하므로)
-        if (sc_data.framebuffer_handle.id != 0) {
-            ReleaseResource(sc_data.framebuffer_handle);
-            sc_data.framebuffer_handle = {};
-        }
+        // 3) 프레임버퍼 해제 (스왑체인 이미지를 참조하므로) #FIXME RenderPass핸들을 재사용하고 싶은데?
+        ReleaseResource(sc_data.fb_handle);
 
         // 4) 새 스왑체인 정보
         auto capabilities = physical_device_.getSurfaceCapabilitiesKHR(sc_data.surface);
@@ -1203,7 +1200,7 @@ class VulkanRenderer : public IRenderer {
         sc_data.current_frame = 0;
 
         // 8) 새 스왑체인 이미지 기반 프레임버퍼 생성
-        sc_data.framebuffer_handle = CreateFrameBuffer(handle);
+        sc_data.fb_handle = CreateFrameBuffer(handle);
     }
 
     void Render(std::function<void()> callback) override { Render(main_swap_chain_, callback); }
@@ -1215,8 +1212,8 @@ class VulkanRenderer : public IRenderer {
         }
 
         VulkanSwapChain& sc_data = it->second;
-        VulkanFrameBuffer& vframebuffer = framebuffers_.at(sc_data.framebuffer_handle);
-        current_fb_handle_ = sc_data.framebuffer_handle;
+        VulkanFrameBuffer& vframebuffer = framebuffers_.at(sc_data.fb_handle);
+        current_fb_handle_ = sc_data.fb_handle;
 
         // Synchronization primitives
         size_t frame = sc_data.current_frame;
@@ -1298,6 +1295,7 @@ class VulkanRenderer : public IRenderer {
             }
         } catch (const std::exception& e) {
             throw std::runtime_error(std::string("Failed to present swapchain image: ") + e.what());
+            return;
         }
 
         // 다음 프레임으로 이동
@@ -1360,8 +1358,8 @@ class VulkanRenderer : public IRenderer {
         }
 
         // frame_buffer 해제
-        if (sc_data.framebuffer_handle.id != 0) {
-            ReleaseResource(sc_data.framebuffer_handle);
+        if (sc_data.fb_handle.id != 0) {
+            ReleaseResource(sc_data.fb_handle);
         }
 
         // surface 해제 여부
