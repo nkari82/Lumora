@@ -1013,7 +1013,7 @@ class VulkanRenderer : public IRenderer {
                 throw std::runtime_error(std::string("Failed to create framebuffer: ") + e.what());
             }
 
-            FrameBufferDesc desc;
+            FrameBufferDesc& desc = vframebuffer.desc;
             desc.width = sc_data.chosen_extent.width;
             desc.height = sc_data.chosen_extent.height;
             desc.color_targets.emplace_back(texture_handle);
