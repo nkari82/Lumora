@@ -139,7 +139,7 @@ class VulkanRenderer : public IRenderer {
    public:
     VulkanRenderer() {}
 
-    ~VulkanRenderer() override { Close(); }
+    ~VulkanRenderer() override {}
 
     void Open(const char* app_name, const SwapChainDesc& desc) override {
         hash_state_ = XXH64_createState();
@@ -155,6 +155,7 @@ class VulkanRenderer : public IRenderer {
 
     void Close() override {
         XXH64_freeState(hash_state_);
+        ReleaseResource(main_swap_chain_);
         CleanupVulkan();
     }
 
@@ -1331,6 +1332,8 @@ class VulkanRenderer : public IRenderer {
         auto it = swapchains_.find(handle);
         if (it == swapchains_.end())
             return;
+
+        device_.waitIdle();
 
         VulkanSwapChain& sc_data = it->second;
 
