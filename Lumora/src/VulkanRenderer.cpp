@@ -91,9 +91,9 @@ struct VulkanShader : VulkanRef {
 };
 
 struct VulkanPipeline : VulkanRef {
-    PipelineDesc desc;  // Store pipeline configuration
     std::unordered_map<uint64_t, vk::Pipeline> pipelines;
     vk::PipelineLayout layout;
+    vk::GraphicsPipelineCreateInfo create_info;
 };
 
 // New Structs for Framebuffer and Render Pass
@@ -592,9 +592,6 @@ class VulkanRenderer : public IRenderer {
     }
 
     PipelineHandle CreatePipeline(const PipelineDesc& desc) override {
-        VulkanPipeline vpipeline;
-        vpipeline.desc = desc;  // Store pipeline description
-
         // Setup shader stages
         std::vector<vk::PipelineShaderStageCreateInfo> shader_stages;
 
@@ -639,7 +636,7 @@ class VulkanRenderer : public IRenderer {
         }
 
         // Create Pipeline Layout based on shader reflection data
-        vpipeline.layout = CreatePipelineLayout(*base_shader);
+        vk::PipelineLayout layout = CreatePipelineLayout(*base_shader);
 
         // Vertex Input Binding Descriptions
         std::vector<vk::VertexInputBindingDescription> binding_descriptions = {
@@ -684,7 +681,7 @@ class VulkanRenderer : public IRenderer {
         rasterizer.depthClampEnable = desc.rasterization.depth_clamp_enable;
         rasterizer.rasterizerDiscardEnable = desc.rasterization.rasterizer_discard_enable;
         rasterizer.polygonMode = Convert(desc.rasterization.polygon_mode);
-        rasterizer.lineWidth = 1.0f;  // Can be adjusted
+        rasterizer.lineWidth = 1.0f;  // Can be adjusted #TODO 안티얼라이징 line을 사용하려면?
         rasterizer.cullMode = Convert(desc.rasterization.cull_mode);
         rasterizer.frontFace = Convert(desc.rasterization.front_face);
         rasterizer.depthBiasEnable = VK_FALSE;
@@ -733,6 +730,8 @@ class VulkanRenderer : public IRenderer {
         // Use the created pipeline_layout
 
         // Graphics Pipeline Creation
+        const auto& renderpass = renderpasses_.begin()->second;
+
         vk::GraphicsPipelineCreateInfo pipeline_info{};
         pipeline_info.stageCount = static_cast<uint32_t>(shader_stages.size());
         pipeline_info.pStages = shader_stages.data();
@@ -743,16 +742,24 @@ class VulkanRenderer : public IRenderer {
         pipeline_info.pMultisampleState = &multisampling;
         pipeline_info.pDepthStencilState = &depth_stencil;
         pipeline_info.pColorBlendState = &color_blending;
-        pipeline_info.layout = vpipeline.layout;
-        // pipeline_info.renderPass = render_pass_;  // Use the appropriate render pass
-        pipeline_info.subpass = 0;
-        pipeline_info.basePipelineHandle = nullptr;
-
+        pipeline_info.layout = layout;
+        pipeline_info.renderPass = renderpass.renderpass;  // Use the appropriate render pass
+        pipeline_info.subpass = desc.pass;
+        pipeline_info.basePipelineHandle = nullptr;  // #TODO basePipelineHandle 이건 뭐지?
+        vk::Pipeline pipeline;
         try {
-            vpipeline.pipelines[0] = device_.createGraphicsPipeline(nullptr, pipeline_info).value;
+            pipeline = device_.createGraphicsPipeline(nullptr, pipeline_info).value;
         } catch (const std::exception& e) {
             throw std::runtime_error(std::string("Failed to create graphics pipeline: ") + e.what());
         }
+
+        // Combine render pass hash and subpass index to create a unique key
+        uint64_t combined_hash = renderpass.desc_hash ^ (static_cast<uint64_t>(desc.pass) << 32);
+
+        VulkanPipeline vpipeline;
+        vpipeline.pipelines[renderpass.desc_hash] = pipeline;
+        vpipeline.create_info = pipeline_info;
+        vpipeline.layout = layout;
 
         // Store the pipeline with a unique handle
         PipelineHandle handle;
@@ -764,9 +771,8 @@ class VulkanRenderer : public IRenderer {
 
     PipelineHandle CreatePipeline(const ComputePipelineDesc& desc) override {
         VulkanPipeline vpipeline;
-        // Note: For compute pipelines, PipelineDesc and VulkanPipeline structs might need to differentiate
-        vpipeline.desc = PipelineDesc();  // Initialize appropriately
 
+        // Note: For compute pipelines, PipelineDesc and VulkanPipeline structs might need to differentiate
         // Create shader stage
         auto compute_shader_it = shaders_.find(desc.compute_shader);
         if (compute_shader_it == shaders_.end()) {
@@ -1038,8 +1044,7 @@ class VulkanRenderer : public IRenderer {
         return fb_handle;
     }
 
-    void BindPipeline(const PipelineHandle& handle, const uint8_t* constants, size_t size,
-                      uint32_t sub_index = 0) override {
+    void BindPipeline(const PipelineHandle& handle, const uint8_t* constants, size_t size) override {
         // Retrieve VulkanPipeline
         auto pipeline_it = pipelines_.find(handle);
         if (pipeline_it == pipelines_.end()) {
@@ -1047,11 +1052,7 @@ class VulkanRenderer : public IRenderer {
         }
 
         VulkanPipeline& vpipeline = pipeline_it->second;
-
-        // 파이프라인 해시 키를 사용하여 특정 서브패스에 대한 파이프라인을 가져옴
-        uint64_t pipeline_key = sub_index;  // 서브패스 인덱스를 키로 사용 (더 복잡한 경우 해시 사용 가능)
-
-        VulkanRenderPass current_render_pass;
+        VulkanRenderPass current_render_pass;  // #FIXME 현재 패스를 가져오자.
         uint64_t render_pass_hash = current_render_pass.desc_hash;
         uint32_t current_pass = current_pass_;  // Current subpass index
 
@@ -1066,27 +1067,17 @@ class VulkanRenderer : public IRenderer {
         } else {
             // Create a new pipeline based on the stored desc
             // 여기서는 기존 파이프라인 정보를 재사용하여 새로운 파이프라인을 생성
-            vk::GraphicsPipelineCreateInfo pipeline_info = {};
-
-            // 셰이더 스테이지 설정
-            pipeline_info.stageCount =
-                static_cast<uint32_t>(vpipeline.desc.vertex_shader.id != 0 ? 2 : 1);  // 간단히 설정
-            pipeline_info.pStages = nullptr;                                          // 이미 CreatePipeline에서 생성됨
-
-            // Vertex Input State
-            // 이미 CreatePipeline에서 설정됨
-
-            // Input Assembly, Viewport, Rasterizer, Multisampling, Depth Stencil, Color Blending 등
-            // 이미 CreatePipeline에서 설정됨
+            vk::GraphicsPipelineCreateInfo pipeline_info{vpipeline.create_info};
 
             // Pipeline Layout 및 Render Pass 설정
-            pipeline_info.layout = vpipeline.layout;
-            pipeline_info.renderPass = render_pass_;
+            pipeline_info.layout = vpipeline.layout;  // #TODO 해지가 되면 안됨.
+            pipeline_info.renderPass = render_pass_;  // #TODO 해지가 되면 안됨.
+            pipeline_info.subpass = current_pass;
 
             // 새로운 파이프라인 생성
             try {
                 vk::Pipeline new_pipeline = device_.createGraphicsPipeline(nullptr, pipeline_info).value;
-                vpipeline.pipelines.emplace(pipeline_key, new_pipeline);
+                vpipeline.pipelines.emplace(combined_hash, new_pipeline);
                 // Bind the new pipeline
                 command_buffer_.bindPipeline(vk::PipelineBindPoint::eGraphics, new_pipeline);
             } catch (const std::exception& e) {

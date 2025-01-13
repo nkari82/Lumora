@@ -247,7 +247,7 @@ struct PipelineDesc {
     DepthStencilState depth_stencil;
     SampleCount sample_count = SampleCount::k1;
     PolygonMode polygon_mode = PolygonMode::kFill;
-    uint32_t subindex = 0;
+    uint32_t pass = 0;
 };
 
 struct ComputePipelineDesc {
@@ -315,8 +315,7 @@ class LUMORA_API IRenderer {
     virtual ShaderHandle CreateShader(const ShaderDesc& desc) = 0;
     virtual PipelineHandle CreatePipeline(const PipelineDesc& desc) = 0;
     virtual PipelineHandle CreatePipeline(const ComputePipelineDesc& desc) = 0;
-    virtual void BindPipeline(const PipelineHandle& handle, const uint8_t* constants, size_t size,
-                              uint32_t sub_index = 0) = 0;
+    virtual void BindPipeline(const PipelineHandle& handle, const uint8_t* constants, size_t size) = 0;
 
     virtual void DispatchCompute(uint32_t group_x, uint32_t group_y, uint32_t group_z) = 0;
 
