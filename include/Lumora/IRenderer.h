@@ -151,8 +151,9 @@ struct SamplerDesc {
 enum class ShaderStage : uint32_t { kVertex = 1 << 0, kFragment = 1 << 1, kCompute = 1 << 2 };
 
 struct ShaderDesc {
-    std::string file_path;
     ShaderStage stage;
+    std::string file_path;
+    std::string entry_point = "main";
 };
 
 enum class CullMode { kNone, kFront, kBack, kFrontAndBack };

@@ -101,8 +101,7 @@
     "*.tesc": "glsl",
     "*.tese": "glsl",
     "*.geom": "glsl",
-    "*.comp": "glsl",
-    "*.glsl": "glsl"
+    "*.comp": "glsl"
   },
   "editor.tabSize": 4,
   "editor.insertSpaces": true,

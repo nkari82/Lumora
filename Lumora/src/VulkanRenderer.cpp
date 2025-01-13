@@ -80,6 +80,7 @@ struct VulkanSampler : VulkanRef {
 struct VulkanShader : VulkanRef {
     vk::ShaderStageFlagBits stage;
     vk::ShaderModule shader_module;
+    std::string entry_point;
 
     // Reflection Data
     std::vector<vk::VertexInputAttributeDescription> vertex_input_attributes;
@@ -459,6 +460,7 @@ class VulkanRenderer : public IRenderer {
         VulkanShader shader;
         shader.shader_module = shader_module;
         shader.stage = Convert(desc.stage);
+        shader.entry_point = desc.entry_point;
 
         // Perform shader reflection using SPIRV-Cross
         try {
@@ -609,7 +611,7 @@ class VulkanRenderer : public IRenderer {
         vk::PipelineShaderStageCreateInfo vert_shader_stage_info{};
         vert_shader_stage_info.stage = vert_shader_it->second.stage;
         vert_shader_stage_info.module = vert_shader_it->second.shader_module;
-        vert_shader_stage_info.pName = "main";
+        vert_shader_stage_info.pName = vert_shader_it->second.entry_point.c_str();
         shader_stages.push_back(vert_shader_stage_info);
 
         // Fragment Shader Stage
@@ -624,7 +626,7 @@ class VulkanRenderer : public IRenderer {
         vk::PipelineShaderStageCreateInfo frag_shader_stage_info{};
         frag_shader_stage_info.stage = frag_shader_it->second.stage;
         frag_shader_stage_info.module = frag_shader_it->second.shader_module;
-        frag_shader_stage_info.pName = "main";
+        frag_shader_stage_info.pName = frag_shader_it->second.entry_point.c_str();
         shader_stages.push_back(frag_shader_stage_info);
 
         // Select a shader to base the pipeline layout on (e.g., vertex shader)
@@ -710,6 +712,20 @@ class VulkanRenderer : public IRenderer {
                                          vk::ColorComponentFlagBits::eB | vk::ColorComponentFlagBits::eA;
             color_blend_attachments.push_back(color_blend);
         }
+
+        if (color_blend_attachments.empty()) {
+            vk::PipelineColorBlendAttachmentState color_blend{};
+            color_blend.colorWriteMask = vk::ColorComponentFlagBits::eR | vk::ColorComponentFlagBits::eG |
+                                         vk::ColorComponentFlagBits::eB | vk::ColorComponentFlagBits::eA;
+            color_blend.blendEnable = VK_FALSE;
+            color_blend_attachments.emplace_back(color_blend);
+        }
+        // 서브 패스당 어태치 카운트가 다르다면 렌더패스를 재생성 하는 방향으로 잡
+        // pipeline_info.subpass, color_blending.attachmentCount
+        // auto attachment_count = renderpass.subpasses[desc.pass];
+        // 렌더패스와 불일치인 컬러블랜드 개수.
+        // 이불일치를 어떻게 해결할 것인가?
+        // 블렌드 개수는 무조건 하나라고 치부할까?
 
         vk::PipelineColorBlendStateCreateInfo color_blending{};
         color_blending.logicOpEnable = VK_FALSE;
