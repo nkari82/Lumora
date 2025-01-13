@@ -44,7 +44,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                         renderer->Resize(width, height);
                     break;
             }
-            break;
+            return 0;
         }
 #endif
 #if 1
@@ -77,6 +77,8 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         default:
             return DefWindowProc(hwnd, msg, wParam, lParam);
     }
+
+    return TRUE;
 }
 
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow) {
@@ -120,7 +122,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow) {
         std::cout << err.what();
     }
 
-    // init shader
+    // init shader (#TODO 리플렉션이 제대로 되나 확인)
     auto vert_handle = renderer->CreateShader({"shaders/spv/test.frag.spv", lumora::ShaderStage::kVertex});
     auto frag_handle = renderer->CreateShader({"shaders/spv/test.vert.spv", lumora::ShaderStage::kFragment});
 
@@ -159,6 +161,8 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow) {
         });
     }
 
+    renderer->ReleaseResource(vert_handle);
+    renderer->ReleaseResource(frag_handle);
     renderer->Close();
 
     return 0;

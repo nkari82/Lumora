@@ -21,8 +21,8 @@ target_include_directories(Lumora
         ../include  # IRenderer.h가 들어있는 경로
     PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src
-		../external/VulkanMemoryAllocator/include 
-		../external/Vulkan-Hpp/include 
+		external/VulkanMemoryAllocator/include 
+		external/Vulkan-Hpp/include 
         ../external/xxHash
         ${Vulkan_INCLUDE_DIRS}
         ${SPIRV_CROSS_ROOT}

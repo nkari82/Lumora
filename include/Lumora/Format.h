@@ -194,7 +194,7 @@ enum class Format {
     kPvrtc22BppSrgbBlockIMG,
     kPvrtc24BppSrgbBlockIMG,
     kR16G16Sfixed5NV,
-    kR16G16S105NV,
+    // deprecate kR16G16S105NV,
     kA1B5G5R5UnormPack16KHR,
     kA8UnormKHR
 };
