@@ -1052,12 +1052,7 @@ class VulkanRenderer : public IRenderer {
         }
 
         VulkanPipeline& vpipeline = pipeline_it->second;
-        VulkanRenderPass current_render_pass;  // #FIXME 현재 패스를 가져오자.
-        uint64_t render_pass_hash = current_render_pass.desc_hash;
-        uint32_t current_pass = current_pass_;  // Current subpass index
-
-        // Combine render pass hash and subpass index to create a unique key
-        uint64_t combined_hash = render_pass_hash ^ (static_cast<uint64_t>(current_pass) << 32);
+        uint64_t combined_hash = current_renderpass_->desc_hash ^ (static_cast<uint64_t>(current_pass_) << 32);
 
         // Check if pipeline with combined_hash exists
         auto existing_pipeline_it = vpipeline.pipelines.find(combined_hash);
@@ -1072,7 +1067,7 @@ class VulkanRenderer : public IRenderer {
             // Pipeline Layout 및 Render Pass 설정
             pipeline_info.layout = vpipeline.layout;  // #TODO 해지가 되면 안됨.
             pipeline_info.renderPass = render_pass_;  // #TODO 해지가 되면 안됨.
-            pipeline_info.subpass = current_pass;
+            pipeline_info.subpass = current_pass_;
 
             // 새로운 파이프라인 생성
             try {
@@ -1115,17 +1110,16 @@ class VulkanRenderer : public IRenderer {
         }
 
         VulkanFrameBuffer& vframebuffer = fb_it->second;
-        VulkanRenderPass& vrenderpass = renderpasses_.at(vframebuffer.rp_handle);
-        current_render_pass_handle_ = vframebuffer.rp_handle;
+        current_renderpass_ = &renderpasses_.at(vframebuffer.rp_handle);
 
         // RenderPass 시작
         vk::RenderPassBeginInfo render_pass_info{};
-        render_pass_info.renderPass = vrenderpass.renderpass;
+        render_pass_info.renderPass = current_renderpass_->renderpass;
         render_pass_info.framebuffer = vframebuffer.framebuffers[image_index];
         render_pass_info.renderArea.offset = vk::Offset2D{0, 0};
         render_pass_info.renderArea.extent = vk::Extent2D{vframebuffer.width, vframebuffer.height};
-        render_pass_info.clearValueCount = static_cast<uint32_t>(vrenderpass.clear_values.size());
-        render_pass_info.pClearValues = vrenderpass.clear_values.data();
+        render_pass_info.clearValueCount = static_cast<uint32_t>(current_renderpass_->clear_values.size());
+        render_pass_info.pClearValues = current_renderpass_->clear_values.data();
 
         try {
             command_buffer_.beginRenderPass(render_pass_info, vk::SubpassContents::eInline);
@@ -1477,7 +1471,7 @@ class VulkanRenderer : public IRenderer {
     vk::Pipeline current_pipeline_;
     vk::PipelineLayout pipeline_layout_;  // #TODO 내부적으로 자동 관리
     uint32_t current_pass_ = 0;
-    RenderPassHandle current_render_pass_handle_;
+    VulkanRenderPass* current_renderpass_{nullptr};
 
     // Internal methods
     void InitVulkan(const char* app_name, const WindowHandle& wh) {
