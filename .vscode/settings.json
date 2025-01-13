@@ -95,7 +95,14 @@
     "*.ipp": "cpp",
     "expected": "cpp",
     "shared_mutex": "cpp",
-    "stack": "cpp"
+    "stack": "cpp",
+    "*.frag": "glsl",
+    "*.vert": "glsl",
+    "*.tesc": "glsl",
+    "*.tese": "glsl",
+    "*.geom": "glsl",
+    "*.comp": "glsl",
+    "*.glsl": "glsl"
   },
   "editor.tabSize": 4,
   "editor.insertSpaces": true,
