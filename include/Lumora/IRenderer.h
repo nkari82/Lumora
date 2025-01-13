@@ -333,8 +333,6 @@ class LUMORA_API IRenderer {
     virtual void Render(const SwapChainHandle& handle, std::function<void()> callback) = 0;
     virtual void DrawIndexed(uint32_t index_count, uint32_t instance_count = 1, uint32_t first_index = 0,
                              int32_t vertex_offset = 0, uint32_t first_instance = 0) = 0;
-    virtual bool ReloadShader(const ShaderHandle& handle, const ShaderDesc& new_desc) = 0;
-
     virtual void ReleaseResource(const SwapChainHandle& handle) = 0;
     virtual void ReleaseResource(const TextureHandle& handle) = 0;
     virtual void ReleaseResource(const SamplerHandle& handle) = 0;

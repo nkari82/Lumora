@@ -123,8 +123,8 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow) {
     }
 
     // init shader (#TODO 리플렉션이 제대로 되나 확인)
-    auto vert_handle = renderer->CreateShader({lumora::ShaderStage::kVertex, "shaders/spv/test.frag.spv"});
-    auto frag_handle = renderer->CreateShader({lumora::ShaderStage::kFragment, "shaders/spv/test.vert.spv"});
+    auto vert_handle = renderer->CreateShader({lumora::ShaderStage::kVertex, "shaders/spv/test2.frag.spv"});
+    auto frag_handle = renderer->CreateShader({lumora::ShaderStage::kFragment, "shaders/spv/test2.vert.spv"});
 
     lumora::PipelineDesc desc;
     desc.vertex_shader = vert_handle;

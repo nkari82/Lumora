@@ -440,15 +440,16 @@ class VulkanRenderer : public IRenderer {
         }
 
         size_t file_size = static_cast<size_t>(file.tellg());
-        std::vector<uint32_t> spirv_binary(file_size / sizeof(uint32_t));
+        std::vector<char> spirv_binary(file_size);
         file.seekg(0);
-        file.read(reinterpret_cast<char*>(spirv_binary.data()), file_size);
+        file.read(spirv_binary.data(), file_size);
         file.close();
 
         // Create Vulkan shader module
         vk::ShaderModuleCreateInfo create_info{};
-        create_info.codeSize = spirv_binary.size() * sizeof(uint32_t);
-        create_info.pCode = spirv_binary.data();
+        create_info.codeSize = spirv_binary.size();
+        create_info.pCode = reinterpret_cast<uint32_t*>(spirv_binary.data());
+        create_info.flags = vk::ShaderModuleCreateFlagBits{};
 
         vk::ShaderModule shader_module;
         try {
@@ -464,7 +465,7 @@ class VulkanRenderer : public IRenderer {
 
         // Perform shader reflection using SPIRV-Cross
         try {
-            spirv_cross::Compiler compiler(spirv_binary);
+            spirv_cross::Compiler compiler((uint32_t*)spirv_binary.data(), spirv_binary.size() >> 2);
             spirv_cross::ShaderResources resources = compiler.get_shader_resources();
 
             // Extract input attributes (only for vertex shaders)
@@ -609,9 +610,9 @@ class VulkanRenderer : public IRenderer {
         }
 
         vk::PipelineShaderStageCreateInfo vert_shader_stage_info{};
-        vert_shader_stage_info.stage = vert_shader_it->second.stage;
+        vert_shader_stage_info.stage = vk::ShaderStageFlagBits::eVertex;  // vert_shader_it->second.stage;
         vert_shader_stage_info.module = vert_shader_it->second.shader_module;
-        vert_shader_stage_info.pName = vert_shader_it->second.entry_point.c_str();
+        vert_shader_stage_info.pName = "main";  // vert_shader_it->second.entry_point.c_str();
         shader_stages.push_back(vert_shader_stage_info);
 
         // Fragment Shader Stage
@@ -624,9 +625,9 @@ class VulkanRenderer : public IRenderer {
         }
 
         vk::PipelineShaderStageCreateInfo frag_shader_stage_info{};
-        frag_shader_stage_info.stage = frag_shader_it->second.stage;
+        frag_shader_stage_info.stage = vk::ShaderStageFlagBits::eFragment;  // frag_shader_it->second.stage;
         frag_shader_stage_info.module = frag_shader_it->second.shader_module;
-        frag_shader_stage_info.pName = frag_shader_it->second.entry_point.c_str();
+        frag_shader_stage_info.pName = "main";  // frag_shader_it->second.entry_point.c_str();
         shader_stages.push_back(frag_shader_stage_info);
 
         // Select a shader to base the pipeline layout on (e.g., vertex shader)
@@ -1309,30 +1310,6 @@ class VulkanRenderer : public IRenderer {
         command_buffer_.drawIndexed(index_count, instance_count, first_index, vertex_offset, first_instance);
     }
 
-    bool ReloadShader(const ShaderHandle& handle, const ShaderDesc& new_desc) override {
-        auto it = shaders_.find(handle);
-        if (it == shaders_.end())
-            return false;
-
-        // Destroy old shader module
-        device_.destroyShaderModule(it->second.shader_module);
-
-        // Load new shader
-        std::ifstream file(new_desc.file_path, std::ios::ate | std::ios::binary);
-        if (!file.is_open()) {
-            return false;
-        }
-        size_t file_size = static_cast<size_t>(file.tellg());
-        std::vector<char> buffer(file_size);
-        file.seekg(0);
-        file.read(buffer.data(), file_size);
-        file.close();
-
-        it->second.shader_module = CreateShaderModule(buffer);
-
-        return true;
-    }
-
     void ReleaseResource(const SwapChainHandle& handle) {
         auto it = swapchains_.find(handle);
         if (it == swapchains_.end())
@@ -1820,6 +1797,7 @@ class VulkanRenderer : public IRenderer {
 
         std::vector<const char*> device_extensions = {
             VK_KHR_SWAPCHAIN_EXTENSION_NAME
+            //, VK_EXT_SHADER_OBJECT_EXTENSION_NAME
             // 필요한 다른 확장들 추가
         };
 
@@ -2485,18 +2463,6 @@ class VulkanRenderer : public IRenderer {
 
         if (!descriptor_writes.empty()) {
             device_.updateDescriptorSets(descriptor_writes, {});
-        }
-    }
-
-    vk::ShaderModule CreateShaderModule(const std::vector<char>& code) {
-        vk::ShaderModuleCreateInfo create_info{};
-        create_info.codeSize = code.size();
-        create_info.pCode = reinterpret_cast<const uint32_t*>(code.data());
-
-        try {
-            return device_.createShaderModule(create_info);
-        } catch (const std::exception& e) {
-            throw std::runtime_error(std::string("Failed to create shader module: ") + e.what());
         }
     }
 
