@@ -745,7 +745,7 @@ class VulkanRenderer : public IRenderer {
         pipeline_info.layout = layout;
         pipeline_info.renderPass = renderpass.renderpass;  // Use the appropriate render pass
         pipeline_info.subpass = desc.pass;
-        pipeline_info.basePipelineHandle = nullptr;  // #TODO basePipelineHandle 이건 뭐지?
+        pipeline_info.basePipelineHandle = nullptr;
         vk::Pipeline pipeline;
         try {
             pipeline = device_.createGraphicsPipeline(nullptr, pipeline_info).value;
@@ -1068,6 +1068,8 @@ class VulkanRenderer : public IRenderer {
             pipeline_info.layout = vpipeline.layout;  // #TODO 해지가 되면 안됨.
             pipeline_info.renderPass = render_pass_;  // #TODO 해지가 되면 안됨.
             pipeline_info.subpass = current_pass_;
+            pipeline_info.flags |= vk::PipelineCreateFlagBits::eDerivative;
+            pipeline_info.basePipelineHandle = vpipeline.pipelines.begin()->second;
 
             // 새로운 파이프라인 생성
             try {
