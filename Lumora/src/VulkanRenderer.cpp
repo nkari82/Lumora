@@ -27,7 +27,8 @@
 #include <spirv_cross/spirv_cross.hpp>
 #include <spirv_cross/spirv_glsl.hpp>
 
-#define VULKAN_DEBUG_VALIDATION
+static bool enable_validation_layers = true;
+const std::vector<const char*> validation_layers = {"VK_LAYER_KHRONOS_validation"};
 
 namespace lumora {
 
@@ -919,7 +920,7 @@ class VulkanRenderer : public IRenderer {
         color_formats.emplace_back(Convert(sc_data.chosen_color_format.format));
         depth_format = Convert(sc_data.chosen_depth_format);
         RenderPassConfig config{};
-        config.clear_colors = {{0.0f, 0.0f, 0.0f, 1.0f}};
+        config.clear_colors = {{0.25f, 0.25f, 0.25f, 1.0f}};
         config.clear_depth = true;
         config.clear_depth_value = 1.0f;
         config.clear_stencil_value = 0;
@@ -1465,6 +1466,8 @@ class VulkanRenderer : public IRenderer {
     // VMA Allocator
     VmaAllocator allocator_;
 
+    vk::DebugUtilsMessengerEXT debug_messenger_;
+
     // Resource maps using dedicated structs
     std::unordered_map<BufferHandle, VulkanBuffer, HandleHash> buffers_;
     std::unordered_map<TextureHandle, VulkanTexture, HandleHash> textures_;
@@ -1489,6 +1492,8 @@ class VulkanRenderer : public IRenderer {
     void InitVulkan(const char* app_name, const WindowHandle& wh) {
         // Create Vulkan Instance
         CreateInstance(app_name);
+
+        SetupDebugMessenger();
 
         main_surface_ = CreateSurface(wh);
 
@@ -1654,6 +1659,11 @@ class VulkanRenderer : public IRenderer {
             device_.destroy();
         }
 
+        if (enable_validation_layers) {
+            instance_.destroyDebugUtilsMessengerEXT(debug_messenger_, nullptr,
+                                                    vk::DispatchLoaderDynamic(instance_, vkGetInstanceProcAddr));
+        }
+
         // Destroy Vulkan instance
         if (instance_) {
             instance_.destroy();
@@ -1661,6 +1671,10 @@ class VulkanRenderer : public IRenderer {
     }
 
     void CreateInstance(const char* app_name) {
+        if (enable_validation_layers && !CheckValidationLayerSupport()) {
+            throw std::runtime_error("validation layers requested, but not available!");
+        }
+
         // Application info
         vk::ApplicationInfo app_info{};
         app_info.pApplicationName = app_name;
@@ -1679,30 +1693,17 @@ class VulkanRenderer : public IRenderer {
         create_info.enabledExtensionCount = static_cast<uint32_t>(extensions.size());
         create_info.ppEnabledExtensionNames = extensions.data();
 
-        if (CheckValidationLayerSupport()) {
-            // Enable validation layers
-            const std::vector<const char*> validation_layers = {"VK_LAYER_KHRONOS_validation"};
-
+        // Enable validation layers
+        vk::DebugUtilsMessengerCreateInfoEXT debug_create_info;
+        if (enable_validation_layers) {
             create_info.enabledLayerCount = static_cast<uint32_t>(validation_layers.size());
             create_info.ppEnabledLayerNames = validation_layers.data();
 
-            // Debug messenger create info (optional)
-            vk::DebugUtilsMessengerCreateInfoEXT debug_create_info = {};
-            debug_create_info.messageSeverity = vk::DebugUtilsMessageSeverityFlagBitsEXT::eVerbose |
-                                                vk::DebugUtilsMessageSeverityFlagBitsEXT::eWarning |
-                                                vk::DebugUtilsMessageSeverityFlagBitsEXT::eError;
-            debug_create_info.messageType = vk::DebugUtilsMessageTypeFlagBitsEXT::eGeneral |
-                                            vk::DebugUtilsMessageTypeFlagBitsEXT::eValidation |
-                                            vk::DebugUtilsMessageTypeFlagBitsEXT::ePerformance;
-            debug_create_info.pfnUserCallback = [](VkDebugUtilsMessageSeverityFlagBitsEXT message_severity,
-                                                   VkDebugUtilsMessageTypeFlagsEXT message_type,
-                                                   const VkDebugUtilsMessengerCallbackDataEXT* p_callback_data,
-                                                   void* p_user_data) -> VkBool32 {
-                std::cerr << "Validation Layer: " << p_callback_data->pMessage << std::endl;
-                return VK_FALSE;
-            };
-
-            create_info.pNext = (VkDebugUtilsMessengerCreateInfoEXT*)&debug_create_info;
+            PopulateDebugMessengerCreateInfo(debug_create_info);
+            create_info.pNext = &debug_create_info;
+        } else {
+            create_info.enabledLayerCount = 0;
+            create_info.pNext = nullptr;
         }
 
         // Create instance
@@ -1711,6 +1712,32 @@ class VulkanRenderer : public IRenderer {
         } catch (const std::exception& e) {
             throw std::runtime_error(std::string("Failed to create Vulkan instance: ") + e.what());
         }
+    }
+
+    void PopulateDebugMessengerCreateInfo(vk::DebugUtilsMessengerCreateInfoEXT& createInfo) {
+        createInfo.messageSeverity = vk::DebugUtilsMessageSeverityFlagBitsEXT::eVerbose |
+                                     vk::DebugUtilsMessageSeverityFlagBitsEXT::eWarning |
+                                     vk::DebugUtilsMessageSeverityFlagBitsEXT::eError;
+        createInfo.messageType = vk::DebugUtilsMessageTypeFlagBitsEXT::eGeneral |
+                                 vk::DebugUtilsMessageTypeFlagBitsEXT::eValidation |
+                                 vk::DebugUtilsMessageTypeFlagBitsEXT::ePerformance;
+        createInfo.pfnUserCallback =
+            [](VkDebugUtilsMessageSeverityFlagBitsEXT message_severity, VkDebugUtilsMessageTypeFlagsEXT message_type,
+               const VkDebugUtilsMessengerCallbackDataEXT* p_callback_data, void* p_user_data) -> VkBool32 {
+            std::cerr << "Validation Layer: " << p_callback_data->pMessage << std::endl;
+            return VK_FALSE;
+        };
+    }
+
+    void SetupDebugMessenger() {
+        if (!enable_validation_layers)
+            return;
+
+        vk::DebugUtilsMessengerCreateInfoEXT create_info{};
+        PopulateDebugMessengerCreateInfo(create_info);
+
+        debug_messenger_ = instance_.createDebugUtilsMessengerEXT(
+            create_info, nullptr, vk::DispatchLoaderDynamic(instance_, vkGetInstanceProcAddr));
     }
 
     struct QueueFamilyIndices {
@@ -2028,16 +2055,15 @@ class VulkanRenderer : public IRenderer {
 
         if (!config.subpasses.empty()) {
             // 첫 번째 서브패스에 대한 외부 의존성
-            vk::SubpassDependency externalToFirst = {};
-            externalToFirst.srcSubpass = VK_SUBPASS_EXTERNAL;
-            externalToFirst.dstSubpass = 0;
-            externalToFirst.srcStageMask = vk::PipelineStageFlagBits::eBottomOfPipe;
-            externalToFirst.dstStageMask = vk::PipelineStageFlagBits::eColorAttachmentOutput;
-            externalToFirst.srcAccessMask = vk::AccessFlags();  // NONE
-            externalToFirst.dstAccessMask =
-                vk::AccessFlagBits::eColorAttachmentRead | vk::AccessFlagBits::eColorAttachmentWrite;
-            externalToFirst.dependencyFlags = vk::DependencyFlags();
-            dependencies.push_back(externalToFirst);
+            vk::SubpassDependency first = {};
+            first.srcSubpass = VK_SUBPASS_EXTERNAL;
+            first.dstSubpass = 0;
+            first.srcStageMask = vk::PipelineStageFlagBits::eBottomOfPipe;
+            first.dstStageMask = vk::PipelineStageFlagBits::eColorAttachmentOutput;
+            first.srcAccessMask = vk::AccessFlags();  // NONE
+            first.dstAccessMask = vk::AccessFlagBits::eColorAttachmentRead | vk::AccessFlagBits::eColorAttachmentWrite;
+            first.dependencyFlags = vk::DependencyFlags();
+            dependencies.push_back(first);
 
             // 서브패스 간의 의존성 설정
             for (size_t i = 1; i < config.subpasses.size(); ++i) {
@@ -2054,16 +2080,15 @@ class VulkanRenderer : public IRenderer {
             }
 
             // 마지막 서브패스에 대한 외부 의존성
-            vk::SubpassDependency lastToExternal = {};
-            lastToExternal.srcSubpass = static_cast<uint32_t>(config.subpasses.size() - 1);
-            lastToExternal.dstSubpass = VK_SUBPASS_EXTERNAL;
-            lastToExternal.srcStageMask = vk::PipelineStageFlagBits::eColorAttachmentOutput;
-            lastToExternal.dstStageMask = vk::PipelineStageFlagBits::eBottomOfPipe;
-            lastToExternal.srcAccessMask =
-                vk::AccessFlagBits::eColorAttachmentRead | vk::AccessFlagBits::eColorAttachmentWrite;
-            lastToExternal.dstAccessMask = vk::AccessFlags();  // NONE
-            lastToExternal.dependencyFlags = vk::DependencyFlags();
-            dependencies.push_back(lastToExternal);
+            vk::SubpassDependency last = {};
+            last.srcSubpass = static_cast<uint32_t>(config.subpasses.size() - 1);
+            last.dstSubpass = VK_SUBPASS_EXTERNAL;
+            last.srcStageMask = vk::PipelineStageFlagBits::eColorAttachmentOutput;
+            last.dstStageMask = vk::PipelineStageFlagBits::eBottomOfPipe;
+            last.srcAccessMask = vk::AccessFlagBits::eColorAttachmentRead | vk::AccessFlagBits::eColorAttachmentWrite;
+            last.dstAccessMask = vk::AccessFlags();  // NONE
+            last.dependencyFlags = vk::DependencyFlags();
+            dependencies.push_back(last);
         }
 
         // 4. RenderPassCreateInfo 설정
@@ -2283,14 +2308,11 @@ class VulkanRenderer : public IRenderer {
     }
 
     bool CheckValidationLayerSupport() {
-#if defined(VULKAN_DEBUG_VALIDATION)
         uint32_t layer_count;
         vkEnumerateInstanceLayerProperties(&layer_count, nullptr);
 
         std::vector<VkLayerProperties> available_layers(layer_count);
         vkEnumerateInstanceLayerProperties(&layer_count, available_layers.data());
-
-        const std::vector<const char*> validation_layers = {"VK_LAYER_KHRONOS_validation"};
 
         for (const char* layer_name : validation_layers) {
             bool layer_found = false;
@@ -2308,9 +2330,6 @@ class VulkanRenderer : public IRenderer {
         }
 
         return true;
-#else
-        return false;
-#endif
     }
 
     std::vector<const char*> GetRequiredExtensions() {
