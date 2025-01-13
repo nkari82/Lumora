@@ -120,6 +120,10 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow) {
         std::cout << err.what();
     }
 
+    // init shader
+    auto vert_handle = renderer->CreateShader({"shaders/spv/test.frag.spv", lumora::ShaderStage::kVertex});
+    auto frag_handle = renderer->CreateShader({"shaders/spv/test.vert.spv", lumora::ShaderStage::kFragment});
+
     // Main Loop
     MSG msg = {};
     bool running = true;

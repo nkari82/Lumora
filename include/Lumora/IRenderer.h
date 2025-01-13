@@ -3,6 +3,7 @@
 #include <array>
 #include <cstdint>
 #include <exception>
+#include <filesystem>
 #include <functional>
 #include <memory>
 #include <optional>

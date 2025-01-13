@@ -78,7 +78,7 @@ struct VulkanSampler : VulkanRef {
 };
 
 struct VulkanShader : VulkanRef {
-    ShaderDesc desc;  // To store shader metadata
+    vk::ShaderStageFlags stage;
     vk::ShaderModule shader_module;
 
     // Reflection Data
@@ -432,9 +432,6 @@ class VulkanRenderer : public IRenderer {
     }
 
     ShaderHandle CreateShader(const ShaderDesc& desc) override {
-        VulkanShader vshader;
-        vshader.desc = desc;  // Store shader metadata
-
         // Load SPIR-V binary from file
         std::ifstream file(desc.file_path, std::ios::ate | std::ios::binary);
         if (!file.is_open()) {
@@ -452,11 +449,16 @@ class VulkanRenderer : public IRenderer {
         create_info.codeSize = spirv_binary.size() * sizeof(uint32_t);
         create_info.pCode = spirv_binary.data();
 
+        vk::ShaderModule shader_module;
         try {
-            vshader.shader_module = device_.createShaderModule(create_info);
+            shader_module = device_.createShaderModule(create_info);
         } catch (const std::exception& e) {
             throw std::runtime_error(std::string("Failed to create shader module: ") + e.what());
         }
+
+        VulkanShader shader;
+        shader.shader_module = shader_module;
+        shader.stage = Convert(desc.stage);
 
         // Perform shader reflection using SPIRV-Cross
         try {
@@ -480,8 +482,8 @@ class VulkanRenderer : public IRenderer {
                     attr_desc.binding = binding;  // Typically 0 for single binding
                     attr_desc.format = format;
                     attr_desc.offset = offset;
-                    vshader.vertex_input_attributes.push_back(attr_desc);
-                    vshader.vertex_stride += GetFormatSize(format);
+                    shader.vertex_input_attributes.push_back(attr_desc);
+                    shader.vertex_stride += GetFormatSize(format);
                 }
             }
 
@@ -501,7 +503,7 @@ class VulkanRenderer : public IRenderer {
                 layout_binding.stageFlags = stage_flags;
                 layout_binding.pImmutableSamplers = nullptr;  // Optional
 
-                vshader.descriptor_set_layout_bindings.push_back(layout_binding);
+                shader.descriptor_set_layout_bindings.push_back(layout_binding);
             }
 
             for (const auto& resource : resources.sampled_images) {
@@ -519,7 +521,7 @@ class VulkanRenderer : public IRenderer {
                 layout_binding.stageFlags = stage_flags;
                 layout_binding.pImmutableSamplers = nullptr;  // Optional
 
-                vshader.descriptor_set_layout_bindings.push_back(layout_binding);
+                shader.descriptor_set_layout_bindings.push_back(layout_binding);
             }
 
             // Extract storage buffers
@@ -538,7 +540,7 @@ class VulkanRenderer : public IRenderer {
                 layout_binding.stageFlags = stage_flags;
                 layout_binding.pImmutableSamplers = nullptr;  // Optional
 
-                vshader.storage_buffer_bindings.push_back(layout_binding);
+                shader.storage_buffer_bindings.push_back(layout_binding);
             }
 
             // Extract samplers (if separate from sampled images)
@@ -557,7 +559,7 @@ class VulkanRenderer : public IRenderer {
                 layout_binding.stageFlags = stage_flags;
                 layout_binding.pImmutableSamplers = nullptr;  // Optional
 
-                vshader.sampler_bindings.push_back(layout_binding);
+                shader.sampler_bindings.push_back(layout_binding);
             }
 
             // Extract push constants
@@ -575,7 +577,7 @@ class VulkanRenderer : public IRenderer {
                 push_constant_range.offset = offset;
                 push_constant_range.size = size;
 
-                vshader.push_constant_ranges.push_back(push_constant_range);
+                shader.push_constant_ranges.push_back(push_constant_range);
             }
 
             // Additional resource types (e.g., storage buffers, separate samplers) are handled similarly
@@ -586,7 +588,7 @@ class VulkanRenderer : public IRenderer {
         // Create unique ShaderHandle and store the shader
         ShaderHandle handle;
         handle.id = GenerateUniqueID();
-        shaders_.emplace(handle, vshader);
+        shaders_.emplace(handle, shader);
 
         return handle;
     }
@@ -1317,7 +1319,6 @@ class VulkanRenderer : public IRenderer {
         file.close();
 
         it->second.shader_module = CreateShaderModule(buffer);
-        it->second.desc = new_desc;
 
         return true;
     }
@@ -2888,7 +2889,6 @@ class VulkanRenderer : public IRenderer {
                 return vk::SampleCountFlagBits::e2;
             case SampleCount::k4:
                 return vk::SampleCountFlagBits::e4;
-
             case SampleCount::k8:
                 return vk::SampleCountFlagBits::e8;
             case SampleCount::k16:
