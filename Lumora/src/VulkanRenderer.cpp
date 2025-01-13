@@ -78,7 +78,7 @@ struct VulkanSampler : VulkanRef {
 };
 
 struct VulkanShader : VulkanRef {
-    vk::ShaderStageFlags stage;
+    vk::ShaderStageFlagBits stage;
     vk::ShaderModule shader_module;
 
     // Reflection Data
@@ -598,54 +598,47 @@ class VulkanRenderer : public IRenderer {
         std::vector<vk::PipelineShaderStageCreateInfo> shader_stages;
 
         // Vertex Shader Stage
-        if (desc.vertex_shader.id != 0) {
-            auto vert_shader_it = shaders_.find(desc.vertex_shader);
-            if (vert_shader_it == shaders_.end()) {
-                throw std::runtime_error("Invalid VertexShaderHandle provided to CreatePipeline.");
-            }
+        if (desc.vertex_shader.id == 0)
+            return PipelineHandle{0};
 
-            vk::PipelineShaderStageCreateInfo vert_shader_stage_info{};
-            vert_shader_stage_info.stage = vk::ShaderStageFlagBits::eVertex;
-            vert_shader_stage_info.module = vert_shader_it->second.shader_module;
-            vert_shader_stage_info.pName = "main";
-            shader_stages.push_back(vert_shader_stage_info);
+        auto vert_shader_it = shaders_.find(desc.vertex_shader);
+        if (vert_shader_it == shaders_.end()) {
+            throw std::runtime_error("Invalid VertexShaderHandle provided to CreatePipeline.");
         }
+
+        vk::PipelineShaderStageCreateInfo vert_shader_stage_info{};
+        vert_shader_stage_info.stage = vert_shader_it->second.stage;
+        vert_shader_stage_info.module = vert_shader_it->second.shader_module;
+        vert_shader_stage_info.pName = "main";
+        shader_stages.push_back(vert_shader_stage_info);
 
         // Fragment Shader Stage
-        if (desc.fragment_shader.id != 0) {
-            auto frag_shader_it = shaders_.find(desc.fragment_shader);
-            if (frag_shader_it == shaders_.end()) {
-                throw std::runtime_error("Invalid FragmentShaderHandle provided to CreatePipeline.");
-            }
+        if (desc.fragment_shader.id == 0)
+            return PipelineHandle{0};
 
-            vk::PipelineShaderStageCreateInfo frag_shader_stage_info{};
-            frag_shader_stage_info.stage = vk::ShaderStageFlagBits::eFragment;
-            frag_shader_stage_info.module = frag_shader_it->second.shader_module;
-            frag_shader_stage_info.pName = "main";
-            shader_stages.push_back(frag_shader_stage_info);
+        auto frag_shader_it = shaders_.find(desc.fragment_shader);
+        if (frag_shader_it == shaders_.end()) {
+            throw std::runtime_error("Invalid FragmentShaderHandle provided to CreatePipeline.");
         }
+
+        vk::PipelineShaderStageCreateInfo frag_shader_stage_info{};
+        frag_shader_stage_info.stage = frag_shader_it->second.stage;
+        frag_shader_stage_info.module = frag_shader_it->second.shader_module;
+        frag_shader_stage_info.pName = "main";
+        shader_stages.push_back(frag_shader_stage_info);
 
         // Select a shader to base the pipeline layout on (e.g., vertex shader)
-        VulkanShader* base_shader = nullptr;
-        if (desc.vertex_shader.id != 0) {
-            base_shader = &shaders_.at(desc.vertex_shader);
-        } else if (desc.fragment_shader.id != 0) {
-            base_shader = &shaders_.at(desc.fragment_shader);
-        }
-
-        if (!base_shader) {
-            throw std::runtime_error("No shader available to create pipeline layout.");
-        }
+        VulkanShader& base_shader = vert_shader_it->second;
 
         // Create Pipeline Layout based on shader reflection data
-        vk::PipelineLayout layout = CreatePipelineLayout(*base_shader);
+        vk::PipelineLayout layout = CreatePipelineLayout(base_shader);
 
         // Vertex Input Binding Descriptions
         std::vector<vk::VertexInputBindingDescription> binding_descriptions = {
-            vk::VertexInputBindingDescription{0, base_shader->vertex_stride, vk::VertexInputRate::eVertex}};
+            vk::VertexInputBindingDescription{0, base_shader.vertex_stride, vk::VertexInputRate::eVertex}};
 
         // Vertex Input Attribute Descriptions
-        std::vector<vk::VertexInputAttributeDescription> attribute_descriptions = base_shader->vertex_input_attributes;
+        std::vector<vk::VertexInputAttributeDescription> attribute_descriptions = base_shader.vertex_input_attributes;
 
         vk::PipelineVertexInputStateCreateInfo vertex_input_info{};
         vertex_input_info.vertexBindingDescriptionCount = static_cast<uint32_t>(binding_descriptions.size());
@@ -655,10 +648,10 @@ class VulkanRenderer : public IRenderer {
 
         // Input Assembly
         vk::PipelineInputAssemblyStateCreateInfo input_assembly{};
-        input_assembly.topology = vk::PrimitiveTopology::eTriangleList;
+        input_assembly.topology = Convert(desc.topology);
         input_assembly.primitiveRestartEnable = VK_FALSE;
 
-        // Viewport and Scissor
+        // Viewport and Scissor (#TODO 백버퍼 크기에 맞게 자동화 하는 옵션 추가.)
         vk::Viewport viewport{};
         viewport.x = desc.viewport.x;
         viewport.y = desc.viewport.y;
@@ -721,6 +714,7 @@ class VulkanRenderer : public IRenderer {
         vk::PipelineColorBlendStateCreateInfo color_blending{};
         color_blending.logicOpEnable = VK_FALSE;
         color_blending.logicOp = vk::LogicOp::eCopy;
+        // #FIXME RenderPass의 서브패스에서 지정된 colorAttachmentCount와 동일해야 함
         color_blending.attachmentCount = static_cast<uint32_t>(color_blend_attachments.size());
         color_blending.pAttachments = color_blend_attachments.data();
         color_blending.blendConstants[0] = 0.0f;
@@ -2634,8 +2628,9 @@ class VulkanRenderer : public IRenderer {
     vk::BufferUsageFlags Convert(BufferUsage usage);
     vk::AttachmentLoadOp Convert(AttachmentLoadOp op);
     vk::AttachmentStoreOp Convert(AttachmentStoreOp op);
-    vk::ShaderStageFlags Convert(ShaderStage stage);
+    vk::ShaderStageFlagBits Convert(ShaderStage stage);
     vk::SampleCountFlagBits Convert(SampleCount sample);
+    vk::PrimitiveTopology Convert(Topology topology);
     vk::Format Convert(const spirv_cross::SPIRType& type);
 };
 

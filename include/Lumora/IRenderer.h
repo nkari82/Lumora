@@ -161,6 +161,8 @@ enum class FrontFace { kCcw, kCw };
 
 enum class PolygonMode { kFill, kLine, kPoint };
 
+enum class Topology { kPointList, kLineList, kLineStrip, kTriangleList, kTriangleStrip, kTriangleFan };
+
 enum class BlendFactor {
     kZero,
     kOne,
@@ -248,6 +250,7 @@ struct PipelineDesc {
     DepthStencilState depth_stencil;
     SampleCount sample_count = SampleCount::k1;
     PolygonMode polygon_mode = PolygonMode::kFill;
+    Topology topology = Topology::kTriangleList;
     uint32_t pass = 0;
 };
 

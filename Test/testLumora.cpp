@@ -126,6 +126,14 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow) {
     auto vert_handle = renderer->CreateShader({"shaders/spv/test.frag.spv", lumora::ShaderStage::kVertex});
     auto frag_handle = renderer->CreateShader({"shaders/spv/test.vert.spv", lumora::ShaderStage::kFragment});
 
+    lumora::PipelineDesc desc;
+    desc.vertex_shader = vert_handle;
+    desc.fragment_shader = frag_handle;
+    desc.viewport.width = swapDesc.width;
+    desc.viewport.height = swapDesc.height;
+
+    auto pl_handle = renderer->CreatePipeline(desc);
+
     // Main Loop
     MSG msg = {};
     bool running = true;
@@ -163,6 +171,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow) {
 
     renderer->ReleaseResource(vert_handle);
     renderer->ReleaseResource(frag_handle);
+    renderer->ReleaseResource(pl_handle);
     renderer->Close();
 
     return 0;
