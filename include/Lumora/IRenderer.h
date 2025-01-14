@@ -244,15 +244,26 @@ struct PipelineDesc {
     ShaderHandle vertex_shader;
     ShaderHandle fragment_shader;
     VertexLayoutDesc vertex_layout_desc;
+#if 1
+    ViewportDesc viewport;  // 디펄트로 스왑체인 크기
+    ScissorDesc scissor;    // 디펄트로 스왑체인 크기
+    RasterizationState rasterization;
+#endif
+#if 1
+    std::vector<ColorBlendState> color_blends;
+    DepthStencilState depth_stencil;
+#endif
+    SampleCount sample_count = SampleCount::k1;
+    Topology topology = Topology::kTriangleList;
+    uint32_t pass = 0;
+};
+
+struct RenderState {
     ViewportDesc viewport;
     ScissorDesc scissor;
     RasterizationState rasterization;
     std::vector<ColorBlendState> color_blends;
     DepthStencilState depth_stencil;
-    SampleCount sample_count = SampleCount::k1;
-    PolygonMode polygon_mode = PolygonMode::kFill;
-    Topology topology = Topology::kTriangleList;
-    uint32_t pass = 0;
 };
 
 struct ComputePipelineDesc {
@@ -324,7 +335,8 @@ class LUMORA_API IRenderer {
 
     virtual void DispatchCompute(uint32_t group_x, uint32_t group_y, uint32_t group_z) = 0;
 
-    virtual void BeginPass(const FrameBufferHandle& handle = {}) = 0;
+    virtual void BeginPass(const FrameBufferHandle& handle = {}, const std::vector<ColorBlendState>& color_blends = {},
+                           const DepthStencilState& state = {}) = 0;
     virtual void EndPass() = 0;
     virtual void NextPass() = 0;
     virtual void Resize(uint32_t new_width, uint32_t new_height) = 0;

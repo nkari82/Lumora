@@ -110,8 +110,9 @@ struct VulkanFrameBuffer : VulkanRef {
 struct VulkanRenderPass : VulkanRef {
     std::vector<vk::ClearValue> clear_values;
     vk::ClearDepthStencilValue clear_depth = {};
-    vk::RenderPass renderpass;
+    uint32_t attachment_colors = 0;
     uint64_t desc_hash;
+    vk::RenderPass renderpass;
 };
 
 struct VulkanSwapChain : VulkanRef {
@@ -1110,7 +1111,8 @@ class VulkanRenderer : public IRenderer {
         command_buffer_.dispatch(group_x, group_y, group_z);
     }
 
-    void BeginPass(const FrameBufferHandle& handle) override {
+    void BeginPass(const FrameBufferHandle& handle, const std::vector<ColorBlendState>& color_blends,
+                   const DepthStencilState& state) override {
         uint32_t image_index{0};
         // 실제 FB 결정
         FrameBufferHandle actual_fb = handle;
@@ -2084,6 +2086,7 @@ class VulkanRenderer : public IRenderer {
         }
 
         VulkanRenderPass vrender_pass;
+        vrender_pass.attachment_colors = static_cast<uint32_t>(color_formats.size());
 
         // 클리어 값 설정
         std::vector<vk::ClearValue> clear_values;
@@ -2501,34 +2504,27 @@ class VulkanRenderer : public IRenderer {
                       const RenderPassConfig& config) {
         XXH64_reset(hash_state_, 0);
 
-        for (const auto& format : color_formats) {
-            XXH64_update(hash_state_, &format, sizeof(format));
-        }
+        XXH64_update(hash_state_, color_formats.data(),
+                     sizeof(std::remove_cv_t<std::remove_reference_t<decltype(color_formats)>>) * color_formats.size());
 
         XXH64_update(hash_state_, &depth_format, sizeof(depth_format));
-
-        for (const auto& clear_color : config.clear_colors) {
-            XXH64_update(hash_state_, clear_color.data(), clear_color.size() * sizeof(float));
-        }
+        XXH64_update(hash_state_, config.clear_colors.data(),
+                     sizeof(decltype(config.clear_colors)::value_type) * config.clear_colors.size());
 
         XXH64_update(hash_state_, &config.clear_depth, sizeof(config.clear_depth));
         XXH64_update(hash_state_, &config.clear_depth_value, sizeof(config.clear_depth_value));
         XXH64_update(hash_state_, &config.clear_stencil_value, sizeof(config.clear_stencil_value));
 
-        for (const auto& color_op : config.color_attachment_options) {
-            XXH64_update(hash_state_, &color_op.load_op, sizeof(color_op.load_op));
-            XXH64_update(hash_state_, &color_op.store_op, sizeof(color_op.store_op));
-        }
+        XXH64_update(
+            hash_state_, config.color_attachment_options.data(),
+            sizeof(decltype(config.color_attachment_options)::value_type) * config.color_attachment_options.size());
 
-        XXH64_update(hash_state_, &config.depth_attachment_options.load_op,
-                     sizeof(config.depth_attachment_options.load_op));
-        XXH64_update(hash_state_, &config.depth_attachment_options.store_op,
-                     sizeof(config.depth_attachment_options.store_op));
+        XXH64_update(hash_state_, &config.depth_attachment_options, sizeof(config.depth_attachment_options));
 
         for (const auto& subpass : config.subpasses) {
-            for (const auto& color_attachment : subpass.color_attachments) {
-                XXH64_update(hash_state_, &color_attachment, sizeof(color_attachment));
-            }
+            XXH64_update(hash_state_, subpass.color_attachments.data(),
+                         sizeof(decltype(subpass.color_attachments)::value_type) * subpass.color_attachments.size());
+
             if (subpass.depth_attachment.has_value()) {
                 XXH64_update(hash_state_, &subpass.depth_attachment.value(), sizeof(subpass.depth_attachment.value()));
             }
