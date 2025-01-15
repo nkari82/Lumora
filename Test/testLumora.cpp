@@ -129,8 +129,8 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow) {
     lumora::PipelineDesc desc;
     desc.vertex_shader = vert_handle;
     desc.fragment_shader = frag_handle;
-    desc.viewport.width = swapDesc.width;
-    desc.viewport.height = swapDesc.height;
+    // desc.viewport.width = swapDesc.width;
+    // desc.viewport.height = swapDesc.height;
 
     auto pl_handle = renderer->CreatePipeline(desc);
 

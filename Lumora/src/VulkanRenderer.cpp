@@ -95,6 +95,8 @@ struct VulkanPipeline : VulkanRef {
     std::unordered_map<uint64_t, vk::Pipeline> pipelines;
     vk::PipelineLayout layout;
     vk::GraphicsPipelineCreateInfo create_info;
+    RenderState render_state;
+    uint64_t render_state_hash;
 };
 
 // New Structs for Framebuffer and Render Pass
@@ -110,9 +112,9 @@ struct VulkanFrameBuffer : VulkanRef {
 struct VulkanRenderPass : VulkanRef {
     std::vector<vk::ClearValue> clear_values;
     vk::ClearDepthStencilValue clear_depth = {};
-    uint32_t attachment_colors = 0;
-    uint64_t desc_hash;
     vk::RenderPass renderpass;
+    uint32_t attachment_colors = 0;
+    uint64_t cache;
 };
 
 struct VulkanSwapChain : VulkanRef {
@@ -655,93 +657,10 @@ class VulkanRenderer : public IRenderer {
         input_assembly.topology = Convert(desc.topology);
         input_assembly.primitiveRestartEnable = VK_FALSE;
 
-        // Viewport and Scissor (#TODO 백버퍼 크기에 맞게 자동화 하는 옵션 추가.)
-        vk::Viewport viewport{};
-        viewport.x = desc.viewport.x;
-        viewport.y = desc.viewport.y;
-        viewport.width = desc.viewport.width;
-        viewport.height = desc.viewport.height;
-        viewport.minDepth = desc.viewport.min_depth;
-        viewport.maxDepth = desc.viewport.max_depth;
-
-        vk::Rect2D scissor{};
-        scissor.offset =
-            vk::Offset2D{static_cast<int32_t>(desc.scissor.offset_x), static_cast<int32_t>(desc.scissor.offset_y)};
-        scissor.extent = vk::Extent2D{desc.scissor.width, desc.scissor.height};
-
-        vk::PipelineViewportStateCreateInfo viewport_state{};
-        viewport_state.viewportCount = 1;
-        viewport_state.pViewports = &viewport;
-        viewport_state.scissorCount = 1;
-        viewport_state.pScissors = &scissor;
-
-        // Rasterizer Configuration
-        vk::PipelineRasterizationStateCreateInfo rasterizer{};
-        rasterizer.depthClampEnable = desc.rasterization.depth_clamp_enable;
-        rasterizer.rasterizerDiscardEnable = desc.rasterization.rasterizer_discard_enable;
-        rasterizer.polygonMode = Convert(desc.rasterization.polygon_mode);
-        rasterizer.lineWidth = 1.0f;  // Can be adjusted #TODO 안티얼라이징 line을 사용하려면?
-        rasterizer.cullMode = Convert(desc.rasterization.cull_mode);
-        rasterizer.frontFace = Convert(desc.rasterization.front_face);
-        rasterizer.depthBiasEnable = VK_FALSE;
-
         // Multisampling Configuration
         vk::PipelineMultisampleStateCreateInfo multisampling{};
         multisampling.sampleShadingEnable = VK_FALSE;
         multisampling.rasterizationSamples = Convert(desc.sample_count);
-
-        // Depth Stencil Configuration
-        vk::PipelineDepthStencilStateCreateInfo depth_stencil{};
-        depth_stencil.depthTestEnable = desc.depth_stencil.depth_test_enable;
-        depth_stencil.depthWriteEnable = desc.depth_stencil.depth_write_enable;
-        depth_stencil.depthCompareOp = Convert(desc.depth_stencil.depth_compare_op);
-        depth_stencil.depthBoundsTestEnable = VK_FALSE;
-        depth_stencil.stencilTestEnable = desc.depth_stencil.stencil_test_enable;
-        // Additional stencil settings can be configured here
-
-        // Color Blending Configuration
-        std::vector<vk::PipelineColorBlendAttachmentState> color_blend_attachments;
-        for (const auto& blend_state : desc.color_blends) {
-            vk::PipelineColorBlendAttachmentState color_blend{};
-            color_blend.blendEnable = blend_state.blend_enable;
-            color_blend.srcColorBlendFactor = Convert(blend_state.src_color_blend_factor);
-            color_blend.dstColorBlendFactor = Convert(blend_state.dst_color_blend_factor);
-            color_blend.colorBlendOp = Convert(blend_state.color_blend_op);
-            color_blend.srcAlphaBlendFactor = Convert(blend_state.src_alpha_blend_factor);
-            color_blend.dstAlphaBlendFactor = Convert(blend_state.dst_alpha_blend_factor);
-            color_blend.alphaBlendOp = Convert(blend_state.alpha_blend_op);
-            color_blend.colorWriteMask = vk::ColorComponentFlagBits::eR | vk::ColorComponentFlagBits::eG |
-                                         vk::ColorComponentFlagBits::eB | vk::ColorComponentFlagBits::eA;
-            color_blend_attachments.push_back(color_blend);
-        }
-
-        if (color_blend_attachments.empty()) {
-            vk::PipelineColorBlendAttachmentState color_blend{};
-            color_blend.colorWriteMask = vk::ColorComponentFlagBits::eR | vk::ColorComponentFlagBits::eG |
-                                         vk::ColorComponentFlagBits::eB | vk::ColorComponentFlagBits::eA;
-            color_blend.blendEnable = VK_FALSE;
-            color_blend_attachments.emplace_back(color_blend);
-        }
-        // 서브 패스당 어태치 카운트가 다르다면 렌더패스를 재생성 하는 방향으로 잡
-        // pipeline_info.subpass, color_blending.attachmentCount
-        // auto attachment_count = renderpass.subpasses[desc.pass];
-        // 렌더패스와 불일치인 컬러블랜드 개수.
-        // 이불일치를 어떻게 해결할 것인가?
-        // 블렌드 개수는 무조건 하나라고 치부할까?
-
-        vk::PipelineColorBlendStateCreateInfo color_blending{};
-        color_blending.logicOpEnable = VK_FALSE;
-        color_blending.logicOp = vk::LogicOp::eCopy;
-        // #FIXME RenderPass의 서브패스에서 지정된 colorAttachmentCount와 동일해야 함
-        color_blending.attachmentCount = static_cast<uint32_t>(color_blend_attachments.size());
-        color_blending.pAttachments = color_blend_attachments.data();
-        color_blending.blendConstants[0] = 0.0f;
-        color_blending.blendConstants[1] = 0.0f;
-        color_blending.blendConstants[2] = 0.0f;
-        color_blending.blendConstants[3] = 0.0f;
-
-        // Pipeline Layout is already created based on shader reflection data
-        // Use the created pipeline_layout
 
         // Graphics Pipeline Creation
         const auto& renderpass = renderpasses_.begin()->second;
@@ -751,15 +670,23 @@ class VulkanRenderer : public IRenderer {
         pipeline_info.pStages = shader_stages.data();
         pipeline_info.pVertexInputState = &vertex_input_info;
         pipeline_info.pInputAssemblyState = &input_assembly;
-        pipeline_info.pViewportState = &viewport_state;
-        pipeline_info.pRasterizationState = &rasterizer;
         pipeline_info.pMultisampleState = &multisampling;
-        pipeline_info.pDepthStencilState = &depth_stencil;
-        pipeline_info.pColorBlendState = &color_blending;
         pipeline_info.layout = layout;
         pipeline_info.renderPass = renderpass.renderpass;  // Use the appropriate render pass
         pipeline_info.subpass = desc.pass;
         pipeline_info.basePipelineHandle = nullptr;
+
+        const auto& swapchain = swapchains_.begin()->second;
+
+        RenderState render_state{};
+        render_state.viewport.width = swapchain.chosen_extent.width;
+        render_state.viewport.height = swapchain.chosen_extent.height;
+
+        render_state.scissor.width = swapchain.chosen_extent.width;
+        render_state.scissor.height = swapchain.chosen_extent.height;
+
+        FillRenderState(pipeline_info, render_state);
+
         vk::Pipeline pipeline;
         try {
             pipeline = device_.createGraphicsPipeline(nullptr, pipeline_info).value;
@@ -768,10 +695,11 @@ class VulkanRenderer : public IRenderer {
         }
 
         // Combine render pass hash and subpass index to create a unique key
-        uint64_t combined_hash = renderpass.desc_hash ^ (static_cast<uint64_t>(desc.pass) << 32);
+        // #FIXME replace xxHash
+        uint64_t hash = renderpass.cache ^ (static_cast<uint64_t>(desc.pass) << 32);
 
         VulkanPipeline vpipeline;
-        vpipeline.pipelines[renderpass.desc_hash] = pipeline;
+        vpipeline.pipelines[hash] = pipeline;
         vpipeline.create_info = pipeline_info;
         vpipeline.layout = layout;
 
@@ -832,7 +760,16 @@ class VulkanRenderer : public IRenderer {
         return handle;
     }
 
-    // BeginPass시 RenderDesc로 CreateFrameBuffer를 생성하고 CreateRenderPass를 생성한다.
+    void UpdatePipeline(const PipelineHandle& handle, const RenderState& state) override {
+        auto it = pipelines_.find(handle);
+        if (it == pipelines_.end())
+            return;
+
+        VulkanPipeline& pipeline = it->second;
+        pipeline.render_state = state;
+        pipeline.render_state_hash = Hash(state);
+    }
+
     FrameBufferHandle CreateFrameBuffer(const FrameBufferDesc& desc) {
         std::vector<Format> color_formats;
         Format depth_format;
@@ -1060,35 +997,43 @@ class VulkanRenderer : public IRenderer {
 
     void BindPipeline(const PipelineHandle& handle, const uint8_t* constants, size_t size) override {
         // Retrieve VulkanPipeline
-        auto pipeline_it = pipelines_.find(handle);
-        if (pipeline_it == pipelines_.end()) {
+        auto it = pipelines_.find(handle);
+        if (it == pipelines_.end()) {
             throw std::runtime_error("Invalid PipelineHandle provided to BindPipeline.");
         }
 
-        VulkanPipeline& vpipeline = pipeline_it->second;
-        uint64_t combined_hash = current_renderpass_->desc_hash ^ (static_cast<uint64_t>(current_pass_) << 32);
+        VulkanPipeline& pipeline = it->second;
+        XXH64_reset(hash_state_, current_renderpass_->cache);
+        XXH64_update(hash_state_, &current_pass_, sizeof(current_pass_));
+        XXH64_update(hash_state_, &pipeline.render_state_hash, sizeof(pipeline.render_state_hash));
+        uint64_t hash = XXH64_digest(hash_state_);
 
         // Check if pipeline with combined_hash exists
-        auto existing_pipeline_it = vpipeline.pipelines.find(combined_hash);
-        if (existing_pipeline_it != vpipeline.pipelines.end()) {
+        auto existing_pipeline_it = pipeline.pipelines.find(hash);
+        if (existing_pipeline_it != pipeline.pipelines.end()) {
             // Pipeline already exists, bind it
             command_buffer_.bindPipeline(vk::PipelineBindPoint::eGraphics, existing_pipeline_it->second);
         } else {
             // Create a new pipeline based on the stored desc
             // 여기서는 기존 파이프라인 정보를 재사용하여 새로운 파이프라인을 생성
-            vk::GraphicsPipelineCreateInfo pipeline_info{vpipeline.create_info};
+            vk::GraphicsPipelineCreateInfo pipeline_info{pipeline.create_info};
 
             // Pipeline Layout 및 Render Pass 설정
-            pipeline_info.layout = vpipeline.layout;  // #TODO 해지가 되면 안됨.
-            pipeline_info.renderPass = render_pass_;  // #TODO 해지가 되면 안됨.
+            pipeline_info.layout = pipeline.layout;
+            pipeline_info.renderPass =
+                current_renderpass_->renderpass;  // #FIXME 렌더패스 핸들을 파이프라인에 할당한다.
             pipeline_info.subpass = current_pass_;
             pipeline_info.flags |= vk::PipelineCreateFlagBits::eDerivative;
-            pipeline_info.basePipelineHandle = vpipeline.pipelines.begin()->second;
+            pipeline_info.basePipelineHandle = pipeline.pipelines.begin()->second;
+#if 0
+            if(pipeline_info.pColorBlendState)
+                pipeline_info.pColorBlendState->attachmentCount = current_renderpass_->attachment_colors;
+#endif
 
             // 새로운 파이프라인 생성
             try {
                 vk::Pipeline new_pipeline = device_.createGraphicsPipeline(nullptr, pipeline_info).value;
-                vpipeline.pipelines.emplace(combined_hash, new_pipeline);
+                pipeline.pipelines.emplace(hash, new_pipeline);
                 // Bind the new pipeline
                 command_buffer_.bindPipeline(vk::PipelineBindPoint::eGraphics, new_pipeline);
             } catch (const std::exception& e) {
@@ -1100,7 +1045,7 @@ class VulkanRenderer : public IRenderer {
         if (constants && size > 0) {
             // Assuming push constant ranges are defined in pipeline layout
             command_buffer_.pushConstants(
-                vpipeline.layout,
+                pipeline.layout,
                 vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment,  // Adjust as needed
                 0,                                                                      // Offset
                 size, constants);
@@ -1111,8 +1056,7 @@ class VulkanRenderer : public IRenderer {
         command_buffer_.dispatch(group_x, group_y, group_z);
     }
 
-    void BeginPass(const FrameBufferHandle& handle, const std::vector<ColorBlendState>& color_blends,
-                   const DepthStencilState& state) override {
+    void BeginPass(const FrameBufferHandle& handle) override {
         uint32_t image_index{0};
         // 실제 FB 결정
         FrameBufferHandle actual_fb = handle;
@@ -1125,6 +1069,22 @@ class VulkanRenderer : public IRenderer {
         if (fb_it == framebuffers_.end()) {
             throw std::runtime_error("Invalid FrameBufferHandle in BeginPass.");
         }
+
+        // #TODO state에 따라 RenderPass를 다시 만든다.
+        // #TODO state에 따라 파이프라인을 다시 만든다.
+        // 그렇다면 BindPipeline에서 해도 되자나?
+        // pass가 아니라 RenderState를 옵션으로 하고?
+        // 파이프라인과 맞아야될건 어태치먼트 컬러 카운트만 맞으면 되니까?
+
+#if 0
+        struct RenderState {
+            ViewportDesc viewport;
+            ScissorDesc scissor;
+            RasterizationState rasterization;
+            std::vector<ColorBlendState> color_blends;
+            DepthStencilState depth_stencil;
+        };
+#endif
 
         VulkanFrameBuffer& vframebuffer = fb_it->second;
         current_renderpass_ = &renderpasses_.at(vframebuffer.rp_handle);
@@ -1427,7 +1387,6 @@ class VulkanRenderer : public IRenderer {
     vk::SurfaceKHR main_surface_{nullptr};
     vk::PhysicalDevice physical_device_;
     vk::Device device_;
-    vk::RenderPass render_pass_;
     vk::CommandBuffer command_buffer_;  // current command buffer
 
     WindowHandle main_window_handle_;
@@ -1604,11 +1563,6 @@ class VulkanRenderer : public IRenderer {
 
         if (memory_leak) {
             std::cerr << "VulkanRenderer Cleanup: Memory leaks detected." << std::endl;
-        }
-
-        // Destroy Render Pass
-        if (render_pass_) {
-            device_.destroyRenderPass(render_pass_);
         }
 
         // Destroy Descriptor Pool
@@ -1931,10 +1885,10 @@ class VulkanRenderer : public IRenderer {
     RenderPassHandle CreateRenderPassInternal(const std::vector<Format>& color_formats, const Format& depth_format,
                                               const RenderPassConfig& config) {
         // Hash the RenderPassDesc to use as a key
-        uint64_t hash_key = HashDesc(color_formats, depth_format, config);
+        uint64_t hash = Hash(color_formats, depth_format, config);
 
         // Create a unique handle
-        RenderPassHandle handle{hash_key};
+        RenderPassHandle handle{hash};
 
         // Check if render pass already exists
         auto it = renderpasses_.find(handle);
@@ -2085,30 +2039,30 @@ class VulkanRenderer : public IRenderer {
             throw std::runtime_error("Failed to create vk::RenderPass!");
         }
 
-        VulkanRenderPass vrender_pass;
-        vrender_pass.attachment_colors = static_cast<uint32_t>(color_formats.size());
+        VulkanRenderPass vrenderpass;
+        vrenderpass.attachment_colors = static_cast<uint32_t>(color_formats.size());
 
         // 클리어 값 설정
         std::vector<vk::ClearValue> clear_values;
         for (const auto& color : config.clear_colors) {
             vk::ClearColorValue clear_color =
                 vk::ClearColorValue(std::array<float, 4>{color[0], color[1], color[2], color[3]});
-            vrender_pass.clear_values.emplace_back(clear_color);
+            vrenderpass.clear_values.emplace_back(clear_color);
         }
 
         if (has_depth) {
             vk::ClearDepthStencilValue clear_depth = {};
             clear_depth.depth = config.clear_depth_value;
             clear_depth.stencil = config.clear_stencil_value;
-            vrender_pass.clear_values.emplace_back(clear_depth);
+            vrenderpass.clear_values.emplace_back(clear_depth);
         }
 
-        vrender_pass.renderpass = renderpass;
-        vrender_pass.ref_count = 1;
-        vrender_pass.desc_hash = hash_key;  // Store the hash
+        vrenderpass.renderpass = renderpass;
+        vrenderpass.ref_count = 1;
+        vrenderpass.cache = hash;  // Store the hash
 
         // Store the render pass
-        renderpasses_.emplace(handle, vrender_pass);
+        renderpasses_.emplace(handle, vrenderpass);
 
         return handle;
     }
@@ -2500,8 +2454,21 @@ class VulkanRenderer : public IRenderer {
                                    vk::FormatFeatureFlagBits::eDepthStencilAttachment);
     }
 
-    uint64_t HashDesc(const std::vector<Format>& color_formats, const Format depth_format,
-                      const RenderPassConfig& config) {
+    uint64_t Hash(const RenderState& state) {
+        XXH64_reset(hash_state_, 0);
+
+        XXH64_update(hash_state_, &state.viewport, sizeof(state.viewport));
+        XXH64_update(hash_state_, &state.scissor, sizeof(state.scissor));
+        XXH64_update(hash_state_, &state.rasterization, sizeof(state.rasterization));
+        XXH64_update(hash_state_, state.color_blends.data(),
+                     sizeof(decltype(state.color_blends)::value_type) * state.color_blends.size());
+        XXH64_update(hash_state_, &state.depth_stencil, sizeof(state.depth_stencil));
+
+        uint64_t hash = XXH64_digest(hash_state_);
+        return hash;
+    }
+
+    uint64_t Hash(const std::vector<Format>& color_formats, const Format depth_format, const RenderPassConfig& config) {
         XXH64_reset(hash_state_, 0);
 
         XXH64_update(hash_state_, color_formats.data(),
@@ -2577,6 +2544,52 @@ class VulkanRenderer : public IRenderer {
         }
     }
 
+    // #FIXME memory dangling
+    void FillRenderState(vk::GraphicsPipelineCreateInfo& out, const RenderState& state) {
+        auto viewport = Convert(state.viewport);
+        auto scissor = Convert(state.scissor);
+
+        vk::PipelineViewportStateCreateInfo viewport_state{};
+        viewport_state.viewportCount = 1;
+        viewport_state.pViewports = &viewport;
+        viewport_state.scissorCount = 1;
+        viewport_state.pScissors = &scissor;
+
+        // Rasterizer Configuration
+        auto rasterizer = Convert(state.rasterization);
+
+        // Depth Stencil Configuration
+        auto depth_stencil = Convert(state.depth_stencil);
+
+        // Additional stencil settings can be configured here
+
+        // Color Blending Configuration
+        auto color_blend_attachments = Convert(state.color_blends);
+
+        if (color_blend_attachments.empty()) {
+            vk::PipelineColorBlendAttachmentState color_blend{};
+            color_blend.colorWriteMask = vk::ColorComponentFlagBits::eR | vk::ColorComponentFlagBits::eG |
+                                         vk::ColorComponentFlagBits::eB | vk::ColorComponentFlagBits::eA;
+            color_blend.blendEnable = VK_FALSE;
+            color_blend_attachments.emplace_back(color_blend);
+        }
+
+        vk::PipelineColorBlendStateCreateInfo color_blending{};
+        color_blending.logicOpEnable = VK_FALSE;
+        color_blending.logicOp = vk::LogicOp::eCopy;
+        color_blending.attachmentCount = static_cast<uint32_t>(color_blend_attachments.size());
+        color_blending.pAttachments = color_blend_attachments.data();
+        color_blending.blendConstants[0] = 0.0f;
+        color_blending.blendConstants[1] = 0.0f;
+        color_blending.blendConstants[2] = 0.0f;
+        color_blending.blendConstants[3] = 0.0f;
+
+        out.pViewportState = &viewport_state;
+        out.pRasterizationState = &rasterizer;
+        out.pDepthStencilState = &depth_stencil;
+        out.pColorBlendState = &color_blending;
+    }
+
     // Gets the byte size of a given Vulkan Format
     uint32_t GetFormatSize(vk::Format format) {
         switch (format) {
@@ -2609,6 +2622,11 @@ class VulkanRenderer : public IRenderer {
     vk::ShaderStageFlagBits Convert(ShaderStage stage);
     vk::SampleCountFlagBits Convert(SampleCount sample);
     vk::PrimitiveTopology Convert(Topology topology);
+    vk::Viewport Convert(const ViewportDesc& desc);
+    vk::Rect2D Convert(const ScissorDesc& desc);
+    vk::PipelineRasterizationStateCreateInfo Convert(const RasterizationState& state);
+    vk::PipelineDepthStencilStateCreateInfo Convert(const DepthStencilState& state);
+    std::vector<vk::PipelineColorBlendAttachmentState> Convert(const std::vector<ColorBlendState>& state);
     vk::Format Convert(const spirv_cross::SPIRType& type);
 };
 

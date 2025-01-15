@@ -979,6 +979,65 @@ inline vk::PrimitiveTopology VulkanRenderer::Convert(Topology topology) {
     }
 }
 
+inline vk::Viewport VulkanRenderer::Convert(const ViewportDesc& desc) {
+    vk::Viewport viewport{};
+    viewport.x = desc.x;
+    viewport.y = desc.y;
+    viewport.width = desc.width;
+    viewport.height = desc.height;
+    viewport.minDepth = desc.min_depth;
+    viewport.maxDepth = desc.max_depth;
+    return viewport;
+}
+
+inline vk::Rect2D VulkanRenderer::Convert(const ScissorDesc& desc) {
+    vk::Rect2D scissor{};
+    scissor.offset = vk::Offset2D{static_cast<int32_t>(desc.offset_x), static_cast<int32_t>(desc.offset_y)};
+    scissor.extent = vk::Extent2D{desc.width, desc.height};
+    return scissor;
+}
+
+inline vk::PipelineRasterizationStateCreateInfo VulkanRenderer::Convert(const RasterizationState& state) {
+    vk::PipelineRasterizationStateCreateInfo rasterizer{};
+    rasterizer.depthClampEnable = state.depth_clamp_enable;
+    rasterizer.rasterizerDiscardEnable = state.rasterizer_discard_enable;
+    rasterizer.polygonMode = Convert(state.polygon_mode);
+    rasterizer.lineWidth = 1.0f;  // Can be adjusted #TODO 안티얼라이징 line을 사용하려면?
+    rasterizer.cullMode = Convert(state.cull_mode);
+    rasterizer.frontFace = Convert(state.front_face);
+    rasterizer.depthBiasEnable = VK_FALSE;
+    return rasterizer;
+}
+
+inline vk::PipelineDepthStencilStateCreateInfo VulkanRenderer::Convert(const DepthStencilState& state) {
+    vk::PipelineDepthStencilStateCreateInfo depth_stencil{};
+    depth_stencil.depthTestEnable = state.depth_test_enable;
+    depth_stencil.depthWriteEnable = state.depth_write_enable;
+    depth_stencil.depthCompareOp = Convert(state.depth_compare_op);
+    depth_stencil.depthBoundsTestEnable = VK_FALSE;
+    depth_stencil.stencilTestEnable = state.stencil_test_enable;
+    return depth_stencil;
+}
+
+inline std::vector<vk::PipelineColorBlendAttachmentState> VulkanRenderer::Convert(
+    const std::vector<ColorBlendState>& state) {
+    std::vector<vk::PipelineColorBlendAttachmentState> color_blend_attachments;
+    for (const auto& blend_state : state) {
+        vk::PipelineColorBlendAttachmentState color_blend{};
+        color_blend.blendEnable = blend_state.blend_enable;
+        color_blend.srcColorBlendFactor = Convert(blend_state.src_color_blend_factor);
+        color_blend.dstColorBlendFactor = Convert(blend_state.dst_color_blend_factor);
+        color_blend.colorBlendOp = Convert(blend_state.color_blend_op);
+        color_blend.srcAlphaBlendFactor = Convert(blend_state.src_alpha_blend_factor);
+        color_blend.dstAlphaBlendFactor = Convert(blend_state.dst_alpha_blend_factor);
+        color_blend.alphaBlendOp = Convert(blend_state.alpha_blend_op);
+        color_blend.colorWriteMask = vk::ColorComponentFlagBits::eR | vk::ColorComponentFlagBits::eG |
+                                     vk::ColorComponentFlagBits::eB | vk::ColorComponentFlagBits::eA;
+        color_blend_attachments.push_back(color_blend);
+    }
+    return color_blend_attachments;
+}
+
 inline vk::Format VulkanRenderer::Convert(const spirv_cross::SPIRType& type) {
     if (type.basetype == spirv_cross::SPIRType::Float) {
         switch (type.vecsize) {

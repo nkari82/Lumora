@@ -244,12 +244,12 @@ struct PipelineDesc {
     ShaderHandle vertex_shader;
     ShaderHandle fragment_shader;
     VertexLayoutDesc vertex_layout_desc;
-#if 1
+#if 0
     ViewportDesc viewport;  // 디펄트로 스왑체인 크기
     ScissorDesc scissor;    // 디펄트로 스왑체인 크기
     RasterizationState rasterization;
 #endif
-#if 1
+#if 0
     std::vector<ColorBlendState> color_blends;
     DepthStencilState depth_stencil;
 #endif
@@ -331,12 +331,13 @@ class LUMORA_API IRenderer {
     virtual ShaderHandle CreateShader(const ShaderDesc& desc) = 0;
     virtual PipelineHandle CreatePipeline(const PipelineDesc& desc) = 0;
     virtual PipelineHandle CreatePipeline(const ComputePipelineDesc& desc) = 0;
+    virtual void UpdatePipeline(const PipelineHandle& handle,
+                                const RenderState& state) = 0;  // #TODO goood render_state_hash_;
     virtual void BindPipeline(const PipelineHandle& handle, const uint8_t* constants, size_t size) = 0;
 
     virtual void DispatchCompute(uint32_t group_x, uint32_t group_y, uint32_t group_z) = 0;
 
-    virtual void BeginPass(const FrameBufferHandle& handle = {}, const std::vector<ColorBlendState>& color_blends = {},
-                           const DepthStencilState& state = {}) = 0;
+    virtual void BeginPass(const FrameBufferHandle& handle = {}) = 0;
     virtual void EndPass() = 0;
     virtual void NextPass() = 0;
     virtual void Resize(uint32_t new_width, uint32_t new_height) = 0;
