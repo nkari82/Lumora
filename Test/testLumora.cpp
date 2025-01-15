@@ -151,7 +151,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow) {
             break;
 
         // Rendering callback
-        renderer->Render([&]() {
+        renderer->Render([&](uint32_t, uint32_t) {
             // Begin Render Pass
             // lumora::RenderPassDesc passDesc;
             // Setup passDesc as needed

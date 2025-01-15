@@ -676,16 +676,68 @@ class VulkanRenderer : public IRenderer {
         pipeline_info.subpass = desc.pass;
         pipeline_info.basePipelineHandle = nullptr;
 
+        // #FIXME 사라질 것 BindSwapchain으로 교체.
         const auto& swapchain = swapchains_.begin()->second;
 
         RenderState render_state{};
+#if 0        
         render_state.viewport.width = swapchain.chosen_extent.width;
         render_state.viewport.height = swapchain.chosen_extent.height;
 
         render_state.scissor.width = swapchain.chosen_extent.width;
         render_state.scissor.height = swapchain.chosen_extent.height;
 
-        FillRenderState(pipeline_info, render_state);
+        auto viewport = Convert(render_state.viewport);
+        auto scissor = Convert(render_state.scissor);
+#endif
+
+        vk::PipelineViewportStateCreateInfo viewport_state{};
+        viewport_state.viewportCount = 1;
+        viewport_state.scissorCount = 1;
+#if 0
+        viewport_state.pViewports = &viewport;
+        viewport_state.pScissors = &scissor;
+#endif
+
+        // Rasterizer Configuration
+        auto rasterizer = Convert(render_state.rasterization);
+
+        // Depth Stencil Configuration
+        auto depth_stencil = Convert(render_state.depth_stencil);
+
+        // Additional stencil settings can be configured here
+
+        // Color Blending Configuration
+        auto color_blend_attachments = Convert(render_state.color_blends);
+
+        if (color_blend_attachments.empty()) {
+            vk::PipelineColorBlendAttachmentState color_blend{};
+            color_blend.colorWriteMask = vk::ColorComponentFlagBits::eR | vk::ColorComponentFlagBits::eG |
+                                         vk::ColorComponentFlagBits::eB | vk::ColorComponentFlagBits::eA;
+            color_blend.blendEnable = VK_FALSE;
+            color_blend_attachments.emplace_back(color_blend);
+        }
+
+        vk::PipelineColorBlendStateCreateInfo color_blending{};
+        color_blending.logicOpEnable = VK_FALSE;
+        color_blending.logicOp = vk::LogicOp::eCopy;
+        color_blending.attachmentCount = static_cast<uint32_t>(color_blend_attachments.size());
+        color_blending.pAttachments = color_blend_attachments.data();
+        color_blending.blendConstants[0] = 0.0f;
+        color_blending.blendConstants[1] = 0.0f;
+        color_blending.blendConstants[2] = 0.0f;
+        color_blending.blendConstants[3] = 0.0f;
+
+        vk::PipelineDynamicStateCreateInfo dynamic_state{};
+        std::vector<vk::DynamicState> dynamic_states = {vk::DynamicState::eViewport, vk::DynamicState::eScissor};
+
+        dynamic_state.setDynamicStates(dynamic_states);
+
+        pipeline_info.pViewportState = &viewport_state;
+        pipeline_info.pRasterizationState = &rasterizer;
+        pipeline_info.pDepthStencilState = &depth_stencil;
+        pipeline_info.pColorBlendState = &color_blending;
+        pipeline_info.pDynamicState = &dynamic_state;
 
         vk::Pipeline pipeline;
         try {
@@ -1168,9 +1220,9 @@ class VulkanRenderer : public IRenderer {
         ReleaseResource(old_fb_handle);
     }
 
-    void Render(std::function<void()> callback) override { Render(main_swap_chain_, callback); }
+    void Render(const RenderCallback& callback) override { Render(main_swap_chain_, callback); }
 
-    void Render(const SwapChainHandle& handle, std::function<void()> callback) override {
+    void Render(const SwapChainHandle& handle, const RenderCallback& callback) override {
         auto it = swapchains_.find(handle);
         if (it == swapchains_.end()) {
             throw std::runtime_error("Invalid SwapChainHandle provided to Render.");
@@ -1215,7 +1267,7 @@ class VulkanRenderer : public IRenderer {
         }
 
         // 사용자 정의 렌더링 명령 실행 (콜백에서 BeginPass와 EndPass를 호출함)
-        callback();
+        callback(sc_data.chosen_extent.width, sc_data.chosen_extent.height);
 
         // 커맨드 버퍼 종료
         try {
@@ -2457,8 +2509,10 @@ class VulkanRenderer : public IRenderer {
     uint64_t Hash(const RenderState& state) {
         XXH64_reset(hash_state_, 0);
 
+#if 0
         XXH64_update(hash_state_, &state.viewport, sizeof(state.viewport));
         XXH64_update(hash_state_, &state.scissor, sizeof(state.scissor));
+#endif
         XXH64_update(hash_state_, &state.rasterization, sizeof(state.rasterization));
         XXH64_update(hash_state_, state.color_blends.data(),
                      sizeof(decltype(state.color_blends)::value_type) * state.color_blends.size());
@@ -2542,52 +2596,6 @@ class VulkanRenderer : public IRenderer {
         } catch (const std::exception& e) {
             throw std::runtime_error(std::string("Failed to create pipeline layout: ") + e.what());
         }
-    }
-
-    // #FIXME memory dangling
-    void FillRenderState(vk::GraphicsPipelineCreateInfo& out, const RenderState& state) {
-        auto viewport = Convert(state.viewport);
-        auto scissor = Convert(state.scissor);
-
-        vk::PipelineViewportStateCreateInfo viewport_state{};
-        viewport_state.viewportCount = 1;
-        viewport_state.pViewports = &viewport;
-        viewport_state.scissorCount = 1;
-        viewport_state.pScissors = &scissor;
-
-        // Rasterizer Configuration
-        auto rasterizer = Convert(state.rasterization);
-
-        // Depth Stencil Configuration
-        auto depth_stencil = Convert(state.depth_stencil);
-
-        // Additional stencil settings can be configured here
-
-        // Color Blending Configuration
-        auto color_blend_attachments = Convert(state.color_blends);
-
-        if (color_blend_attachments.empty()) {
-            vk::PipelineColorBlendAttachmentState color_blend{};
-            color_blend.colorWriteMask = vk::ColorComponentFlagBits::eR | vk::ColorComponentFlagBits::eG |
-                                         vk::ColorComponentFlagBits::eB | vk::ColorComponentFlagBits::eA;
-            color_blend.blendEnable = VK_FALSE;
-            color_blend_attachments.emplace_back(color_blend);
-        }
-
-        vk::PipelineColorBlendStateCreateInfo color_blending{};
-        color_blending.logicOpEnable = VK_FALSE;
-        color_blending.logicOp = vk::LogicOp::eCopy;
-        color_blending.attachmentCount = static_cast<uint32_t>(color_blend_attachments.size());
-        color_blending.pAttachments = color_blend_attachments.data();
-        color_blending.blendConstants[0] = 0.0f;
-        color_blending.blendConstants[1] = 0.0f;
-        color_blending.blendConstants[2] = 0.0f;
-        color_blending.blendConstants[3] = 0.0f;
-
-        out.pViewportState = &viewport_state;
-        out.pRasterizationState = &rasterizer;
-        out.pDepthStencilState = &depth_stencil;
-        out.pColorBlendState = &color_blending;
     }
 
     // Gets the byte size of a given Vulkan Format

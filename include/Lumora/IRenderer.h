@@ -259,8 +259,10 @@ struct PipelineDesc {
 };
 
 struct RenderState {
+#if 0
     ViewportDesc viewport;
     ScissorDesc scissor;
+#endif
     RasterizationState rasterization;
     std::vector<ColorBlendState> color_blends;
     DepthStencilState depth_stencil;
@@ -313,6 +315,8 @@ struct FrameBufferDesc {
 // Renderer Interface
 class LUMORA_API IRenderer {
    public:
+    using RenderCallback = std::function<void(uint32_t, uint32_t)>;
+
     virtual ~IRenderer() = default;
 
     virtual void Open(const char* app_name, const SwapChainDesc& desc) = 0;
@@ -342,8 +346,8 @@ class LUMORA_API IRenderer {
     virtual void NextPass() = 0;
     virtual void Resize(uint32_t new_width, uint32_t new_height) = 0;
     virtual void Resize(const SwapChainHandle& handle, uint32_t new_width, uint32_t new_height) = 0;
-    virtual void Render(std::function<void()> callback) = 0;
-    virtual void Render(const SwapChainHandle& handle, std::function<void()> callback) = 0;
+    virtual void Render(const RenderCallback& callback) = 0;
+    virtual void Render(const SwapChainHandle& handle, const RenderCallback& callback) = 0;
     virtual void DrawIndexed(uint32_t index_count, uint32_t instance_count = 1, uint32_t first_index = 0,
                              int32_t vertex_offset = 0, uint32_t first_instance = 0) = 0;
     virtual void ReleaseResource(const SwapChainHandle& handle) = 0;
