@@ -27,7 +27,7 @@
 #include <spirv_cross/spirv_cross.hpp>
 #include <spirv_cross/spirv_glsl.hpp>
 
-static bool enable_validation_layers = true;
+static bool enable_validation_layers = false;
 const std::vector<const char*> validation_layers = {"VK_LAYER_KHRONOS_validation"};
 
 namespace lumora {
@@ -305,13 +305,15 @@ class VulkanRenderer : public IRenderer {
             throw std::runtime_error("Invalid BufferHandle provided to BindBuffer.");
         }
 
-        // Allocate or retrieve a descriptor set
+// Allocate or retrieve a descriptor set
+#if 0
         DescriptorSet ds = AllocateDescriptorSet();
         UpdateDescriptorSet(handle, TextureHandle{0}, ds);  // Assuming no texture binding here
 
         // Bind descriptor set
         command_buffer_.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, pipeline_layout_, 0, ds.descriptor_set,
                                            nullptr);
+#endif
     }
 
     TextureHandle CreateTexture(const TextureDesc& desc) override {
@@ -381,6 +383,7 @@ class VulkanRenderer : public IRenderer {
             throw std::runtime_error("Invalid TextureHandle provided to BindTexture.");
         }
 
+#if 0
         // Allocate or retrieve a descriptor set
         DescriptorSet ds = AllocateDescriptorSet();
         UpdateDescriptorSet(BufferHandle{0}, handle, ds);  // Assuming no buffer binding here
@@ -388,6 +391,7 @@ class VulkanRenderer : public IRenderer {
         // Bind descriptor set
         command_buffer_.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, pipeline_layout_, 0, ds.descriptor_set,
                                            nullptr);
+#endif
     }
 
     SamplerHandle CreateSampler(const SamplerDesc& desc) override {
@@ -659,7 +663,7 @@ class VulkanRenderer : public IRenderer {
         multisampling.rasterizationSamples = Convert(desc.sample_count);
 
         // Graphics Pipeline Creation
-        const auto& renderpass = renderpasses_.begin()->second;
+        const auto& rp = rpasses_.begin()->second;
 
         vk::GraphicsPipelineCreateInfo pipeline_info{};
         pipeline_info.stageCount = static_cast<uint32_t>(shader_stages.size());
@@ -668,15 +672,15 @@ class VulkanRenderer : public IRenderer {
         pipeline_info.pInputAssemblyState = &input_assembly;
         pipeline_info.pMultisampleState = &multisampling;
         pipeline_info.layout = layout;
-        pipeline_info.renderPass = renderpass.renderpass;  // Use the appropriate render pass
+        pipeline_info.renderPass = rp.renderpass;  // Use the appropriate render pass
         pipeline_info.subpass = desc.pass;
         pipeline_info.basePipelineHandle = nullptr;
 
+        RenderState render_state{};
+#if 0        
         // #FIXME 사라질 것 BindSwapchain으로 교체.
         const auto& swapchain = swapchains_.begin()->second;
 
-        RenderState render_state{};
-#if 0        
         render_state.viewport.width = swapchain.chosen_extent.width;
         render_state.viewport.height = swapchain.chosen_extent.height;
 
@@ -744,17 +748,17 @@ class VulkanRenderer : public IRenderer {
 
         // Combine render pass hash and subpass index to create a unique key
         // #FIXME replace xxHash
-        uint64_t hash = renderpass.handle.id ^ (static_cast<uint64_t>(desc.pass) << 32);
+        uint64_t hash = rp.handle.id ^ (static_cast<uint64_t>(desc.pass) << 32);
 
-        VulkanPipeline vpipeline;
-        vpipeline.pipelines[hash] = pipeline;
-        vpipeline.create_info = pipeline_info;
-        vpipeline.layout = layout;
+        VulkanPipeline pl;
+        pl.pipelines[hash] = pipeline;
+        pl.create_info = pipeline_info;
+        pl.layout = layout;
 
         // Store the pipeline with a unique handle
         PipelineHandle handle;
         handle.id = GenerateUniqueID();
-        pipelines_.emplace(handle, vpipeline);
+        pipelines_.emplace(handle, pl);
 
         return handle;
     }
@@ -895,7 +899,7 @@ class VulkanRenderer : public IRenderer {
 
         FrameBufferHandle handle;
         handle.id = GenerateUniqueID();
-        framebuffers_.emplace(handle, fb);
+        fbuffers_.emplace(handle, fb);
 
         return handle;
     }
@@ -953,7 +957,7 @@ class VulkanRenderer : public IRenderer {
         fb.ref_count++;
         sc.fb_handle = fb_handle;
 
-        framebuffers_.emplace(fb_handle, fb);
+        fbuffers_.emplace(fb_handle, fb);
         return fb_handle;
     }
 
@@ -965,7 +969,7 @@ class VulkanRenderer : public IRenderer {
         }
 
         VulkanPipeline& pipeline = it->second;
-        XXH64_reset(hash_state_, current_renderpass_->handle.id);
+        XXH64_reset(hash_state_, current_rpass_->handle.id);
         XXH64_update(hash_state_, &current_pass_, sizeof(current_pass_));
         XXH64_update(hash_state_, &pipeline.render_state_hash, sizeof(pipeline.render_state_hash));
         uint64_t hash = XXH64_digest(hash_state_);
@@ -982,8 +986,7 @@ class VulkanRenderer : public IRenderer {
 
             // Pipeline Layout 및 Render Pass 설정
             pipeline_info.layout = pipeline.layout;
-            pipeline_info.renderPass =
-                current_renderpass_->renderpass;  // #FIXME 렌더패스 핸들을 파이프라인에 할당한다.
+            pipeline_info.renderPass = current_rpass_->renderpass;  // #FIXME 렌더패스 핸들을 파이프라인에 할당한다.
             pipeline_info.subpass = current_pass_;
             pipeline_info.flags |= vk::PipelineCreateFlagBits::eDerivative;
             pipeline_info.basePipelineHandle = pipeline.pipelines.begin()->second;
@@ -1019,8 +1022,8 @@ class VulkanRenderer : public IRenderer {
     }
 
     void BeginPass(const FrameBufferHandle& handle, const ViewportDesc& viewport, const ScissorDesc& scissor) override {
-        auto fb_it = framebuffers_.find(handle);
-        if (fb_it == framebuffers_.end()) {
+        auto fb_it = fbuffers_.find(handle);
+        if (fb_it == fbuffers_.end()) {
             throw std::runtime_error("Invalid FrameBufferHandle in BeginPass.");
         }
 
@@ -1041,16 +1044,16 @@ class VulkanRenderer : public IRenderer {
 #endif
 
         VulkanFrameBuffer& vframebuffer = fb_it->second;
-        current_renderpass_ = &renderpasses_.at(vframebuffer.rp_handle);
+        current_rpass_ = &rpasses_.at(vframebuffer.rp_handle);
 
         // RenderPass 시작
         vk::RenderPassBeginInfo render_pass_info{};
-        render_pass_info.renderPass = current_renderpass_->renderpass;
+        render_pass_info.renderPass = current_rpass_->renderpass;
         render_pass_info.framebuffer = vframebuffer.framebuffers[vframebuffer.current_image_index];
         render_pass_info.renderArea.offset = vk::Offset2D{0, 0};
         render_pass_info.renderArea.extent = vk::Extent2D{vframebuffer.width, vframebuffer.height};
-        render_pass_info.clearValueCount = static_cast<uint32_t>(current_renderpass_->clear_values.size());
-        render_pass_info.pClearValues = current_renderpass_->clear_values.data();
+        render_pass_info.clearValueCount = static_cast<uint32_t>(current_rpass_->clear_values.size());
+        render_pass_info.pClearValues = current_rpass_->clear_values.data();
 
         try {
             command_buffer_.beginRenderPass(render_pass_info, vk::SubpassContents::eInline);
@@ -1115,16 +1118,15 @@ class VulkanRenderer : public IRenderer {
         sc.desc.height = new_height;
         sc.current_frame = 0;
 
-        auto& fb = framebuffers_.at(sc.fb_handle);
+        auto& fb = fbuffers_.at(sc.fb_handle);
         ReleaseResource(fb.depth_texture);
         for (auto& handle : fb.color_textures) ReleaseResource(handle);
 
         fb.depth_texture = TextureHandle{0};
         fb.color_textures.clear();
 
-        auto& rp = renderpasses_.at(fb.rp_handle);
+        auto& rp = rpasses_.at(fb.rp_handle);
         fb = CreateFrameBufferInternal(rp, sc);
-        rp.ref_count++;
         fb.rp_handle = rp.handle;
     }
 
@@ -1135,7 +1137,7 @@ class VulkanRenderer : public IRenderer {
         }
 
         VulkanSwapChain& sc = it->second;
-        VulkanFrameBuffer& fb = framebuffers_.at(sc.fb_handle);
+        VulkanFrameBuffer& fb = fbuffers_.at(sc.fb_handle);
         current_fb_handle_ = sc.fb_handle;
 
         // Synchronization primitives
@@ -1230,12 +1232,12 @@ class VulkanRenderer : public IRenderer {
         command_buffer_.drawIndexed(index_count, instance_count, first_index, vertex_offset, first_instance);
     }
 
+    void WaitIdle() override { device_.waitIdle(); }
+
     void ReleaseResource(const SwapChainHandle& handle) {
         auto it = swapchains_.find(handle);
         if (it == swapchains_.end())
             return;
-
-        device_.waitIdle();
 
         VulkanSwapChain& sc = it->second;
 
@@ -1327,14 +1329,14 @@ class VulkanRenderer : public IRenderer {
     }
 
     void ReleaseResource(const FrameBufferHandle& handle) override {
-        auto it = framebuffers_.find(handle);
-        if (it != framebuffers_.end()) {
+        auto it = fbuffers_.find(handle);
+        if (it != fbuffers_.end()) {
             if (--it->second.ref_count == 0) {
                 for (auto& framebuffer : it->second.framebuffers) device_.destroyFramebuffer(framebuffer);
                 ReleaseResource(it->second.rp_handle);
                 for (auto& h : it->second.color_textures) ReleaseResource(h);
                 ReleaseResource(it->second.depth_texture);
-                framebuffers_.erase(it);
+                fbuffers_.erase(it);
             }
         }
     }
@@ -1368,18 +1370,18 @@ class VulkanRenderer : public IRenderer {
     std::unordered_map<ShaderHandle, VulkanShader, HandleHash> shaders_;
     std::unordered_map<PipelineHandle, VulkanPipeline, HandleHash> pipelines_;
     std::unordered_map<SwapChainHandle, VulkanSwapChain, HandleHash> swapchains_;
-    std::unordered_map<FrameBufferHandle, VulkanFrameBuffer, HandleHash> framebuffers_;
-    std::unordered_map<RenderPassHandle, VulkanRenderPass, HandleHash> renderpasses_;
+    std::unordered_map<FrameBufferHandle, VulkanFrameBuffer, HandleHash> fbuffers_;
+    std::unordered_map<RenderPassHandle, VulkanRenderPass, HandleHash> rpasses_;
 
     // Descriptor Set Management
-    vk::DescriptorPool descriptor_pool_;
-    vk::DescriptorSetLayout descriptor_set_layout_;  // #TODO 내부적으로 자동 관리
+    // vk::DescriptorPool descriptor_pool_;
+    std::unordered_map<uint64_t, vk::DescriptorSetLayout> descriptor_set_layouts_;  // #TODO 내부적으로 자동 관리
 
     // Current pipeline handle
     vk::Pipeline current_pipeline_;
     vk::PipelineLayout pipeline_layout_;  // #TODO 내부적으로 자동 관리
     uint32_t current_pass_ = 0;
-    VulkanRenderPass* current_renderpass_{nullptr};
+    VulkanRenderPass* current_rpass_{nullptr};
 
     // Internal methods
     void InitVulkan(const char* app_name, const WindowHandle& wh) {
@@ -1403,10 +1405,12 @@ class VulkanRenderer : public IRenderer {
             throw std::runtime_error("Failed to create VMA allocator.");
         }
 
-        // Create Descriptor Pool
+// Create Descriptor Pool
+#if 0
         CreateDescriptorPool();
 
         CreateDescriptorSetLayouts();
+#endif
     }
 
     void CleanupVulkan() {
@@ -1476,7 +1480,7 @@ class VulkanRenderer : public IRenderer {
         buffers_.clear();
 
         // Destroy all framebuffers
-        for (auto& [handle, framebuffer] : framebuffers_) {
+        for (auto& [handle, framebuffer] : fbuffers_) {
             for (auto& fb : framebuffer.framebuffers) {
                 device_.destroyFramebuffer(fb);
             }
@@ -1487,10 +1491,10 @@ class VulkanRenderer : public IRenderer {
                           << std::endl;
             }
         }
-        framebuffers_.clear();
+        fbuffers_.clear();
 
         // Destroy all render passes
-        for (auto& [handle, render_pass_struct] : renderpasses_) {
+        for (auto& [handle, render_pass_struct] : rpasses_) {
             device_.destroyRenderPass(render_pass_struct.renderpass);
             if (render_pass_struct.ref_count != 0) {
                 memory_leak = true;
@@ -1498,21 +1502,21 @@ class VulkanRenderer : public IRenderer {
                           << render_pass_struct.ref_count << std::endl;
             }
         }
-        renderpasses_.clear();
+        rpasses_.clear();
 
         // Destroy all swapchains and their image views and framebuffers
-        for (auto& [handle, sc_data] : swapchains_) {
-            if (sc_data.swapchain) {
-                device_.destroySwapchainKHR(sc_data.swapchain);
+        for (auto& [handle, sc] : swapchains_) {
+            if (sc.swapchain) {
+                device_.destroySwapchainKHR(sc.swapchain);
             }
             // Destroy synchronization primitives
-            for (auto& semaphore : sc_data.image_available_semaphores) {
+            for (auto& semaphore : sc.image_available_semaphores) {
                 device_.destroySemaphore(semaphore);
             }
-            for (auto& semaphore : sc_data.render_finished_semaphores) {
+            for (auto& semaphore : sc.render_finished_semaphores) {
                 device_.destroySemaphore(semaphore);
             }
-            for (auto& fence : sc_data.in_flight_fences) {
+            for (auto& fence : sc.in_flight_fences) {
                 device_.destroyFence(fence);
             }
         }
@@ -1523,12 +1527,12 @@ class VulkanRenderer : public IRenderer {
         }
 
         // Destroy Descriptor Pool
-        if (descriptor_pool_) {
-            device_.destroyDescriptorPool(descriptor_pool_);
-        }
+        // if (descriptor_pool_) {
+        //    device_.destroyDescriptorPool(descriptor_pool_);
+        //}
 
-        if (descriptor_set_layout_) {
-            device_.destroyDescriptorSetLayout(descriptor_set_layout_);
+        for (auto pair : descriptor_set_layouts_) {
+            device_.destroyDescriptorSetLayout(pair.second);
         }
 
         if (pipeline_layout_) {
@@ -1847,8 +1851,8 @@ class VulkanRenderer : public IRenderer {
         RenderPassHandle handle{hash};
 
         // Check if render pass already exists
-        auto it = renderpasses_.find(handle);
-        if (it != renderpasses_.end()) {
+        auto it = rpasses_.find(handle);
+        if (it != rpasses_.end()) {
             it->second.ref_count++;
             return &it->second;
         }
@@ -2018,7 +2022,7 @@ class VulkanRenderer : public IRenderer {
         vrenderpass.handle = handle;  // Store the hash
 
         // Store the render pass
-        return &renderpasses_.emplace_hint(renderpasses_.begin(), handle, vrenderpass)->second;
+        return &rpasses_.emplace_hint(rpasses_.begin(), handle, vrenderpass)->second;
     }
 
     VulkanFrameBuffer CreateFrameBufferInternal(const VulkanRenderPass& rp, const VulkanSwapChain& sc) {
@@ -2332,6 +2336,7 @@ class VulkanRenderer : public IRenderer {
         return extensions;
     }
 
+#if 0
     void CreateDescriptorSetLayouts() {
         // Example: Create a simple descriptor set layout with uniform buffers and sampled images
         std::vector<vk::DescriptorSetLayoutBinding> bindings = {
@@ -2462,13 +2467,13 @@ class VulkanRenderer : public IRenderer {
             device_.updateDescriptorSets(descriptor_writes, {});
         }
     }
-
+#endif
     void ReleaseResource(const RenderPassHandle& handle) {
-        auto it = renderpasses_.find(handle);
-        if (it != renderpasses_.end()) {
+        auto it = rpasses_.find(handle);
+        if (it != rpasses_.end()) {
             if (--it->second.ref_count == 0) {
                 device_.destroyRenderPass(it->second.renderpass);
-                renderpasses_.erase(it);
+                rpasses_.erase(it);
             }
         }
     }
@@ -2554,15 +2559,28 @@ class VulkanRenderer : public IRenderer {
                             shader.storage_buffer_bindings.end());
         all_bindings.insert(all_bindings.end(), shader.sampler_bindings.begin(), shader.sampler_bindings.end());
 
+        XXH64_reset(hash_state_, 0);
+        XXH64_update(hash_state_, all_bindings.data(),
+                     sizeof(decltype(all_bindings)::value_type) * all_bindings.size());
+        uint64_t hash = XXH64_digest(hash_state_);
+
+        auto it = descriptor_set_layouts_.find(hash);
+        if (it != descriptor_set_layouts_.end())
+            return it->second;
+
         vk::DescriptorSetLayoutCreateInfo layout_info{};
         layout_info.bindingCount = static_cast<uint32_t>(all_bindings.size());
         layout_info.pBindings = all_bindings.data();
 
+        vk::DescriptorSetLayout layout{nullptr};
         try {
-            return device_.createDescriptorSetLayout(layout_info);
+            layout = device_.createDescriptorSetLayout(layout_info);
         } catch (const std::exception& e) {
             throw std::runtime_error(std::string("Failed to create descriptor set layout: ") + e.what());
         }
+
+        descriptor_set_layouts_.insert({hash, layout});
+        return layout;
     }
 
     vk::PipelineLayout CreatePipelineLayout(const VulkanShader& shader) {

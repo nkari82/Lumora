@@ -338,6 +338,8 @@ class LUMORA_API IRenderer {
     virtual void EndPass() = 0;
     virtual void NextPass() = 0;
 
+    virtual void WaitIdle() = 0;
+
     virtual void Resize(const SwapChainHandle& handle, uint32_t new_width, uint32_t new_height) = 0;
     virtual void Render(const SwapChainHandle& handle, const RenderCallback& callback) = 0;
     virtual void DrawIndexed(uint32_t index_count, uint32_t instance_count = 1, uint32_t first_index = 0,

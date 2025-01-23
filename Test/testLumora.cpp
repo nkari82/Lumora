@@ -59,6 +59,8 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     return TRUE;
 }
 
+#define test_p
+
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow) {
     // Register Window Class
     const char CLASS_NAME[] = "Vulkan Window Class";
@@ -113,7 +115,9 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow) {
     // desc.viewport.width = swapDesc.width;
     // desc.viewport.height = swapDesc.height;
 
+#if defined(test_p)
     auto pl_handle = renderer->CreatePipeline(desc);
+#endif
 
     // Main Loop
     MSG msg = {};
@@ -150,9 +154,15 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow) {
         });
     }
 
+    renderer->WaitIdle();
+#if defined(test_p)
+    renderer->ReleaseResource(pl_handle);
+#endif
     renderer->ReleaseResource(vert_handle);
     renderer->ReleaseResource(frag_handle);
-    renderer->ReleaseResource(pl_handle);
+    renderer->ReleaseResource(main_swapchain);
+    renderer->ReleaseResource(main_framebuffer);
+
     renderer->Close();
 
     return 0;
