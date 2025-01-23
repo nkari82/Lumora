@@ -7,27 +7,12 @@
 
 static std::unique_ptr<lumora::IRenderer> renderer;
 
+lumora::SwapChainHandle main_swapchain;
+lumora::FrameBufferHandle main_framebuffer;
+
 // Window Procedure
 LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     switch (msg) {
-#if 0
-        case WM_NCCALCSIZE: {
-            if (wParam == TRUE) {
-                // NCCALCSIZE_PARAMS 구조체 처리
-                NCCALCSIZE_PARAMS* pParams = (NCCALCSIZE_PARAMS*)lParam;
-
-                // 클라이언트 영역 크기를 조정 (예: 테두리를 없앰)
-                pParams->rgrc[0].left += 10;
-                pParams->rgrc[0].top += 10;
-                pParams->rgrc[0].right -= 10;
-                pParams->rgrc[0].bottom -= 10;
-
-                return 0;
-            }
-            break;
-        }
-#endif
-#if 1
         case WM_SIZE: {
             UINT width = LOWORD(lParam);   // 새로운 너비
             UINT height = HIWORD(lParam);  // 새로운 높이
@@ -36,18 +21,13 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                 case SIZE_MINIMIZED:
                     break;
                 case SIZE_MAXIMIZED:
-                    if (renderer)
-                        renderer->Resize(width, height);
-                    break;
                 case SIZE_RESTORED:
                     if (renderer)
-                        renderer->Resize(width, height);
+                        renderer->Resize(main_swapchain, width, height);
                     break;
             }
             return 0;
         }
-#endif
-#if 1
         case WM_SIZING: {
             LPRECT rect = (LPRECT)lParam;
 
@@ -65,12 +45,10 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             UINT height = rect->bottom - rect->top;
 
             if (renderer)
-                renderer->Resize(width, height);
+                renderer->Resize(main_swapchain, width, height);
 
             return TRUE;
         }
-#endif
-
         case WM_DESTROY:
             PostQuitMessage(0);
             return 0;
@@ -104,23 +82,26 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow) {
 
     lumora::WindowHandle wh = {reinterpret_cast<void*>(hwnd), reinterpret_cast<void*>(hInstance)};
 
-    // Create SwapChain
-    lumora::SwapChainDesc swapDesc;
-    swapDesc.window_handle = wh;
-    swapDesc.width = 1280;
-    swapDesc.height = 720;
-    swapDesc.color_format = lumora::Format::kB8G8R8A8Unorm;
-    swapDesc.depth_format = lumora::Format::kD32SfloatS8Uint;
-    swapDesc.buffer_count = 2;
-    swapDesc.vsync = true;
-
     // Create Renderer
     renderer = lumora::IRenderer::Create();
     try {
-        renderer->Open("Vulkan Renderer Test", swapDesc);
+        renderer->Open("Vulkan Renderer Test", wh);
     } catch (std::exception& err) {
         std::cout << err.what();
     }
+
+    // Create SwapChain
+    lumora::SwapChainDesc swap_desc;
+    swap_desc.window_handle = wh;
+    swap_desc.width = 1280;
+    swap_desc.height = 720;
+    swap_desc.color_format = lumora::Format::kB8G8R8A8Unorm;
+    swap_desc.depth_format = lumora::Format::kD32SfloatS8Uint;
+    swap_desc.buffer_count = 2;
+    swap_desc.vsync = true;
+
+    main_swapchain = renderer->CreateSwapChain(swap_desc);
+    main_framebuffer = renderer->CreateFrameBuffer(main_swapchain);
 
     // init shader (#TODO 리플렉션이 제대로 되나 확인)
     auto vert_handle = renderer->CreateShader({lumora::ShaderStage::kVertex, "shaders/spv/test2.vert.spv"});
@@ -151,11 +132,11 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow) {
             break;
 
         // Rendering callback
-        renderer->Render([&](uint32_t, uint32_t) {
+        renderer->Render(main_swapchain, [&](uint32_t width, uint32_t height) {
             // Begin Render Pass
             // lumora::RenderPassDesc passDesc;
             // Setup passDesc as needed
-            renderer->BeginPass();
+            renderer->BeginPass(main_framebuffer, {0, 0, (float)width, (float)height}, {0, 0, width, height});
 
             // Bind pipeline, buffers, textures, etc.
             // For example:

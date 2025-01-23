@@ -245,11 +245,7 @@ struct PipelineDesc {
     ShaderHandle fragment_shader;
     VertexLayoutDesc vertex_layout_desc;
 #if 0
-    ViewportDesc viewport;  // 디펄트로 스왑체인 크기
-    ScissorDesc scissor;    // 디펄트로 스왑체인 크기
     RasterizationState rasterization;
-#endif
-#if 0
     std::vector<ColorBlendState> color_blends;
     DepthStencilState depth_stencil;
 #endif
@@ -259,10 +255,6 @@ struct PipelineDesc {
 };
 
 struct RenderState {
-#if 0
-    ViewportDesc viewport;
-    ScissorDesc scissor;
-#endif
     RasterizationState rasterization;
     std::vector<ColorBlendState> color_blends;
     DepthStencilState depth_stencil;
@@ -319,13 +311,13 @@ class LUMORA_API IRenderer {
 
     virtual ~IRenderer() = default;
 
-    virtual void Open(const char* app_name, const SwapChainDesc& desc) = 0;
+    virtual void Open(const char* app_name, const WindowHandle& wh) = 0;
     virtual void Close() = 0;
 
     virtual SwapChainHandle CreateSwapChain(const SwapChainDesc& desc) = 0;
     virtual BufferHandle CreateBuffer(const BufferDesc& desc) = 0;
-    virtual FrameBufferHandle CreateFrameBuffer(const FrameBufferDesc& desc) = 0;
     virtual FrameBufferHandle CreateFrameBuffer(const SwapChainHandle& handle) = 0;
+    virtual FrameBufferHandle CreateFrameBuffer(const FrameBufferDesc& desc) = 0;
     virtual void UpdateBuffer(const BufferHandle& handle, const void* data, size_t size) = 0;
     virtual void BindBuffer(const BufferHandle& handle, uint32_t bind_point, uint32_t dynamic_offset = 0) = 0;
     virtual TextureHandle CreateTexture(const TextureDesc& desc) = 0;
@@ -341,12 +333,12 @@ class LUMORA_API IRenderer {
 
     virtual void DispatchCompute(uint32_t group_x, uint32_t group_y, uint32_t group_z) = 0;
 
-    virtual void BeginPass(const FrameBufferHandle& handle = {}) = 0;
+    virtual void BeginPass(const FrameBufferHandle& handle, const ViewportDesc& viewport,
+                           const ScissorDesc& scissor) = 0;
     virtual void EndPass() = 0;
     virtual void NextPass() = 0;
-    virtual void Resize(uint32_t new_width, uint32_t new_height) = 0;
+
     virtual void Resize(const SwapChainHandle& handle, uint32_t new_width, uint32_t new_height) = 0;
-    virtual void Render(const RenderCallback& callback) = 0;
     virtual void Render(const SwapChainHandle& handle, const RenderCallback& callback) = 0;
     virtual void DrawIndexed(uint32_t index_count, uint32_t instance_count = 1, uint32_t first_index = 0,
                              int32_t vertex_offset = 0, uint32_t first_instance = 0) = 0;
@@ -361,63 +353,3 @@ class LUMORA_API IRenderer {
 };
 
 }  // namespace lumora
-
-// example
-// 단일 서브패스
-// FrameBufferDesc pass_desc{};
-// pass_desc.color_targets = {render_target};
-// pass_desc.clear_colors = {{0.2f, 0.3f, 0.4f, 1.0f}};
-// pass_desc.depth_target = depth_target;
-// subpasses가 채워지지 않았을 경우 기본은 내부적으로 kWrite로 하나의 subpass가 만들어진다.
-// pass_desc.subpasses = {{
-//     {
-//         .color_attachments = {{render_target, AttachmentAccess::kWrite}},
-//         .depth_attachment = {depth_target, AttachmentAccess::kWrite},
-//     },
-// }};
-//
-// renderer->Render(swapchain, [&]() {
-//     renderer->BindPass(framebuffer);
-//     renderer->BindPipeline(my_pipeline);
-//     renderer->DrawIndexed(36);
-//     renderer->EndPass();
-// });
-
-// 멀티 서브패스
-// FrameBufferDesc pass_desc{};
-// pass_desc.color_targets = {render_target1, render_target2};
-// pass_desc.clear_colors = {{0.2f, 0.3f, 0.4f, 1.0f}, {0.0f, 0.0f, 0.0f, 1.0f}};
-// pass_desc.depth_target = depth_target;
-//
-// pass_desc.subpasses = {
-//    {
-//        .color_attachments = {{render_target1, AttachmentAccess::kWrite}},
-//        .depth_attachment = {depth_target, AttachmentAccess::kWrite},
-//    },
-//    {
-//        .color_attachments = {{render_target2, AttachmentAccess::kWrite}},
-//        .input_attachments = {{render_target1, AttachmentAccess::kRead}},
-//        .depth_attachment = {depth_target, AttachmentAccess::kRead},
-//    },
-// };
-//
-// renderer->Render([&]() {
-//    renderer->BindPass();
-//    renderer->BindPipeline(my_pipeline1);
-//    renderer->DrawIndexed(36);
-//    renderer->NextPass();
-//    renderer->BindPipeline(my_pipeline2);
-//    renderer->DrawIndexed(36);
-//    renderer->EndPass();
-// });
-//
-// renderer->Render(swapchain, {[](){
-//   renderer->BeginPass(framebuffer); // BeginPass
-//   // 렌더패스를 호출한다.
-//   renderer->BindPipeline(my_pipeline);
-//   renderer->BindBuffer(my_vbo);
-//   renderer->BindBuffer(my_ibo);
-//   renderer->BindTexture(...);
-//   renderer->DrawIndexed(36); // e.g. a cube with 36 indices
-//   renderer->EndPass();
-// }});

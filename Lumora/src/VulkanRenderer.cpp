@@ -105,6 +105,7 @@ struct VulkanFrameBuffer : VulkanRef {
     uint32_t height;
     std::vector<TextureHandle> color_textures;
     TextureHandle depth_texture;
+    uint32_t current_image_index;               // VulkanSwapcahin멤버로 있는게 더 자연스러운?
     std::vector<vk::Framebuffer> framebuffers;  // 스왑체인 이미지별 프레임버퍼
     RenderPassHandle rp_handle;
 };
@@ -114,7 +115,7 @@ struct VulkanRenderPass : VulkanRef {
     vk::ClearDepthStencilValue clear_depth = {};
     vk::RenderPass renderpass;
     uint32_t attachment_colors = 0;
-    uint64_t cache;
+    RenderPassHandle handle;
 };
 
 struct VulkanSwapChain : VulkanRef {
@@ -151,42 +152,37 @@ class VulkanRenderer : public IRenderer {
 
     ~VulkanRenderer() override {}
 
-    void Open(const char* app_name, const SwapChainDesc& desc) override {
+    void Open(const char* app_name, const WindowHandle& wh) override {
         hash_state_ = XXH64_createState();
 
-        main_window_handle_ = desc.window_handle;
+        main_window_handle_ = wh;
 
         InitVulkan(app_name, main_window_handle_);
-
-        main_swap_chain_ = CreateSwapChain(desc);
-
-        CreateFrameBuffer(main_swap_chain_);
     }
 
     void Close() override {
         XXH64_freeState(hash_state_);
-        ReleaseResource(main_swap_chain_);
         CleanupVulkan();
     }
 
     // public
     SwapChainHandle CreateSwapChain(const SwapChainDesc& desc) override {
-        VulkanSwapChain swapchain_data;
-        swapchain_data.desc = desc;
+        VulkanSwapChain sc_data;
+        sc_data.desc = desc;
 
-        swapchain_data.surface = CreateSurface(desc.window_handle);
+        sc_data.surface = CreateSurface(desc.window_handle);
 
-        auto surface_formats = physical_device_.getSurfaceFormatsKHR(swapchain_data.surface);
-        swapchain_data.chosen_color_format = ChooseSurfaceFormat(surface_formats, Convert(desc.color_format));
+        auto surface_formats = physical_device_.getSurfaceFormatsKHR(sc_data.surface);
+        sc_data.chosen_color_format = ChooseSurfaceFormat(surface_formats, Convert(desc.color_format));
 
-        auto present_modes = physical_device_.getSurfacePresentModesKHR(swapchain_data.surface);
-        swapchain_data.chosen_present_mode = ChoosePresentMode(present_modes);
+        auto present_modes = physical_device_.getSurfacePresentModesKHR(sc_data.surface);
+        sc_data.chosen_present_mode = ChoosePresentMode(present_modes);
 
-        auto capabilities = physical_device_.getSurfaceCapabilitiesKHR(swapchain_data.surface);
-        swapchain_data.chosen_extent = ChooseExtent(capabilities, desc.width, desc.height);
+        auto capabilities = physical_device_.getSurfaceCapabilitiesKHR(sc_data.surface);
+        sc_data.chosen_extent = ChooseExtent(capabilities, desc.width, desc.height);
 
         if (desc.depth_format != Format::kUndefined)
-            swapchain_data.chosen_depth_format = FindDepthFormat(Convert(desc.depth_format));
+            sc_data.chosen_depth_format = FindDepthFormat(Convert(desc.depth_format));
 
         uint32_t image_count = desc.buffer_count;
         if (capabilities.maxImageCount > 0 && image_count > capabilities.maxImageCount) {
@@ -195,11 +191,11 @@ class VulkanRenderer : public IRenderer {
 
         vk::SwapchainCreateInfoKHR swapchain_info{};
         swapchain_info.sType = vk::StructureType::eSwapchainCreateInfoKHR;
-        swapchain_info.surface = swapchain_data.surface;
+        swapchain_info.surface = sc_data.surface;
         swapchain_info.minImageCount = image_count;
-        swapchain_info.imageFormat = swapchain_data.chosen_color_format.format;
-        swapchain_info.imageColorSpace = swapchain_data.chosen_color_format.colorSpace;
-        swapchain_info.imageExtent = swapchain_data.chosen_extent;
+        swapchain_info.imageFormat = sc_data.chosen_color_format.format;
+        swapchain_info.imageColorSpace = sc_data.chosen_color_format.colorSpace;
+        swapchain_info.imageExtent = sc_data.chosen_extent;
         swapchain_info.imageArrayLayers = 1;
         swapchain_info.imageUsage = vk::ImageUsageFlagBits::eColorAttachment;
 
@@ -215,35 +211,35 @@ class VulkanRenderer : public IRenderer {
 
         swapchain_info.preTransform = capabilities.currentTransform;
         swapchain_info.compositeAlpha = vk::CompositeAlphaFlagBitsKHR::eOpaque;
-        swapchain_info.presentMode = swapchain_data.chosen_present_mode;
+        swapchain_info.presentMode = sc_data.chosen_present_mode;
         swapchain_info.clipped = VK_TRUE;
         swapchain_info.oldSwapchain = nullptr;
 
         try {
-            swapchain_data.swapchain = device_.createSwapchainKHR(swapchain_info);
+            sc_data.swapchain = device_.createSwapchainKHR(swapchain_info);
         } catch (const std::exception& e) {
             throw std::runtime_error(std::string("Failed to create swap chain: ") + e.what());
         }
 
-        swapchain_data.command_pool = CreateCommandPool();
+        sc_data.command_pool = CreateCommandPool();
 
         vk::CommandBufferAllocateInfo alloc_info{};
         alloc_info.sType = vk::StructureType::eCommandBufferAllocateInfo;
-        alloc_info.commandPool = swapchain_data.command_pool;
+        alloc_info.commandPool = sc_data.command_pool;
         alloc_info.level = vk::CommandBufferLevel::ePrimary;
         alloc_info.commandBufferCount = kMaxFramesInFlight;  // 예: 프레임당 하나의 커맨드 버퍼
 
         try {
-            swapchain_data.command_buffers = device_.allocateCommandBuffers(alloc_info);
+            sc_data.command_buffers = device_.allocateCommandBuffers(alloc_info);
         } catch (const std::exception& e) {
             throw std::runtime_error(std::string("Failed to allocate command buffers: ") + e.what());
         }
 
-        SetupSynchronization(swapchain_data);
+        SetupSynchronization(sc_data);
 
         SwapChainHandle handle;
         handle.id = GenerateUniqueID();
-        swapchains_.emplace(handle, swapchain_data);
+        swapchains_.emplace(handle, sc_data);
 
         return handle;
     }
@@ -748,7 +744,7 @@ class VulkanRenderer : public IRenderer {
 
         // Combine render pass hash and subpass index to create a unique key
         // #FIXME replace xxHash
-        uint64_t hash = renderpass.cache ^ (static_cast<uint64_t>(desc.pass) << 32);
+        uint64_t hash = renderpass.handle.id ^ (static_cast<uint64_t>(desc.pass) << 32);
 
         VulkanPipeline vpipeline;
         vpipeline.pipelines[hash] = pipeline;
@@ -845,10 +841,10 @@ class VulkanRenderer : public IRenderer {
         }
 
         // Create or retrieve RenderPass
-        RenderPassHandle rp_handle = CreateRenderPassInternal(color_formats, depth_format, desc.config);
+        auto rp = CreateRenderPassInternal(color_formats, depth_format, desc.config);
 
         // Create Framebuffer
-        VulkanFrameBuffer vframebuffer;
+        VulkanFrameBuffer fb;
 
         // Gather image views for attachments
         std::vector<vk::ImageView> attachments;
@@ -859,7 +855,7 @@ class VulkanRenderer : public IRenderer {
             }
             attachments.push_back(it->second.image_view);
             it->second.ref_count++;
-            vframebuffer.color_textures.emplace_back(color_handle);
+            fb.color_textures.emplace_back(color_handle);
         }
 
         if (desc.depth_target.id != 0) {
@@ -870,13 +866,7 @@ class VulkanRenderer : public IRenderer {
 
             attachments.push_back(it->second.image_view);
             it->second.ref_count++;
-            vframebuffer.depth_texture = desc.depth_target;
-        }
-
-        // Retrieve the RenderPass
-        auto render_pass_it = renderpasses_.find(rp_handle);
-        if (render_pass_it == renderpasses_.end()) {
-            throw std::runtime_error("RenderPassHandle not found for FrameBufferDesc.");
+            fb.depth_texture = desc.depth_target;
         }
 
         // Use the width and height from FrameBufferDesc
@@ -884,7 +874,7 @@ class VulkanRenderer : public IRenderer {
         uint32_t height = desc.height;
 
         vk::FramebufferCreateInfo framebuffer_info{};
-        framebuffer_info.renderPass = render_pass_it->second.renderpass;
+        framebuffer_info.renderPass = rp->renderpass;
         framebuffer_info.attachmentCount = static_cast<uint32_t>(attachments.size());
         framebuffer_info.pAttachments = attachments.data();
         framebuffer_info.width = width;
@@ -892,20 +882,20 @@ class VulkanRenderer : public IRenderer {
         framebuffer_info.layers = 1;
 
         try {
-            vframebuffer.framebuffers.emplace_back(device_.createFramebuffer(framebuffer_info));
+            fb.framebuffers.emplace_back(device_.createFramebuffer(framebuffer_info));
         } catch (const std::exception& e) {
             throw std::runtime_error(std::string("Failed to create framebuffer: ") + e.what());
         }
 
-        vframebuffer.rp_handle = rp_handle;
-        vframebuffer.width = width;
-        vframebuffer.height = height;
+        fb.rp_handle = rp->handle;
+        fb.width = width;
+        fb.height = height;
 
-        vframebuffer.ref_count = 1;
+        fb.ref_count = 1;
 
         FrameBufferHandle handle;
         handle.id = GenerateUniqueID();
-        framebuffers_.emplace(handle, vframebuffer);
+        framebuffers_.emplace(handle, fb);
 
         return handle;
     }
@@ -917,17 +907,14 @@ class VulkanRenderer : public IRenderer {
             throw std::runtime_error("Invalid SwapChainHandle provided to CreateFrameBuffer.");
         }
 
-        VulkanSwapChain& sc_data = swapchain_it->second;
-        bool has_depth = (sc_data.chosen_depth_format != vk::Format::eUndefined);
-
-        // 스왑체인 이미지 가져오기
-        std::vector<vk::Image> swapchain_images = device_.getSwapchainImagesKHR(sc_data.swapchain);
+        VulkanSwapChain& sc = swapchain_it->second;
+        bool has_depth = (sc.chosen_depth_format != vk::Format::eUndefined);
 
         // RenderPass 생성 (SwapChainDesc를 기반으로)
         std::vector<Format> color_formats;
         Format depth_format;
-        color_formats.emplace_back(Convert(sc_data.chosen_color_format.format));
-        depth_format = Convert(sc_data.chosen_depth_format);
+        color_formats.emplace_back(Convert(sc.chosen_color_format.format));
+        depth_format = Convert(sc.chosen_depth_format);
         RenderPassConfig config{};
         config.clear_colors = {{0.25f, 0.25f, 0.25f, 1.0f}};
         config.clear_depth = true;
@@ -956,94 +943,17 @@ class VulkanRenderer : public IRenderer {
 
         config.subpasses.push_back(subpass);
 
-        RenderPassHandle rp_handle = CreateRenderPassInternal(color_formats, depth_format, config);
+        auto rp = CreateRenderPassInternal(color_formats, depth_format, config);
 
         // VulkanFrameBuffer 생성
-        VulkanFrameBuffer vframebuffer;
-        vframebuffer.rp_handle = rp_handle;
+        VulkanFrameBuffer fb = CreateFrameBufferInternal(*rp, sc);
+        fb.rp_handle = rp->handle;
 
-        // 깊이 텍스처가 필요한 경우
-        TextureHandle depth_handle = TextureHandle{0};
-        if (has_depth) {
-            // 깊이 텍스처 생성
-            depth_handle = CreateTexture({
-                .type = TextureType::k2D,
-                .format = Convert(sc_data.chosen_depth_format),
-                .usage = TextureUsage::kDepthStencil,
-                .width = sc_data.chosen_extent.width,
-                .height = sc_data.chosen_extent.height,
-                .depth = 1,
-                .mip_levels = 1,
-                .array_layers = 1,
-                .memory_usage = MemoryUsage::kGpuOnly,  // 필요에 따라 조정
-            });
-            vframebuffer.depth_texture = depth_handle;
-        }
+        FrameBufferHandle fb_handle = FrameBufferHandle{GenerateUniqueID()};
+        fb.ref_count++;
+        sc.fb_handle = fb_handle;
 
-        for (const auto& image : swapchain_images) {
-            // CreateView 메소드를 사용하여 이미지 뷰 생성
-            vk::ImageView image_view =
-                CreateView(image, sc_data.chosen_color_format.format, vk::ImageAspectFlagBits::eColor);
-
-            // TextureHandle 생성 (kSwapChain 타입)
-            TextureHandle texture_handle;
-            texture_handle.id = GenerateUniqueID();
-
-            // VulkanTexture 구조체 채우기
-            VulkanTexture vtexture;
-            vtexture.desc = {
-                .type = TextureType::k2D,
-                .format = Convert(sc_data.chosen_color_format.format),
-                .usage = TextureUsage::kRenderTarget,
-                .width = sc_data.chosen_extent.width,
-                .height = sc_data.chosen_extent.height,
-                .depth = 1,
-                .mip_levels = 1,
-                .array_layers = 1,
-            };
-
-            vtexture.image = image;
-            vtexture.image_view = image_view;
-            vtexture.creation_type = TextureCreationType::kSwapChain;
-
-            textures_.emplace(texture_handle, vtexture);
-            vframebuffer.color_textures.emplace_back(texture_handle);
-
-            // Framebuffer 생성 정보 설정
-            std::vector<vk::ImageView> attachments = {image_view};
-
-            if (has_depth) {
-                auto depth_it = textures_.find(depth_handle);
-                if (depth_it != textures_.end())
-                    attachments.emplace_back(depth_it->second.image_view);
-            }
-
-            // FramebufferCreateInfo 설정
-            vk::FramebufferCreateInfo framebuffer_info{};
-            framebuffer_info.renderPass = renderpasses_.at(rp_handle).renderpass;
-            framebuffer_info.attachmentCount = static_cast<uint32_t>(attachments.size());
-            framebuffer_info.pAttachments = attachments.data();
-            framebuffer_info.width = sc_data.chosen_extent.width;
-            framebuffer_info.height = sc_data.chosen_extent.height;
-            framebuffer_info.layers = 1;
-
-            // Framebuffer 생성
-            vk::Framebuffer framebuffer;
-            try {
-                framebuffer = device_.createFramebuffer(framebuffer_info);
-            } catch (const std::exception& e) {
-                throw std::runtime_error(std::string("Failed to create framebuffer: ") + e.what());
-            }
-
-            vframebuffer.width = sc_data.chosen_extent.width;
-            vframebuffer.height = sc_data.chosen_extent.height;
-            vframebuffer.framebuffers.emplace_back(framebuffer);
-        }
-
-        FrameBufferHandle fb_handle;
-        fb_handle.id = GenerateUniqueID();
-        framebuffers_.emplace(fb_handle, vframebuffer);
-        sc_data.fb_handle = fb_handle;
+        framebuffers_.emplace(fb_handle, fb);
         return fb_handle;
     }
 
@@ -1055,7 +965,7 @@ class VulkanRenderer : public IRenderer {
         }
 
         VulkanPipeline& pipeline = it->second;
-        XXH64_reset(hash_state_, current_renderpass_->cache);
+        XXH64_reset(hash_state_, current_renderpass_->handle.id);
         XXH64_update(hash_state_, &current_pass_, sizeof(current_pass_));
         XXH64_update(hash_state_, &pipeline.render_state_hash, sizeof(pipeline.render_state_hash));
         uint64_t hash = XXH64_digest(hash_state_);
@@ -1108,16 +1018,8 @@ class VulkanRenderer : public IRenderer {
         command_buffer_.dispatch(group_x, group_y, group_z);
     }
 
-    void BeginPass(const FrameBufferHandle& handle) override {
-        uint32_t image_index{0};
-        // 실제 FB 결정
-        FrameBufferHandle actual_fb = handle;
-        if (actual_fb.id == 0) {
-            actual_fb = current_fb_handle_;
-            image_index = current_image_index_;
-        }
-
-        auto fb_it = framebuffers_.find(actual_fb);
+    void BeginPass(const FrameBufferHandle& handle, const ViewportDesc& viewport, const ScissorDesc& scissor) override {
+        auto fb_it = framebuffers_.find(handle);
         if (fb_it == framebuffers_.end()) {
             throw std::runtime_error("Invalid FrameBufferHandle in BeginPass.");
         }
@@ -1144,7 +1046,7 @@ class VulkanRenderer : public IRenderer {
         // RenderPass 시작
         vk::RenderPassBeginInfo render_pass_info{};
         render_pass_info.renderPass = current_renderpass_->renderpass;
-        render_pass_info.framebuffer = vframebuffer.framebuffers[image_index];
+        render_pass_info.framebuffer = vframebuffer.framebuffers[vframebuffer.current_image_index];
         render_pass_info.renderArea.offset = vk::Offset2D{0, 0};
         render_pass_info.renderArea.extent = vk::Extent2D{vframebuffer.width, vframebuffer.height};
         render_pass_info.clearValueCount = static_cast<uint32_t>(current_renderpass_->clear_values.size());
@@ -1155,6 +1057,11 @@ class VulkanRenderer : public IRenderer {
         } catch (const std::exception& e) {
             throw std::runtime_error(std::string("Failed to begin render pass: ") + e.what());
         }
+
+        std::vector<vk::Viewport> vp = {Convert(viewport)};
+        std::vector<vk::Rect2D> sc = {Convert(scissor)};
+        command_buffer_.setViewport(0, vp);
+        command_buffer_.setScissor(0, sc);
     }
 
     void EndPass() override { command_buffer_.endRenderPass(); }
@@ -1164,43 +1071,38 @@ class VulkanRenderer : public IRenderer {
         current_pass_++;
     }
 
-    void Resize(uint32_t new_width, uint32_t new_height) override { Resize(main_swap_chain_, new_width, new_height); }
-
     void Resize(const SwapChainHandle& handle, uint32_t new_width, uint32_t new_height) override {
         auto it = swapchains_.find(handle);
         if (it == swapchains_.end()) {
             return;  // 잘못된 핸들이면 무시
         }
-        VulkanSwapChain& sc_data = it->second;
+        VulkanSwapChain& sc = it->second;
 
         // 1) GPU 대기
         device_.waitIdle();
 
         // 2) 백업: 기존 스왑체인 handle
-        vk::SwapchainKHR old_swapchain = sc_data.swapchain;
+        vk::SwapchainKHR old_swapchain = sc.swapchain;
 
-        // 3) 백업: 기존 프레임버퍼
-        auto old_fb_handle = sc_data.fb_handle;
+        // 3) 새 스왑체인 정보
+        auto capabilities = physical_device_.getSurfaceCapabilitiesKHR(sc.surface);
+        sc.chosen_extent = ChooseExtent(capabilities, new_width, new_height);
 
-        // 4) 새 스왑체인 정보
-        auto capabilities = physical_device_.getSurfaceCapabilitiesKHR(sc_data.surface);
-        sc_data.chosen_extent = ChooseExtent(capabilities, new_width, new_height);
-
-        // 5) createInfo에 oldSwapchain 설정
+        // 4) createInfo에 oldSwapchain 설정
         vk::SwapchainCreateInfoKHR sci{};
-        sci.surface = sc_data.surface;
-        sci.minImageCount = std::max<uint32_t>(2u, static_cast<uint32_t>(sc_data.desc.buffer_count));
-        sci.imageFormat = sc_data.chosen_color_format.format;
-        sci.imageColorSpace = sc_data.chosen_color_format.colorSpace;
-        sci.imageExtent = sc_data.chosen_extent;
+        sci.surface = sc.surface;
+        sci.minImageCount = std::max<uint32_t>(2u, static_cast<uint32_t>(sc.desc.buffer_count));
+        sci.imageFormat = sc.chosen_color_format.format;
+        sci.imageColorSpace = sc.chosen_color_format.colorSpace;
+        sci.imageExtent = sc.chosen_extent;
         sci.imageArrayLayers = 1;
         sci.imageUsage = vk::ImageUsageFlagBits::eColorAttachment;
-        sci.presentMode = sc_data.chosen_present_mode;
+        sci.presentMode = sc.chosen_present_mode;
         sci.clipped = VK_TRUE;
         sci.oldSwapchain = old_swapchain;  // 구 스왑체인 지정!
 
         // 6) 새 스왑체인 생성
-        sc_data.swapchain = device_.createSwapchainKHR(sci);
+        sc.swapchain = device_.createSwapchainKHR(sci);
 
         // 7) 구 스왑체인은 여기서 destroy
         //    새 스왑체인 생성 후 oldSwapchain을 안전하게 파괴할 수 있음
@@ -1209,18 +1111,22 @@ class VulkanRenderer : public IRenderer {
         }
 
         // 업데이트 정보
-        sc_data.desc.width = new_width;
-        sc_data.desc.height = new_height;
-        sc_data.current_frame = 0;
+        sc.desc.width = new_width;
+        sc.desc.height = new_height;
+        sc.current_frame = 0;
 
-        // 8) 새 스왑체인 이미지 기반 프레임버퍼 생성
-        sc_data.fb_handle = CreateFrameBuffer(handle);
+        auto& fb = framebuffers_.at(sc.fb_handle);
+        ReleaseResource(fb.depth_texture);
+        for (auto& handle : fb.color_textures) ReleaseResource(handle);
 
-        // 9) 구 프레임버퍼 제거.
-        ReleaseResource(old_fb_handle);
+        fb.depth_texture = TextureHandle{0};
+        fb.color_textures.clear();
+
+        auto& rp = renderpasses_.at(fb.rp_handle);
+        fb = CreateFrameBufferInternal(rp, sc);
+        rp.ref_count++;
+        fb.rp_handle = rp.handle;
     }
-
-    void Render(const RenderCallback& callback) override { Render(main_swap_chain_, callback); }
 
     void Render(const SwapChainHandle& handle, const RenderCallback& callback) override {
         auto it = swapchains_.find(handle);
@@ -1228,15 +1134,15 @@ class VulkanRenderer : public IRenderer {
             throw std::runtime_error("Invalid SwapChainHandle provided to Render.");
         }
 
-        VulkanSwapChain& sc_data = it->second;
-        VulkanFrameBuffer& vframebuffer = framebuffers_.at(sc_data.fb_handle);
-        current_fb_handle_ = sc_data.fb_handle;
+        VulkanSwapChain& sc = it->second;
+        VulkanFrameBuffer& fb = framebuffers_.at(sc.fb_handle);
+        current_fb_handle_ = sc.fb_handle;
 
         // Synchronization primitives
-        size_t frame = sc_data.current_frame;
-        vk::Semaphore image_available_semaphore = sc_data.image_available_semaphores[frame];
-        vk::Semaphore render_finished_semaphore = sc_data.render_finished_semaphores[frame];
-        vk::Fence in_flight_fence = sc_data.in_flight_fences[frame];
+        size_t frame = sc.current_frame;
+        vk::Semaphore image_available_semaphore = sc.image_available_semaphores[frame];
+        vk::Semaphore render_finished_semaphore = sc.render_finished_semaphores[frame];
+        vk::Fence in_flight_fence = sc.in_flight_fences[frame];
 
         // Wait for the previous frame to finish
         std::ignore = device_.waitForFences(in_flight_fence, VK_TRUE, UINT64_MAX);
@@ -1245,15 +1151,15 @@ class VulkanRenderer : public IRenderer {
         device_.resetFences(in_flight_fence);
 
         // Acquire the next image from the swapchain
-        vk::Result result = device_.acquireNextImageKHR(sc_data.swapchain, UINT64_MAX, image_available_semaphore,
-                                                        nullptr, &current_image_index_);
+        vk::Result result = device_.acquireNextImageKHR(sc.swapchain, UINT64_MAX, image_available_semaphore, nullptr,
+                                                        &fb.current_image_index);
         if (result == vk::Result::eErrorOutOfDateKHR) {
             throw std::runtime_error("Swapchain is out of date.");
         } else if (result != vk::Result::eSuccess && result != vk::Result::eSuboptimalKHR) {
             throw std::runtime_error("Failed to acquire swapchain image.");
         }
 
-        command_buffer_ = sc_data.command_buffers[sc_data.current_frame];
+        command_buffer_ = sc.command_buffers[sc.current_frame];
 
         // Reset and begin the command buffer
         command_buffer_.reset({});
@@ -1267,7 +1173,7 @@ class VulkanRenderer : public IRenderer {
         }
 
         // 사용자 정의 렌더링 명령 실행 (콜백에서 BeginPass와 EndPass를 호출함)
-        callback(sc_data.chosen_extent.width, sc_data.chosen_extent.height);
+        callback(sc.chosen_extent.width, sc.chosen_extent.height);
 
         // 커맨드 버퍼 종료
         try {
@@ -1300,8 +1206,8 @@ class VulkanRenderer : public IRenderer {
         present_info.waitSemaphoreCount = 1;
         present_info.pWaitSemaphores = signal_semaphores;
         present_info.swapchainCount = 1;
-        present_info.pSwapchains = &sc_data.swapchain;
-        present_info.pImageIndices = &current_image_index_;
+        present_info.pSwapchains = &sc.swapchain;
+        present_info.pImageIndices = &fb.current_image_index;
 
         try {
             vk::Result present_result = graphics_queue_.presentKHR(present_info);
@@ -1316,7 +1222,7 @@ class VulkanRenderer : public IRenderer {
         }
 
         // 다음 프레임으로 이동
-        sc_data.current_frame = (sc_data.current_frame + 1) % kMaxFramesInFlight;
+        sc.current_frame = (sc.current_frame + 1) % kMaxFramesInFlight;
     }
 
     void DrawIndexed(uint32_t index_count, uint32_t instance_count = 1, uint32_t first_index = 0,
@@ -1331,32 +1237,32 @@ class VulkanRenderer : public IRenderer {
 
         device_.waitIdle();
 
-        VulkanSwapChain& sc_data = it->second;
+        VulkanSwapChain& sc = it->second;
 
-        for (auto& sem : sc_data.image_available_semaphores) {
+        for (auto& sem : sc.image_available_semaphores) {
             device_.destroySemaphore(sem);
         }
-        for (auto& sem : sc_data.render_finished_semaphores) {
+        for (auto& sem : sc.render_finished_semaphores) {
             device_.destroySemaphore(sem);
         }
-        for (auto& f : sc_data.in_flight_fences) {
+        for (auto& f : sc.in_flight_fences) {
             device_.destroyFence(f);
         }
-        if (sc_data.command_pool) {
-            device_.destroyCommandPool(sc_data.command_pool);
+        if (sc.command_pool) {
+            device_.destroyCommandPool(sc.command_pool);
         }
-        if (sc_data.swapchain) {
-            device_.destroySwapchainKHR(sc_data.swapchain);
+        if (sc.swapchain) {
+            device_.destroySwapchainKHR(sc.swapchain);
         }
 
         // frame_buffer 해제
-        if (sc_data.fb_handle.id != 0) {
-            ReleaseResource(sc_data.fb_handle);
+        if (sc.fb_handle.id != 0) {
+            ReleaseResource(sc.fb_handle);
         }
 
         // surface 해제 여부
-        if (handle.id != main_swap_chain_.id && sc_data.surface) {
-            instance_.destroySurfaceKHR(sc_data.surface);
+        if (handle.id != 0 && sc.surface != main_surface_) {
+            instance_.destroySurfaceKHR(sc.surface);
         }
 
         swapchains_.erase(it);
@@ -1434,6 +1340,8 @@ class VulkanRenderer : public IRenderer {
     }
 
    private:
+    XXH64_state_t* hash_state_{nullptr};
+
     // Vulkan core components
     vk::Instance instance_;
     vk::SurfaceKHR main_surface_{nullptr};
@@ -1442,10 +1350,7 @@ class VulkanRenderer : public IRenderer {
     vk::CommandBuffer command_buffer_;  // current command buffer
 
     WindowHandle main_window_handle_;
-    SwapChainHandle main_swap_chain_;
-    XXH64_state_t* hash_state_{nullptr};
     FrameBufferHandle current_fb_handle_;
-    uint32_t current_image_index_{0};
 
     uint32_t graphics_queue_family_;  // Graphics Queue Family Index
     uint32_t present_queue_family_;   // Present Queue Family Index
@@ -1868,8 +1773,7 @@ class VulkanRenderer : public IRenderer {
     }
 
     vk::SurfaceKHR CreateSurface(const WindowHandle& window_handle) {
-        bool is_main_window = (window_handle.display == main_window_handle_.display) &&
-                              (window_handle.platform == main_window_handle_.platform);
+        bool is_main_window = (window_handle.display == main_window_handle_.display);
 
         if (is_main_window && main_surface_) {
             return main_surface_;
@@ -1934,8 +1838,8 @@ class VulkanRenderer : public IRenderer {
         return vk::SurfaceKHR(raw_surface);
     }
 
-    RenderPassHandle CreateRenderPassInternal(const std::vector<Format>& color_formats, const Format& depth_format,
-                                              const RenderPassConfig& config) {
+    VulkanRenderPass* CreateRenderPassInternal(const std::vector<Format>& color_formats, const Format& depth_format,
+                                               const RenderPassConfig& config) {
         // Hash the RenderPassDesc to use as a key
         uint64_t hash = Hash(color_formats, depth_format, config);
 
@@ -1946,7 +1850,7 @@ class VulkanRenderer : public IRenderer {
         auto it = renderpasses_.find(handle);
         if (it != renderpasses_.end()) {
             it->second.ref_count++;
-            return it->first;
+            return &it->second;
         }
 
         // 1. 첨부 지점 변환
@@ -2111,12 +2015,96 @@ class VulkanRenderer : public IRenderer {
 
         vrenderpass.renderpass = renderpass;
         vrenderpass.ref_count = 1;
-        vrenderpass.cache = hash;  // Store the hash
+        vrenderpass.handle = handle;  // Store the hash
 
         // Store the render pass
-        renderpasses_.emplace(handle, vrenderpass);
+        return &renderpasses_.emplace_hint(renderpasses_.begin(), handle, vrenderpass)->second;
+    }
 
-        return handle;
+    VulkanFrameBuffer CreateFrameBufferInternal(const VulkanRenderPass& rp, const VulkanSwapChain& sc) {
+        VulkanFrameBuffer fb;
+        bool has_depth = (sc.chosen_depth_format != vk::Format::eUndefined);
+
+        // 깊이 텍스처가 필요한 경우
+        TextureHandle depth_handle = TextureHandle{0};
+        if (has_depth) {
+            // 깊이 텍스처 생성
+            depth_handle = CreateTexture({
+                .type = TextureType::k2D,
+                .format = Convert(sc.chosen_depth_format),
+                .usage = TextureUsage::kDepthStencil,
+                .width = sc.chosen_extent.width,
+                .height = sc.chosen_extent.height,
+                .depth = 1,
+                .mip_levels = 1,
+                .array_layers = 1,
+                .memory_usage = MemoryUsage::kGpuOnly,  // 필요에 따라 조정
+            });
+            fb.depth_texture = depth_handle;
+        }
+
+        std::vector<vk::Image> swapchain_images = device_.getSwapchainImagesKHR(sc.swapchain);
+        for (const auto& image : swapchain_images) {
+            // CreateView 메소드를 사용하여 이미지 뷰 생성
+            vk::ImageView image_view =
+                CreateView(image, sc.chosen_color_format.format, vk::ImageAspectFlagBits::eColor);
+
+            // TextureHandle 생성 (kSwapChain 타입)
+            TextureHandle texture_handle;
+            texture_handle.id = GenerateUniqueID();
+
+            // VulkanTexture 구조체 채우기
+            VulkanTexture vtexture;
+            vtexture.desc = {
+                .type = TextureType::k2D,
+                .format = Convert(sc.chosen_color_format.format),
+                .usage = TextureUsage::kRenderTarget,
+                .width = sc.chosen_extent.width,
+                .height = sc.chosen_extent.height,
+                .depth = 1,
+                .mip_levels = 1,
+                .array_layers = 1,
+            };
+
+            vtexture.image = image;
+            vtexture.image_view = image_view;
+            vtexture.creation_type = TextureCreationType::kSwapChain;
+
+            textures_.emplace(texture_handle, vtexture);
+            fb.color_textures.emplace_back(texture_handle);
+
+            // Framebuffer 생성 정보 설정
+            std::vector<vk::ImageView> attachments = {image_view};
+
+            if (has_depth) {
+                auto depth_it = textures_.find(depth_handle);
+                if (depth_it != textures_.end())
+                    attachments.emplace_back(depth_it->second.image_view);
+            }
+
+            // FramebufferCreateInfo 설정
+            vk::FramebufferCreateInfo fb_info{};
+            fb_info.renderPass = rp.renderpass;
+            fb_info.attachmentCount = static_cast<uint32_t>(attachments.size());
+            fb_info.pAttachments = attachments.data();
+            fb_info.width = sc.chosen_extent.width;
+            fb_info.height = sc.chosen_extent.height;
+            fb_info.layers = 1;
+
+            // Framebuffer 생성
+            vk::Framebuffer framebuffer;
+            try {
+                framebuffer = device_.createFramebuffer(fb_info);
+            } catch (const std::exception& e) {
+                throw std::runtime_error(std::string("Failed to create framebuffer: ") + e.what());
+            }
+
+            fb.width = sc.chosen_extent.width;
+            fb.height = sc.chosen_extent.height;
+            fb.framebuffers.emplace_back(framebuffer);
+        }
+
+        return fb;
     }
 
     vk::ImageView CreateView(vk::Image image, vk::Format format, vk::ImageAspectFlags aspect_mask) {
