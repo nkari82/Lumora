@@ -1035,6 +1035,16 @@ inline std::vector<vk::PipelineColorBlendAttachmentState> VulkanRenderer::Conver
                                      vk::ColorComponentFlagBits::eB | vk::ColorComponentFlagBits::eA;
         color_blend_attachments.push_back(color_blend);
     }
+
+    // #FIXME 사라질 것.
+    if (color_blend_attachments.empty()) {
+        vk::PipelineColorBlendAttachmentState color_blend{};
+        color_blend.blendEnable = VK_FALSE;
+        color_blend.colorWriteMask = vk::ColorComponentFlagBits::eR | vk::ColorComponentFlagBits::eG |
+                                     vk::ColorComponentFlagBits::eB | vk::ColorComponentFlagBits::eA;
+        color_blend_attachments.emplace_back(color_blend);
+    }
+
     return color_blend_attachments;
 }
 

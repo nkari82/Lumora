@@ -27,7 +27,7 @@ namespace lumora {
 
 // Resource handle definition
 struct ResourceHandle {
-    uint64_t id = 0;
+    std::size_t id = 0;
 
     bool operator==(const ResourceHandle& other) const { return id == other.id; }
 };

@@ -27,7 +27,7 @@
 #include <spirv_cross/spirv_cross.hpp>
 #include <spirv_cross/spirv_glsl.hpp>
 
-static bool enable_validation_layers = false;
+static bool enable_validation_layers = true;
 const std::vector<const char*> validation_layers = {"VK_LAYER_KHRONOS_validation"};
 
 namespace lumora {
@@ -40,13 +40,13 @@ struct RenderPassHandle : ResourceHandle {};
 
 enum class TextureCreationType { kRegular, kSwapChain };
 
-struct HandleHash {
-    std::size_t operator()(const ResourceHandle& handle) const { return static_cast<std::size_t>(handle.id); }
+struct Handle {
+    std::size_t operator()(const ResourceHandle& handle) const { return handle.id; }
 };
 
 // Helper function to generate unique IDs for handles
-static uint64_t GenerateUniqueID() {
-    static uint64_t current_id = 1;
+static std::size_t GenerateUniqueID() {
+    static std::size_t current_id = 1;
     return current_id++;
 }
 
@@ -95,8 +95,7 @@ struct VulkanPipeline : VulkanRef {
     std::unordered_map<uint64_t, vk::Pipeline> pipelines;
     vk::PipelineLayout layout;
     vk::GraphicsPipelineCreateInfo create_info;
-    RenderState render_state;
-    uint64_t render_state_hash;
+    RenderState render_state;  // #TODO 이 변수가 여기 있을 필요는 없다. current render state
 };
 
 // New Structs for Framebuffer and Render Pass
@@ -677,27 +676,9 @@ class VulkanRenderer : public IRenderer {
         pipeline_info.basePipelineHandle = nullptr;
 
         RenderState render_state{};
-#if 0        
-        // #FIXME 사라질 것 BindSwapchain으로 교체.
-        const auto& swapchain = swapchains_.begin()->second;
-
-        render_state.viewport.width = swapchain.chosen_extent.width;
-        render_state.viewport.height = swapchain.chosen_extent.height;
-
-        render_state.scissor.width = swapchain.chosen_extent.width;
-        render_state.scissor.height = swapchain.chosen_extent.height;
-
-        auto viewport = Convert(render_state.viewport);
-        auto scissor = Convert(render_state.scissor);
-#endif
-
         vk::PipelineViewportStateCreateInfo viewport_state{};
         viewport_state.viewportCount = 1;
         viewport_state.scissorCount = 1;
-#if 0
-        viewport_state.pViewports = &viewport;
-        viewport_state.pScissors = &scissor;
-#endif
 
         // Rasterizer Configuration
         auto rasterizer = Convert(render_state.rasterization);
@@ -710,23 +691,10 @@ class VulkanRenderer : public IRenderer {
         // Color Blending Configuration
         auto color_blend_attachments = Convert(render_state.color_blends);
 
-        if (color_blend_attachments.empty()) {
-            vk::PipelineColorBlendAttachmentState color_blend{};
-            color_blend.colorWriteMask = vk::ColorComponentFlagBits::eR | vk::ColorComponentFlagBits::eG |
-                                         vk::ColorComponentFlagBits::eB | vk::ColorComponentFlagBits::eA;
-            color_blend.blendEnable = VK_FALSE;
-            color_blend_attachments.emplace_back(color_blend);
-        }
-
         vk::PipelineColorBlendStateCreateInfo color_blending{};
-        color_blending.logicOpEnable = VK_FALSE;
         color_blending.logicOp = vk::LogicOp::eCopy;
         color_blending.attachmentCount = static_cast<uint32_t>(color_blend_attachments.size());
         color_blending.pAttachments = color_blend_attachments.data();
-        color_blending.blendConstants[0] = 0.0f;
-        color_blending.blendConstants[1] = 0.0f;
-        color_blending.blendConstants[2] = 0.0f;
-        color_blending.blendConstants[3] = 0.0f;
 
         vk::PipelineDynamicStateCreateInfo dynamic_state{};
         std::vector<vk::DynamicState> dynamic_states = {vk::DynamicState::eViewport, vk::DynamicState::eScissor};
@@ -747,11 +715,14 @@ class VulkanRenderer : public IRenderer {
         }
 
         // Combine render pass hash and subpass index to create a unique key
-        // #FIXME replace xxHash
-        uint64_t hash = rp.handle.id ^ (static_cast<uint64_t>(desc.pass) << 32);
+        XXH64_reset(hash_state_, rp.handle.id);
+        XXH64_update(hash_state_, &desc.pass, sizeof(desc.pass));
+        XXH64_update(hash_state_, &render_state, sizeof(render_state));
+        uint64_t hash = XXH64_digest(hash_state_);
 
         VulkanPipeline pl;
         pl.pipelines[hash] = pipeline;
+        pl.render_state = render_state;
         pl.create_info = pipeline_info;
         pl.layout = layout;
 
@@ -819,7 +790,6 @@ class VulkanRenderer : public IRenderer {
 
         VulkanPipeline& pipeline = it->second;
         pipeline.render_state = state;
-        pipeline.render_state_hash = Hash(state);
     }
 
     FrameBufferHandle CreateFrameBuffer(const FrameBufferDesc& desc) {
@@ -971,7 +941,8 @@ class VulkanRenderer : public IRenderer {
         VulkanPipeline& pipeline = it->second;
         XXH64_reset(hash_state_, current_rpass_->handle.id);
         XXH64_update(hash_state_, &current_pass_, sizeof(current_pass_));
-        XXH64_update(hash_state_, &pipeline.render_state_hash, sizeof(pipeline.render_state_hash));
+        XXH64_update(hash_state_, &pipeline.render_state,
+                     sizeof(pipeline.render_state));  // #TODO 렌더스테이트 해싱을 매번 계산하지 말고 미리 캐싱.
         uint64_t hash = XXH64_digest(hash_state_);
 
         // Check if pipeline with combined_hash exists
@@ -984,16 +955,27 @@ class VulkanRenderer : public IRenderer {
             // 여기서는 기존 파이프라인 정보를 재사용하여 새로운 파이프라인을 생성
             vk::GraphicsPipelineCreateInfo pipeline_info{pipeline.create_info};
 
+            auto color_blend_attachments = Convert(pipeline.render_state.color_blends);
+            auto depth_stencil = Convert(pipeline.render_state.depth_stencil);
+            auto rasterizer = Convert(pipeline.render_state.rasterization);
+
+            color_blend_attachments.resize(current_rpass_->attachment_colors);
+
+            vk::PipelineColorBlendStateCreateInfo color_blending{};
+            color_blending.logicOp = vk::LogicOp::eCopy;
+            color_blending.attachmentCount = static_cast<uint32_t>(color_blend_attachments.size());
+            color_blending.pAttachments = color_blend_attachments.data();
+
+            pipeline_info.pColorBlendState = &color_blending;
+            pipeline_info.pDepthStencilState = &depth_stencil;
+            pipeline_info.pRasterizationState = &rasterizer;
+
             // Pipeline Layout 및 Render Pass 설정
             pipeline_info.layout = pipeline.layout;
-            pipeline_info.renderPass = current_rpass_->renderpass;  // #FIXME 렌더패스 핸들을 파이프라인에 할당한다.
+            pipeline_info.renderPass = current_rpass_->renderpass;
             pipeline_info.subpass = current_pass_;
             pipeline_info.flags |= vk::PipelineCreateFlagBits::eDerivative;
             pipeline_info.basePipelineHandle = pipeline.pipelines.begin()->second;
-#if 0
-            if(pipeline_info.pColorBlendState)
-                pipeline_info.pColorBlendState->attachmentCount = current_renderpass_->attachment_colors;
-#endif
 
             // 새로운 파이프라인 생성
             try {
@@ -1364,14 +1346,14 @@ class VulkanRenderer : public IRenderer {
     vk::DebugUtilsMessengerEXT debug_messenger_;
 
     // Resource maps using dedicated structs
-    std::unordered_map<BufferHandle, VulkanBuffer, HandleHash> buffers_;
-    std::unordered_map<TextureHandle, VulkanTexture, HandleHash> textures_;
-    std::unordered_map<SamplerHandle, VulkanSampler, HandleHash> samplers_;
-    std::unordered_map<ShaderHandle, VulkanShader, HandleHash> shaders_;
-    std::unordered_map<PipelineHandle, VulkanPipeline, HandleHash> pipelines_;
-    std::unordered_map<SwapChainHandle, VulkanSwapChain, HandleHash> swapchains_;
-    std::unordered_map<FrameBufferHandle, VulkanFrameBuffer, HandleHash> fbuffers_;
-    std::unordered_map<RenderPassHandle, VulkanRenderPass, HandleHash> rpasses_;
+    std::unordered_map<BufferHandle, VulkanBuffer, Handle> buffers_;
+    std::unordered_map<TextureHandle, VulkanTexture, Handle> textures_;
+    std::unordered_map<SamplerHandle, VulkanSampler, Handle> samplers_;
+    std::unordered_map<ShaderHandle, VulkanShader, Handle> shaders_;
+    std::unordered_map<PipelineHandle, VulkanPipeline, Handle> pipelines_;
+    std::unordered_map<SwapChainHandle, VulkanSwapChain, Handle> swapchains_;
+    std::unordered_map<FrameBufferHandle, VulkanFrameBuffer, Handle> fbuffers_;
+    std::unordered_map<RenderPassHandle, VulkanRenderPass, Handle> rpasses_;
 
     // Descriptor Set Management
     // vk::DescriptorPool descriptor_pool_;
