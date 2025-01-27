@@ -661,9 +661,9 @@ class VulkanRenderer : public IRenderer {
         multisampling.sampleShadingEnable = VK_FALSE;
         multisampling.rasterizationSamples = Convert(desc.sample_count);
 
-        // Graphics Pipeline Creation
-        const auto& rp = rpasses_.begin()->second;
+        const auto& rp = rpasses_.at(fbuffers_.at(desc.framebuffer).rp_handle);
 
+        // Graphics Pipeline Creation
         vk::GraphicsPipelineCreateInfo pipeline_info{};
         pipeline_info.stageCount = static_cast<uint32_t>(shader_stages.size());
         pipeline_info.pStages = shader_stages.data();

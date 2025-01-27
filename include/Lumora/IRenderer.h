@@ -241,14 +241,10 @@ struct DepthStencilState {
 enum class SampleCount { k1, k2, k4, k6, k8, k16, k32, k64 };
 
 struct PipelineDesc {
+    FrameBufferHandle framebuffer;
     ShaderHandle vertex_shader;
     ShaderHandle fragment_shader;
     VertexLayoutDesc vertex_layout_desc;
-#if 0
-    RasterizationState rasterization;
-    std::vector<ColorBlendState> color_blends;
-    DepthStencilState depth_stencil;
-#endif
     SampleCount sample_count = SampleCount::k1;
     Topology topology = Topology::kTriangleList;
     uint32_t pass = 0;

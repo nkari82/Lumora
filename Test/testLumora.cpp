@@ -110,6 +110,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow) {
     auto frag_handle = renderer->CreateShader({lumora::ShaderStage::kFragment, "shaders/spv/test2.frag.spv"});
 
     lumora::PipelineDesc desc;
+    desc.framebuffer = main_framebuffer;
     desc.vertex_shader = vert_handle;
     desc.fragment_shader = frag_handle;
     // desc.viewport.width = swapDesc.width;
