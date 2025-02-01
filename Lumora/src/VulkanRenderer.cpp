@@ -1251,7 +1251,7 @@ class VulkanRenderer : public IRenderer {
         auto& fb = fbuffers_.at(sc.fb_handle);
         ReleaseResource(fb.depth_texture);
         for (auto& handle : fb.color_textures) ReleaseResource(handle);
-
+        for (auto& fb : fb.framebuffers) device_.destroyFramebuffer(fb);
         fb.depth_texture = TextureHandle{0};
         fb.color_textures.clear();
 
@@ -1472,7 +1472,7 @@ class VulkanRenderer : public IRenderer {
         auto it = fbuffers_.find(handle);
         if (it != fbuffers_.end()) {
             if (--it->second.ref_count == 0) {
-                for (auto& framebuffer : it->second.framebuffers) device_.destroyFramebuffer(framebuffer);
+                for (auto& fb : it->second.framebuffers) device_.destroyFramebuffer(fb);
                 ReleaseResource(it->second.rp_handle);
                 for (auto& h : it->second.color_textures) ReleaseResource(h);
                 ReleaseResource(it->second.depth_texture);
