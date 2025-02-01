@@ -92,6 +92,25 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow) {
         std::cout << err.what();
     }
 
+    lumora::RenderPassDesc rp_desc;
+    rp_desc.color_formats.emplace_back(lumora::Format::kB8G8R8A8Unorm);
+    rp_desc.depth_format = lumora::Format::kD32SfloatS8Uint;
+
+    rp_desc.clear_colors = {{0.25f, 0.25f, 0.25f, 1.0f}};
+    rp_desc.clear_depth = true;
+    rp_desc.clear_depth_value = 1.0f;
+    rp_desc.clear_stencil_value = 0;
+    rp_desc.color_attachment_options = {lumora::AttachmentOptions{.load_op = lumora::AttachmentLoadOp::kClear,
+                                                                  .store_op = lumora::AttachmentStoreOp::kStore}};
+
+    rp_desc.depth_attachment_options = lumora::AttachmentOptions{.load_op = lumora::AttachmentLoadOp::kClear,
+                                                                 .store_op = lumora::AttachmentStoreOp::kStore};
+    lumora::SubpassDesc subpass;
+    subpass.color_attachments.push_back(0);
+    subpass.depth_attachment = 0;
+    rp_desc.subpasses.push_back(subpass);
+    auto rp_handle = renderer->CreateRenderPass(rp_desc);
+
     // Create SwapChain
     lumora::SwapChainDesc swap_desc;
     swap_desc.window_handle = wh;
@@ -103,14 +122,14 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow) {
     swap_desc.vsync = true;
 
     main_swapchain = renderer->CreateSwapChain(swap_desc);
-    main_framebuffer = renderer->CreateFrameBuffer(main_swapchain);
+    main_framebuffer = renderer->CreateFrameBuffer(main_swapchain, rp_handle);
 
     // init shader (#TODO 리플렉션이 제대로 되나 확인)
     auto vert_handle = renderer->CreateShader({lumora::ShaderStage::kVertex, "shaders/spv/test2.vert.spv"});
     auto frag_handle = renderer->CreateShader({lumora::ShaderStage::kFragment, "shaders/spv/test2.frag.spv"});
 
     lumora::PipelineDesc desc;
-    desc.framebuffer = main_framebuffer;
+    desc.init_rp_handle = rp_handle;
     desc.vertex_shader = vert_handle;
     desc.fragment_shader = frag_handle;
     // desc.viewport.width = swapDesc.width;
@@ -163,6 +182,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow) {
     renderer->ReleaseResource(frag_handle);
     renderer->ReleaseResource(main_swapchain);
     renderer->ReleaseResource(main_framebuffer);
+    renderer->ReleaseResource(rp_handle);
 
     renderer->Close();
 

@@ -35,9 +35,6 @@ namespace lumora {
 // Constants
 const int kMaxFramesInFlight = 2;
 
-// Internal Resource Handle
-struct RenderPassHandle : ResourceHandle {};
-
 enum class TextureCreationType { kRegular, kSwapChain };
 
 struct Handle {
@@ -240,6 +237,189 @@ class VulkanRenderer : public IRenderer {
         handle.id = GenerateUniqueID();
         swapchains_.emplace(handle, sc_data);
 
+        return handle;
+    }
+
+    RenderPassHandle CreateRenderPass(const RenderPassDesc& desc) override {
+        // Hash the RenderPassDesc to use as a key
+        uint64_t hash = Hash(desc);
+
+        // Create a unique handle
+        RenderPassHandle handle{hash};
+
+        // Check if render pass already exists
+        auto it = rpasses_.find(handle);
+        if (it != rpasses_.end()) {
+            it->second.ref_count++;
+            return it->first;
+        }
+
+        // 1. 첨부 지점 변환
+        std::vector<vk::AttachmentDescription> attachments;
+        attachments.reserve(desc.color_formats.size() + (desc.depth_format != Format::kUndefined ? 1 : 0));
+
+        // 컬러 첨부 지점
+        for (size_t i = 0; i < desc.color_formats.size(); ++i) {
+            vk::AttachmentDescription attachment = {};
+            attachment.format = Convert(desc.color_formats[i]);
+            attachment.samples = vk::SampleCountFlagBits::e1;  // 예시, 실제 샘플링은 사용자 입력에 따라 다름
+            attachment.loadOp = Convert(desc.color_attachment_options[i].load_op);
+            attachment.storeOp = Convert(desc.color_attachment_options[i].store_op);
+            attachment.stencilLoadOp = vk::AttachmentLoadOp::eDontCare;
+            attachment.stencilStoreOp = vk::AttachmentStoreOp::eDontCare;
+            attachment.initialLayout = vk::ImageLayout::eUndefined;
+            // 컬러 첨부의 최종 레이아웃을 ePresentSrcKHR로 설정 (예시)
+            attachment.finalLayout = vk::ImageLayout::ePresentSrcKHR;
+            attachments.push_back(attachment);
+        }
+
+        // 깊이 첨부 지점 (옵션)
+        bool has_depth = desc.depth_format != Format::kUndefined;
+        size_t depthAttachmentIndex = attachments.size();  // 인덱스
+        if (has_depth) {
+            vk::AttachmentDescription depth_attachment = {};
+            depth_attachment.format = Convert(desc.depth_format);
+            depth_attachment.samples = vk::SampleCountFlagBits::e1;  // 예시
+            depth_attachment.loadOp = Convert(desc.depth_attachment_options.load_op);
+            depth_attachment.storeOp = Convert(desc.depth_attachment_options.store_op);
+            depth_attachment.stencilLoadOp = vk::AttachmentLoadOp::eDontCare;
+            depth_attachment.stencilStoreOp = vk::AttachmentStoreOp::eDontCare;
+            depth_attachment.initialLayout = vk::ImageLayout::eUndefined;
+            depth_attachment.finalLayout = vk::ImageLayout::eDepthStencilAttachmentOptimal;
+            attachments.push_back(depth_attachment);
+        }
+
+        // 2. 서브패스 변환
+        std::vector<vk::SubpassDescription> subpasses;
+        subpasses.reserve(desc.subpasses.size());
+
+        // 서브패스의 컬러, 입력, 깊이 첨부 참조를 저장할 임시 벡터
+        std::vector<std::vector<vk::AttachmentReference>> color_attachment_refs;
+        std::vector<std::vector<vk::AttachmentReference>> input_attachment_refs;
+        std::vector<vk::AttachmentReference> depth_attachment_refs;  // 깊이 첨부 참조 저장
+        for (const auto& s : desc.subpasses) {
+            vk::SubpassDescription subpass = {};
+            subpass.pipelineBindPoint = vk::PipelineBindPoint::eGraphics;
+
+            // 컬러 첨부 참조
+            std::vector<vk::AttachmentReference> color_refs;
+            color_refs.reserve(s.color_attachments.size());
+            for (const auto& attachment : s.color_attachments) {
+                vk::AttachmentReference ref = {};
+                ref.attachment = attachment;
+                ref.layout = vk::ImageLayout::eColorAttachmentOptimal;
+                color_refs.push_back(ref);
+            }
+            color_attachment_refs.emplace_back(std::move(color_refs));
+            subpass.colorAttachmentCount = static_cast<uint32_t>(color_attachment_refs.back().size());
+            subpass.pColorAttachments = color_attachment_refs.back().data();
+
+            // 입력 첨부 참조
+            std::vector<vk::AttachmentReference> input_refs;
+            input_refs.reserve(s.input_attachments.size());
+            for (const auto& attachment : s.input_attachments) {
+                vk::AttachmentReference ref = {};
+                ref.attachment = attachment;
+                ref.layout = vk::ImageLayout::eShaderReadOnlyOptimal;
+                input_refs.push_back(ref);
+            }
+            input_attachment_refs.emplace_back(std::move(input_refs));
+            subpass.inputAttachmentCount = static_cast<uint32_t>(input_attachment_refs.back().size());
+            subpass.pInputAttachments = input_attachment_refs.back().data();
+
+            // 깊이 첨부 참조
+            if (s.depth_attachment.has_value()) {
+                vk::AttachmentReference ref = {};
+                ref.attachment = depthAttachmentIndex;
+                ref.layout = vk::ImageLayout::eDepthStencilAttachmentOptimal;
+                depth_attachment_refs.push_back(ref);
+                subpass.pDepthStencilAttachment = &depth_attachment_refs.back();
+            }
+
+            subpasses.push_back(subpass);
+        }
+
+        // 3. 서브패스 의존성 자동 설정
+        std::vector<vk::SubpassDependency> dependencies;
+
+        if (!desc.subpasses.empty()) {
+            // 첫 번째 서브패스에 대한 외부 의존성
+            vk::SubpassDependency first = {};
+            first.srcSubpass = VK_SUBPASS_EXTERNAL;
+            first.dstSubpass = 0;
+            first.srcStageMask = vk::PipelineStageFlagBits::eBottomOfPipe;
+            first.dstStageMask = vk::PipelineStageFlagBits::eColorAttachmentOutput;
+            first.srcAccessMask = vk::AccessFlags();  // NONE
+            first.dstAccessMask = vk::AccessFlagBits::eColorAttachmentRead | vk::AccessFlagBits::eColorAttachmentWrite;
+            first.dependencyFlags = vk::DependencyFlags();
+            dependencies.push_back(first);
+
+            // 서브패스 간의 의존성 설정
+            for (size_t i = 1; i < desc.subpasses.size(); ++i) {
+                vk::SubpassDependency dep = {};
+                dep.srcSubpass = static_cast<uint32_t>(i - 1);
+                dep.dstSubpass = static_cast<uint32_t>(i);
+                dep.srcStageMask = vk::PipelineStageFlagBits::eColorAttachmentOutput;
+                dep.dstStageMask = vk::PipelineStageFlagBits::eColorAttachmentOutput;
+                dep.srcAccessMask = vk::AccessFlagBits::eColorAttachmentWrite;
+                dep.dstAccessMask =
+                    vk::AccessFlagBits::eColorAttachmentRead | vk::AccessFlagBits::eColorAttachmentWrite;
+                dep.dependencyFlags = vk::DependencyFlags();
+                dependencies.push_back(dep);
+            }
+
+            // 마지막 서브패스에 대한 외부 의존성
+            vk::SubpassDependency last = {};
+            last.srcSubpass = static_cast<uint32_t>(desc.subpasses.size() - 1);
+            last.dstSubpass = VK_SUBPASS_EXTERNAL;
+            last.srcStageMask = vk::PipelineStageFlagBits::eColorAttachmentOutput;
+            last.dstStageMask = vk::PipelineStageFlagBits::eBottomOfPipe;
+            last.srcAccessMask = vk::AccessFlagBits::eColorAttachmentRead | vk::AccessFlagBits::eColorAttachmentWrite;
+            last.dstAccessMask = vk::AccessFlags();  // NONE
+            last.dependencyFlags = vk::DependencyFlags();
+            dependencies.push_back(last);
+        }
+
+        // 4. RenderPassCreateInfo 설정
+        vk::RenderPassCreateInfo renderPassInfo = {};
+        renderPassInfo.attachmentCount = static_cast<uint32_t>(attachments.size());
+        renderPassInfo.pAttachments = attachments.data();
+        renderPassInfo.subpassCount = static_cast<uint32_t>(subpasses.size());
+        renderPassInfo.pSubpasses = subpasses.data();
+        renderPassInfo.dependencyCount = static_cast<uint32_t>(dependencies.size());
+        renderPassInfo.pDependencies = dependencies.empty() ? nullptr : dependencies.data();
+
+        // 5. VkRenderPass 생성
+        vk::RenderPass renderpass;
+        vk::Result result = device_.createRenderPass(&renderPassInfo, nullptr, &renderpass);
+        if (result != vk::Result::eSuccess) {
+            throw std::runtime_error("Failed to create vk::RenderPass!");
+        }
+
+        VulkanRenderPass rpass;
+        rpass.attachment_colors = static_cast<uint32_t>(desc.color_formats.size());
+
+        // 클리어 값 설정
+        std::vector<vk::ClearValue> clear_values;
+        for (const auto& color : desc.clear_colors) {
+            vk::ClearColorValue clear_color =
+                vk::ClearColorValue(std::array<float, 4>{color[0], color[1], color[2], color[3]});
+            rpass.clear_values.emplace_back(clear_color);
+        }
+
+        if (has_depth) {
+            vk::ClearDepthStencilValue clear_depth = {};
+            clear_depth.depth = desc.clear_depth_value;
+            clear_depth.stencil = desc.clear_stencil_value;
+            rpass.clear_values.emplace_back(clear_depth);
+        }
+
+        rpass.renderpass = renderpass;
+        rpass.ref_count = 1;
+        rpass.handle = handle;  // Store the hash
+
+        // Store the render pass
+        rpasses_.emplace(handle, rpass);
         return handle;
     }
 
@@ -661,7 +841,7 @@ class VulkanRenderer : public IRenderer {
         multisampling.sampleShadingEnable = VK_FALSE;
         multisampling.rasterizationSamples = Convert(desc.sample_count);
 
-        const auto& rp = rpasses_.at(fbuffers_.at(desc.framebuffer).rp_handle);
+        const auto& rp = rpasses_.at(desc.init_rp_handle);
 
         // Graphics Pipeline Creation
         vk::GraphicsPipelineCreateInfo pipeline_info{};
@@ -676,6 +856,8 @@ class VulkanRenderer : public IRenderer {
         pipeline_info.basePipelineHandle = nullptr;
 
         RenderState render_state{};
+        render_state.color_blends.emplace_back(ColorBlendState{});
+
         vk::PipelineViewportStateCreateInfo viewport_state{};
         viewport_state.viewportCount = 1;
         viewport_state.scissorCount = 1;
@@ -815,7 +997,7 @@ class VulkanRenderer : public IRenderer {
         }
 
         // Create or retrieve RenderPass
-        auto rp = CreateRenderPassInternal(color_formats, depth_format, desc.config);
+        const auto& rp = rpasses_.at(desc.rp_handle);
 
         // Create Framebuffer
         VulkanFrameBuffer fb;
@@ -848,7 +1030,7 @@ class VulkanRenderer : public IRenderer {
         uint32_t height = desc.height;
 
         vk::FramebufferCreateInfo framebuffer_info{};
-        framebuffer_info.renderPass = rp->renderpass;
+        framebuffer_info.renderPass = rp.renderpass;
         framebuffer_info.attachmentCount = static_cast<uint32_t>(attachments.size());
         framebuffer_info.pAttachments = attachments.data();
         framebuffer_info.width = width;
@@ -861,11 +1043,9 @@ class VulkanRenderer : public IRenderer {
             throw std::runtime_error(std::string("Failed to create framebuffer: ") + e.what());
         }
 
-        fb.rp_handle = rp->handle;
+        fb.rp_handle = rp.handle;
         fb.width = width;
         fb.height = height;
-
-        fb.ref_count = 1;
 
         FrameBufferHandle handle;
         handle.id = GenerateUniqueID();
@@ -874,7 +1054,7 @@ class VulkanRenderer : public IRenderer {
         return handle;
     }
 
-    FrameBufferHandle CreateFrameBuffer(const SwapChainHandle& handle) override {
+    FrameBufferHandle CreateFrameBuffer(const SwapChainHandle& handle, const RenderPassHandle& rp_handle) override {
         // SwapChain 조회
         auto swapchain_it = swapchains_.find(handle);
         if (swapchain_it == swapchains_.end()) {
@@ -884,44 +1064,12 @@ class VulkanRenderer : public IRenderer {
         VulkanSwapChain& sc = swapchain_it->second;
         bool has_depth = (sc.chosen_depth_format != vk::Format::eUndefined);
 
-        // RenderPass 생성 (SwapChainDesc를 기반으로)
-        std::vector<Format> color_formats;
-        Format depth_format;
-        color_formats.emplace_back(Convert(sc.chosen_color_format.format));
-        depth_format = Convert(sc.chosen_depth_format);
-        RenderPassConfig config{};
-        config.clear_colors = {{0.25f, 0.25f, 0.25f, 1.0f}};
-        config.clear_depth = true;
-        config.clear_depth_value = 1.0f;
-        config.clear_stencil_value = 0;
-        config.color_attachment_options = {
-            AttachmentOptions{.load_op = AttachmentLoadOp::kClear, .store_op = AttachmentStoreOp::kStore}};
-        if (has_depth) {
-            config.depth_attachment_options =
-                AttachmentOptions{.load_op = AttachmentLoadOp::kClear, .store_op = AttachmentStoreOp::kStore};
-        }
-
-        // 서브패스 설정
-        SubpassDesc subpass;
-
-        // 컬러 어태치먼트 참조
-        uint32_t colorAttachmentRef = 0;  // 첫 번째 컬러 어태치먼트 인덱스
-
-        subpass.color_attachments.push_back(colorAttachmentRef);
-
-        // 깊이 어태치먼트 참조
-        if (has_depth) {
-            uint32_t depthAttachmentRef = 0;  // 깊이 어태치먼트는 인덱스 0으로 가정
-            subpass.depth_attachment = depthAttachmentRef;
-        }
-
-        config.subpasses.push_back(subpass);
-
-        auto rp = CreateRenderPassInternal(color_formats, depth_format, config);
+        auto& rp = rpasses_.at(rp_handle);
+        rp.ref_count++;
 
         // VulkanFrameBuffer 생성
-        VulkanFrameBuffer fb = CreateFrameBufferInternal(*rp, sc);
-        fb.rp_handle = rp->handle;
+        VulkanFrameBuffer fb = CreateFrameBufferInternal(rp, sc);
+        fb.rp_handle = rp_handle;
 
         FrameBufferHandle fb_handle = FrameBufferHandle{GenerateUniqueID()};
         fb.ref_count++;
@@ -1250,6 +1398,16 @@ class VulkanRenderer : public IRenderer {
         }
 
         swapchains_.erase(it);
+    }
+
+    void ReleaseResource(const RenderPassHandle& handle) override {
+        auto it = rpasses_.find(handle);
+        if (it != rpasses_.end()) {
+            if (--it->second.ref_count == 0) {
+                device_.destroyRenderPass(it->second.renderpass);
+                rpasses_.erase(it);
+            }
+        }
     }
 
     void ReleaseResource(const TextureHandle& handle) override {
@@ -1824,189 +1982,6 @@ class VulkanRenderer : public IRenderer {
         return vk::SurfaceKHR(raw_surface);
     }
 
-    VulkanRenderPass* CreateRenderPassInternal(const std::vector<Format>& color_formats, const Format& depth_format,
-                                               const RenderPassConfig& config) {
-        // Hash the RenderPassDesc to use as a key
-        uint64_t hash = Hash(color_formats, depth_format, config);
-
-        // Create a unique handle
-        RenderPassHandle handle{hash};
-
-        // Check if render pass already exists
-        auto it = rpasses_.find(handle);
-        if (it != rpasses_.end()) {
-            it->second.ref_count++;
-            return &it->second;
-        }
-
-        // 1. 첨부 지점 변환
-        std::vector<vk::AttachmentDescription> attachments;
-        attachments.reserve(color_formats.size() + (depth_format != Format::kUndefined ? 1 : 0));
-
-        // 컬러 첨부 지점
-        for (size_t i = 0; i < color_formats.size(); ++i) {
-            vk::AttachmentDescription attachment = {};
-            attachment.format = Convert(color_formats[i]);
-            attachment.samples = vk::SampleCountFlagBits::e1;  // 예시, 실제 샘플링은 사용자 입력에 따라 다름
-            attachment.loadOp = Convert(config.color_attachment_options[i].load_op);
-            attachment.storeOp = Convert(config.color_attachment_options[i].store_op);
-            attachment.stencilLoadOp = vk::AttachmentLoadOp::eDontCare;
-            attachment.stencilStoreOp = vk::AttachmentStoreOp::eDontCare;
-            attachment.initialLayout = vk::ImageLayout::eUndefined;
-            // 컬러 첨부의 최종 레이아웃을 ePresentSrcKHR로 설정 (예시)
-            attachment.finalLayout = vk::ImageLayout::ePresentSrcKHR;
-            attachments.push_back(attachment);
-        }
-
-        // 깊이 첨부 지점 (옵션)
-        bool has_depth = depth_format != Format::kUndefined;
-        size_t depthAttachmentIndex = attachments.size();  // 인덱스
-        if (has_depth) {
-            vk::AttachmentDescription depth_attachment = {};
-            depth_attachment.format = Convert(depth_format);
-            depth_attachment.samples = vk::SampleCountFlagBits::e1;  // 예시
-            depth_attachment.loadOp = Convert(config.depth_attachment_options.load_op);
-            depth_attachment.storeOp = Convert(config.depth_attachment_options.store_op);
-            depth_attachment.stencilLoadOp = vk::AttachmentLoadOp::eDontCare;
-            depth_attachment.stencilStoreOp = vk::AttachmentStoreOp::eDontCare;
-            depth_attachment.initialLayout = vk::ImageLayout::eUndefined;
-            depth_attachment.finalLayout = vk::ImageLayout::eDepthStencilAttachmentOptimal;
-            attachments.push_back(depth_attachment);
-        }
-
-        // 2. 서브패스 변환
-        std::vector<vk::SubpassDescription> subpasses;
-        subpasses.reserve(config.subpasses.size());
-
-        // 서브패스의 컬러, 입력, 깊이 첨부 참조를 저장할 임시 벡터
-        std::vector<std::vector<vk::AttachmentReference>> color_attachment_refs;
-        std::vector<std::vector<vk::AttachmentReference>> input_attachment_refs;
-        std::vector<vk::AttachmentReference> depth_attachment_refs;  // 깊이 첨부 참조 저장
-        for (const auto& s : config.subpasses) {
-            vk::SubpassDescription subpass = {};
-            subpass.pipelineBindPoint = vk::PipelineBindPoint::eGraphics;
-
-            // 컬러 첨부 참조
-            std::vector<vk::AttachmentReference> color_refs;
-            color_refs.reserve(s.color_attachments.size());
-            for (const auto& attachment : s.color_attachments) {
-                vk::AttachmentReference ref = {};
-                ref.attachment = attachment;
-                ref.layout = vk::ImageLayout::eColorAttachmentOptimal;
-                color_refs.push_back(ref);
-            }
-            color_attachment_refs.emplace_back(std::move(color_refs));
-            subpass.colorAttachmentCount = static_cast<uint32_t>(color_attachment_refs.back().size());
-            subpass.pColorAttachments = color_attachment_refs.back().data();
-
-            // 입력 첨부 참조
-            std::vector<vk::AttachmentReference> input_refs;
-            input_refs.reserve(s.input_attachments.size());
-            for (const auto& attachment : s.input_attachments) {
-                vk::AttachmentReference ref = {};
-                ref.attachment = attachment;
-                ref.layout = vk::ImageLayout::eShaderReadOnlyOptimal;
-                input_refs.push_back(ref);
-            }
-            input_attachment_refs.emplace_back(std::move(input_refs));
-            subpass.inputAttachmentCount = static_cast<uint32_t>(input_attachment_refs.back().size());
-            subpass.pInputAttachments = input_attachment_refs.back().data();
-
-            // 깊이 첨부 참조
-            if (s.depth_attachment.has_value()) {
-                vk::AttachmentReference ref = {};
-                ref.attachment = depthAttachmentIndex;
-                ref.layout = vk::ImageLayout::eDepthStencilAttachmentOptimal;
-                depth_attachment_refs.push_back(ref);
-                subpass.pDepthStencilAttachment = &depth_attachment_refs.back();
-            }
-
-            subpasses.push_back(subpass);
-        }
-
-        // 3. 서브패스 의존성 자동 설정
-        std::vector<vk::SubpassDependency> dependencies;
-
-        if (!config.subpasses.empty()) {
-            // 첫 번째 서브패스에 대한 외부 의존성
-            vk::SubpassDependency first = {};
-            first.srcSubpass = VK_SUBPASS_EXTERNAL;
-            first.dstSubpass = 0;
-            first.srcStageMask = vk::PipelineStageFlagBits::eBottomOfPipe;
-            first.dstStageMask = vk::PipelineStageFlagBits::eColorAttachmentOutput;
-            first.srcAccessMask = vk::AccessFlags();  // NONE
-            first.dstAccessMask = vk::AccessFlagBits::eColorAttachmentRead | vk::AccessFlagBits::eColorAttachmentWrite;
-            first.dependencyFlags = vk::DependencyFlags();
-            dependencies.push_back(first);
-
-            // 서브패스 간의 의존성 설정
-            for (size_t i = 1; i < config.subpasses.size(); ++i) {
-                vk::SubpassDependency dep = {};
-                dep.srcSubpass = static_cast<uint32_t>(i - 1);
-                dep.dstSubpass = static_cast<uint32_t>(i);
-                dep.srcStageMask = vk::PipelineStageFlagBits::eColorAttachmentOutput;
-                dep.dstStageMask = vk::PipelineStageFlagBits::eColorAttachmentOutput;
-                dep.srcAccessMask = vk::AccessFlagBits::eColorAttachmentWrite;
-                dep.dstAccessMask =
-                    vk::AccessFlagBits::eColorAttachmentRead | vk::AccessFlagBits::eColorAttachmentWrite;
-                dep.dependencyFlags = vk::DependencyFlags();
-                dependencies.push_back(dep);
-            }
-
-            // 마지막 서브패스에 대한 외부 의존성
-            vk::SubpassDependency last = {};
-            last.srcSubpass = static_cast<uint32_t>(config.subpasses.size() - 1);
-            last.dstSubpass = VK_SUBPASS_EXTERNAL;
-            last.srcStageMask = vk::PipelineStageFlagBits::eColorAttachmentOutput;
-            last.dstStageMask = vk::PipelineStageFlagBits::eBottomOfPipe;
-            last.srcAccessMask = vk::AccessFlagBits::eColorAttachmentRead | vk::AccessFlagBits::eColorAttachmentWrite;
-            last.dstAccessMask = vk::AccessFlags();  // NONE
-            last.dependencyFlags = vk::DependencyFlags();
-            dependencies.push_back(last);
-        }
-
-        // 4. RenderPassCreateInfo 설정
-        vk::RenderPassCreateInfo renderPassInfo = {};
-        renderPassInfo.attachmentCount = static_cast<uint32_t>(attachments.size());
-        renderPassInfo.pAttachments = attachments.data();
-        renderPassInfo.subpassCount = static_cast<uint32_t>(subpasses.size());
-        renderPassInfo.pSubpasses = subpasses.data();
-        renderPassInfo.dependencyCount = static_cast<uint32_t>(dependencies.size());
-        renderPassInfo.pDependencies = dependencies.empty() ? nullptr : dependencies.data();
-
-        // 5. VkRenderPass 생성
-        vk::RenderPass renderpass;
-        vk::Result result = device_.createRenderPass(&renderPassInfo, nullptr, &renderpass);
-        if (result != vk::Result::eSuccess) {
-            throw std::runtime_error("Failed to create vk::RenderPass!");
-        }
-
-        VulkanRenderPass vrenderpass;
-        vrenderpass.attachment_colors = static_cast<uint32_t>(color_formats.size());
-
-        // 클리어 값 설정
-        std::vector<vk::ClearValue> clear_values;
-        for (const auto& color : config.clear_colors) {
-            vk::ClearColorValue clear_color =
-                vk::ClearColorValue(std::array<float, 4>{color[0], color[1], color[2], color[3]});
-            vrenderpass.clear_values.emplace_back(clear_color);
-        }
-
-        if (has_depth) {
-            vk::ClearDepthStencilValue clear_depth = {};
-            clear_depth.depth = config.clear_depth_value;
-            clear_depth.stencil = config.clear_stencil_value;
-            vrenderpass.clear_values.emplace_back(clear_depth);
-        }
-
-        vrenderpass.renderpass = renderpass;
-        vrenderpass.ref_count = 1;
-        vrenderpass.handle = handle;  // Store the hash
-
-        // Store the render pass
-        return &rpasses_.emplace_hint(rpasses_.begin(), handle, vrenderpass)->second;
-    }
-
     VulkanFrameBuffer CreateFrameBufferInternal(const VulkanRenderPass& rp, const VulkanSwapChain& sc) {
         VulkanFrameBuffer fb;
         bool has_depth = (sc.chosen_depth_format != vk::Format::eUndefined);
@@ -2450,15 +2425,6 @@ class VulkanRenderer : public IRenderer {
         }
     }
 #endif
-    void ReleaseResource(const RenderPassHandle& handle) {
-        auto it = rpasses_.find(handle);
-        if (it != rpasses_.end()) {
-            if (--it->second.ref_count == 0) {
-                device_.destroyRenderPass(it->second.renderpass);
-                rpasses_.erase(it);
-            }
-        }
-    }
 
     vk::Format FindSupportedFormat(const std::vector<vk::Format>& candidates, vk::ImageTiling tiling,
                                    vk::FormatFeatureFlags features) {
@@ -2484,10 +2450,6 @@ class VulkanRenderer : public IRenderer {
     uint64_t Hash(const RenderState& state) {
         XXH64_reset(hash_state_, 0);
 
-#if 0
-        XXH64_update(hash_state_, &state.viewport, sizeof(state.viewport));
-        XXH64_update(hash_state_, &state.scissor, sizeof(state.scissor));
-#endif
         XXH64_update(hash_state_, &state.rasterization, sizeof(state.rasterization));
         XXH64_update(hash_state_, state.color_blends.data(),
                      sizeof(decltype(state.color_blends)::value_type) * state.color_blends.size());
@@ -2497,27 +2459,28 @@ class VulkanRenderer : public IRenderer {
         return hash;
     }
 
-    uint64_t Hash(const std::vector<Format>& color_formats, const Format depth_format, const RenderPassConfig& config) {
+    uint64_t Hash(const RenderPassDesc& desc) {
         XXH64_reset(hash_state_, 0);
 
-        XXH64_update(hash_state_, color_formats.data(),
-                     sizeof(std::remove_cv_t<std::remove_reference_t<decltype(color_formats)>>) * color_formats.size());
+        XXH64_update(hash_state_, desc.color_formats.data(),
+                     sizeof(std::remove_cv_t<std::remove_reference_t<decltype(desc.color_formats)>>) *
+                         desc.color_formats.size());
 
-        XXH64_update(hash_state_, &depth_format, sizeof(depth_format));
-        XXH64_update(hash_state_, config.clear_colors.data(),
-                     sizeof(decltype(config.clear_colors)::value_type) * config.clear_colors.size());
+        XXH64_update(hash_state_, &desc.depth_format, sizeof(desc.depth_format));
+        XXH64_update(hash_state_, desc.clear_colors.data(),
+                     sizeof(decltype(desc.clear_colors)::value_type) * desc.clear_colors.size());
 
-        XXH64_update(hash_state_, &config.clear_depth, sizeof(config.clear_depth));
-        XXH64_update(hash_state_, &config.clear_depth_value, sizeof(config.clear_depth_value));
-        XXH64_update(hash_state_, &config.clear_stencil_value, sizeof(config.clear_stencil_value));
+        XXH64_update(hash_state_, &desc.clear_depth, sizeof(desc.clear_depth));
+        XXH64_update(hash_state_, &desc.clear_depth_value, sizeof(desc.clear_depth_value));
+        XXH64_update(hash_state_, &desc.clear_stencil_value, sizeof(desc.clear_stencil_value));
 
         XXH64_update(
-            hash_state_, config.color_attachment_options.data(),
-            sizeof(decltype(config.color_attachment_options)::value_type) * config.color_attachment_options.size());
+            hash_state_, desc.color_attachment_options.data(),
+            sizeof(decltype(desc.color_attachment_options)::value_type) * desc.color_attachment_options.size());
 
-        XXH64_update(hash_state_, &config.depth_attachment_options, sizeof(config.depth_attachment_options));
+        XXH64_update(hash_state_, &desc.depth_attachment_options, sizeof(desc.depth_attachment_options));
 
-        for (const auto& subpass : config.subpasses) {
+        for (const auto& subpass : desc.subpasses) {
             XXH64_update(hash_state_, subpass.color_attachments.data(),
                          sizeof(decltype(subpass.color_attachments)::value_type) * subpass.color_attachments.size());
 

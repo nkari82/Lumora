@@ -33,6 +33,7 @@ struct ResourceHandle {
 };
 
 struct SwapChainHandle : ResourceHandle {};
+struct RenderPassHandle : ResourceHandle {};
 struct BufferHandle : ResourceHandle {};
 struct TextureHandle : ResourceHandle {};
 struct SamplerHandle : ResourceHandle {};
@@ -241,7 +242,7 @@ struct DepthStencilState {
 enum class SampleCount { k1, k2, k4, k6, k8, k16, k32, k64 };
 
 struct PipelineDesc {
-    FrameBufferHandle framebuffer;
+    RenderPassHandle init_rp_handle;
     ShaderHandle vertex_shader;
     ShaderHandle fragment_shader;
     VertexLayoutDesc vertex_layout_desc;
@@ -282,7 +283,9 @@ struct SubpassDesc {
     std::vector<uint32_t> input_attachments;   // Input 첨부
 };
 
-struct RenderPassConfig {
+struct RenderPassDesc {
+    std::vector<Format> color_formats;
+    Format depth_format;
     std::vector<std::array<float, 4>> clear_colors;           // 각 컬러 타겟에 대한 클리어 색상
     bool clear_depth = true;                                  // 깊이 클리어 여부
     float clear_depth_value = 1.0f;                           // 깊이 클리어 값
@@ -293,11 +296,11 @@ struct RenderPassConfig {
 };
 
 struct FrameBufferDesc {
+    RenderPassHandle rp_handle;
     std::vector<TextureHandle> color_targets;
     TextureHandle depth_target;  // Depth 타겟 (optional)
     uint32_t width;
     uint32_t height;
-    RenderPassConfig config;
 };
 
 // Renderer Interface
@@ -311,8 +314,9 @@ class LUMORA_API IRenderer {
     virtual void Close() = 0;
 
     virtual SwapChainHandle CreateSwapChain(const SwapChainDesc& desc) = 0;
+    virtual RenderPassHandle CreateRenderPass(const RenderPassDesc& desc) = 0;
     virtual BufferHandle CreateBuffer(const BufferDesc& desc) = 0;
-    virtual FrameBufferHandle CreateFrameBuffer(const SwapChainHandle& handle) = 0;
+    virtual FrameBufferHandle CreateFrameBuffer(const SwapChainHandle& handle, const RenderPassHandle& rp_handle) = 0;
     virtual FrameBufferHandle CreateFrameBuffer(const FrameBufferDesc& desc) = 0;
     virtual void UpdateBuffer(const BufferHandle& handle, const void* data, size_t size) = 0;
     virtual void BindBuffer(const BufferHandle& handle, uint32_t bind_point, uint32_t dynamic_offset = 0) = 0;
@@ -341,6 +345,7 @@ class LUMORA_API IRenderer {
     virtual void DrawIndexed(uint32_t index_count, uint32_t instance_count = 1, uint32_t first_index = 0,
                              int32_t vertex_offset = 0, uint32_t first_instance = 0) = 0;
     virtual void ReleaseResource(const SwapChainHandle& handle) = 0;
+    virtual void ReleaseResource(const RenderPassHandle& handle) = 0;
     virtual void ReleaseResource(const TextureHandle& handle) = 0;
     virtual void ReleaseResource(const SamplerHandle& handle) = 0;
     virtual void ReleaseResource(const PipelineHandle& handle) = 0;
