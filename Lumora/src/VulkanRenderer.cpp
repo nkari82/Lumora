@@ -99,9 +99,9 @@ struct VulkanPipeline : VulkanRef {
 struct VulkanFrameBuffer : VulkanRef {
     uint32_t width;
     uint32_t height;
+    uint32_t current_image_index;
     std::vector<TextureHandle> color_textures;
     TextureHandle depth_texture;
-    uint32_t current_image_index;               // VulkanSwapcahin멤버로 있는게 더 자연스러운?
     std::vector<vk::Framebuffer> framebuffers;  // 스왑체인 이미지별 프레임버퍼
     RenderPassHandle rp_handle;
 };
@@ -132,7 +132,6 @@ struct VulkanSwapChain : VulkanRef {
     std::vector<vk::Semaphore> render_finished_semaphores;
     std::vector<vk::Fence> in_flight_fences;
     size_t current_frame;
-
     FrameBufferHandle fb_handle;
 };
 
@@ -268,6 +267,7 @@ class VulkanRenderer : public IRenderer {
             attachment.stencilLoadOp = vk::AttachmentLoadOp::eDontCare;
             attachment.stencilStoreOp = vk::AttachmentStoreOp::eDontCare;
             attachment.initialLayout = vk::ImageLayout::eUndefined;
+            // #FIXME 렌더텍스쳐일 경우 ePresentSrcKHR이 아니다. vk::ImageLayout::eAttachmentOptimalKHR
             // 컬러 첨부의 최종 레이아웃을 ePresentSrcKHR로 설정 (예시)
             attachment.finalLayout = vk::ImageLayout::ePresentSrcKHR;
             attachments.push_back(attachment);
@@ -1173,15 +1173,15 @@ class VulkanRenderer : public IRenderer {
         };
 #endif
 
-        VulkanFrameBuffer& vframebuffer = fb_it->second;
-        current_rpass_ = &rpasses_.at(vframebuffer.rp_handle);
+        VulkanFrameBuffer& fb = fb_it->second;
+        current_rpass_ = &rpasses_.at(fb.rp_handle);
 
         // RenderPass 시작
         vk::RenderPassBeginInfo render_pass_info{};
         render_pass_info.renderPass = current_rpass_->renderpass;
-        render_pass_info.framebuffer = vframebuffer.framebuffers[vframebuffer.current_image_index];
+        render_pass_info.framebuffer = fb.framebuffers[fb.current_image_index];
         render_pass_info.renderArea.offset = vk::Offset2D{0, 0};
-        render_pass_info.renderArea.extent = vk::Extent2D{vframebuffer.width, vframebuffer.height};
+        render_pass_info.renderArea.extent = vk::Extent2D{fb.width, fb.height};
         render_pass_info.clearValueCount = static_cast<uint32_t>(current_rpass_->clear_values.size());
         render_pass_info.pClearValues = current_rpass_->clear_values.data();
 
@@ -1209,6 +1209,7 @@ class VulkanRenderer : public IRenderer {
         if (it == swapchains_.end()) {
             return;  // 잘못된 핸들이면 무시
         }
+
         VulkanSwapChain& sc = it->second;
 
         // 1) GPU 대기
@@ -1250,10 +1251,8 @@ class VulkanRenderer : public IRenderer {
 
         auto& fb = fbuffers_.at(sc.fb_handle);
         ReleaseResource(fb.depth_texture);
-        for (auto& handle : fb.color_textures) ReleaseResource(handle);
+        for (auto& h : fb.color_textures) ReleaseResource(h);
         for (auto& fb : fb.framebuffers) device_.destroyFramebuffer(fb);
-        fb.depth_texture = TextureHandle{0};
-        fb.color_textures.clear();
 
         auto& rp = rpasses_.at(fb.rp_handle);
         fb = CreateFrameBufferInternal(rp, sc);
@@ -1519,7 +1518,6 @@ class VulkanRenderer : public IRenderer {
 
     // Current pipeline handle
     vk::Pipeline current_pipeline_;
-    vk::PipelineLayout pipeline_layout_;  // #TODO 내부적으로 자동 관리
     uint32_t current_pass_ = 0;
     VulkanRenderPass* current_rpass_{nullptr};
 
@@ -1673,10 +1671,6 @@ class VulkanRenderer : public IRenderer {
 
         for (auto pair : descriptor_set_layouts_) {
             device_.destroyDescriptorSetLayout(pair.second);
-        }
-
-        if (pipeline_layout_) {
-            device_.destroyPipelineLayout(pipeline_layout_);
         }
 
         instance_.destroySurfaceKHR(main_surface_);
